@@ -1,6 +1,6 @@
 import { Pool, QueryResult, QueryResultRow } from "pg";
 
-type DatabaseStatus =
+export type DatabaseStatus =
   | {
       configured: false;
       connected: false;

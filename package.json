@@ -4,10 +4,12 @@
   "description": "Node.js Express API with PostgreSQL configuration in TypeScript",
   "main": "dist/server.js",
   "scripts": {
-    "dev": "tsx watch src/server.ts",
+    "dev": "nodemon",
+    "dev:tsx": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && tsc -p tsconfig.test.json && node --test --test-isolation=none dist-tests/tests/admin-auth/admin-auth.test.js"
   },
   "keywords": [
     "node",
@@ -19,12 +21,17 @@
   "dependencies": {
     "dotenv": "^16.4.5",
     "express": "^4.21.2",
-    "pg": "^8.13.1"
+    "jsonwebtoken": "^9.0.3",
+    "pg": "^8.13.1",
+    "swagger-ui-express": "^5.0.1"
   },
   "devDependencies": {
     "@types/express": "^5.0.1",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^24.5.2",
     "@types/pg": "^8.11.10",
+    "@types/swagger-ui-express": "^4.1.8",
+    "nodemon": "^3.1.14",
     "tsx": "^4.19.2",
     "typescript": "^5.9.2"
   }

@@ -2,12 +2,17 @@ import dotenv from "dotenv";
 
 import app from "./app";
 import { checkDatabaseConnection } from "./config/db";
+import { getAdminAuthConfig } from "./modules/admin-auth/config";
 
 dotenv.config();
 
 const PORT = Number(process.env.PORT) || 3000;
 
 async function startServer(): Promise<void> {
+  const adminConfig = getAdminAuthConfig();
+
+  console.log(`Admin auth configured for super admin "${adminConfig.superAdmin.username}"`);
+
   const database = await checkDatabaseConnection();
 
   if (database.configured && database.connected) {
