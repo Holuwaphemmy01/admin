@@ -20,6 +20,10 @@ export const swaggerSpec = {
     {
       name: "Admin Auth",
       description: "Admin authentication endpoints separated from customer auth"
+    },
+    {
+      name: "User Management",
+      description: "Administrative customer-user management endpoints"
     }
   ],
   components: {
@@ -257,6 +261,62 @@ export const swaggerSpec = {
             items: {
               $ref: "#/components/schemas/AdminAccountSummary"
             }
+          }
+        }
+      },
+      PlatformUserSummary: {
+        type: "object",
+        properties: {
+          username: {
+            type: "string",
+            example: "buyer-1"
+          },
+          firstName: {
+            type: "string",
+            example: "Jane"
+          },
+          lastName: {
+            type: "string",
+            example: "Doe"
+          },
+          emailAddress: {
+            type: "string",
+            format: "email",
+            example: "jane.doe@example.com"
+          },
+          phoneNumber: {
+            type: "string",
+            example: "+2348012345678"
+          },
+          userTypeId: {
+            type: "integer",
+            enum: [1, 2, 3],
+            example: 1
+          },
+          status: {
+            type: "integer",
+            enum: [1, 2],
+            example: 1
+          },
+          createdAt: {
+            type: "string",
+            format: "date-time",
+            example: "2026-04-07T10:00:00.000Z"
+          }
+        }
+      },
+      AdminUsersListResponse: {
+        type: "object",
+        properties: {
+          users: {
+            type: "array",
+            items: {
+              $ref: "#/components/schemas/PlatformUserSummary"
+            }
+          },
+          total: {
+            type: "integer",
+            example: 135
           }
         }
       },
@@ -658,6 +718,126 @@ export const swaggerSpec = {
               "application/json": {
                 schema: {
                   $ref: "#/components/schemas/ConflictErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/users": {
+      get: {
+        tags: ["User Management"],
+        summary: "List all users",
+        description:
+          "Returns customer users filtered by user type, status, and created date, with paginated results for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "query",
+            name: "userTypeId",
+            required: false,
+            schema: {
+              type: "integer",
+              enum: [1, 2, 3]
+            },
+            description: "Filter by user type: 1 = buyer, 2 = seller, 3 = logistics"
+          },
+          {
+            in: "query",
+            name: "status",
+            required: false,
+            schema: {
+              type: "integer",
+              enum: [1, 2]
+            },
+            description: "Filter by user status: 1 = active, 2 = suspended"
+          },
+          {
+            in: "query",
+            name: "page",
+            required: false,
+            schema: {
+              type: "integer",
+              minimum: 1,
+              default: 1
+            },
+            description: "Pagination page number"
+          },
+          {
+            in: "query",
+            name: "limit",
+            required: false,
+            schema: {
+              type: "integer",
+              minimum: 1,
+              maximum: 100,
+              default: 20
+            },
+            description: "Results per page"
+          },
+          {
+            in: "query",
+            name: "from",
+            required: false,
+            schema: {
+              type: "string",
+              format: "date-time"
+            },
+            description: "Inclusive created-at start date filter"
+          },
+          {
+            in: "query",
+            name: "to",
+            required: false,
+            schema: {
+              type: "string",
+              format: "date-time"
+            },
+            description: "Inclusive created-at end date filter"
+          }
+        ],
+        responses: {
+          "200": {
+            description: "Users retrieved successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/AdminUsersListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid query parameters",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to list users",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
                 }
               }
             }
