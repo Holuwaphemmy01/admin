@@ -211,6 +211,15 @@ export const swaggerSpec = {
           }
         }
       },
+      AdminRevokeRequest: {
+        type: "object",
+        properties: {
+          reason: {
+            type: "string",
+            example: "Repeated policy violations"
+          }
+        }
+      },
       AdminAccountSummary: {
         type: "object",
         properties: {
@@ -552,6 +561,103 @@ export const swaggerSpec = {
               "application/json": {
                 schema: {
                   $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/auth/admins/{id}/revoke": {
+      put: {
+        tags: ["Admin Auth"],
+        summary: "Revoke admin access",
+        description:
+          "Revokes a target admin account by changing its status to revoked and is restricted to authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "path",
+            name: "id",
+            required: true,
+            schema: {
+              type: "string",
+              format: "uuid"
+            },
+            description: "UUID of the admin account to revoke"
+          }
+        ],
+        requestBody: {
+          required: false,
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/AdminRevokeRequest"
+              }
+            }
+          }
+        },
+        responses: {
+          "200": {
+            description: "Admin access revoked successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid admin id or revoke reason",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to revoke admin accounts",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "Target admin account was not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            description: "Admin revoke conflict such as self-revoke, already revoked, or last super admin",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ConflictErrorResponse"
                 }
               }
             }

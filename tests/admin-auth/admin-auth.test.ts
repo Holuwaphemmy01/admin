@@ -424,10 +424,11 @@ test("authenticateAdminToken accepts valid tokens and rejects customer-like toke
   ).rejects.toThrow();
 });
 
-test("authenticateAdminToken rejects suspended admins and stale password-version tokens", async () => {
+test("authenticateAdminToken rejects suspended or revoked admins and stale password-version tokens", async () => {
   const config = loadAdminAuthConfig(testEnv);
   const staleToken = signAdminToken(createAuthenticatedAdmin({ passwordVersion: 1 }), config);
   const suspendedToken = signAdminToken(createAuthenticatedAdmin({ passwordVersion: 2 }), config);
+  const revokedToken = signAdminToken(createAuthenticatedAdmin({ passwordVersion: 2 }), config);
 
   await expect(
     authenticateAdminToken(staleToken, {
@@ -465,6 +466,28 @@ test("authenticateAdminToken rejects suspended admins and stale password-version
             role: "super_admin" as AdminRole,
             userTypeId: 4,
             status: "suspended",
+            createdAt: new Date("2026-01-01T00:00:00.000Z"),
+            passwordVersion: 2
+          }
+        ])
+      )
+    })
+  ).rejects.toThrow();
+
+  await expect(
+    authenticateAdminToken(revokedToken, {
+      config,
+      queryFn: createQueryFunction(async () =>
+        createQueryResult([
+          {
+            id: "admin-user-id",
+            username: "brickpine-admin",
+            emailAddress: "admin@brickpine.local",
+            firstName: "BrickPine",
+            lastName: "SuperAdmin",
+            role: "super_admin" as AdminRole,
+            userTypeId: 4,
+            status: "revoked",
             createdAt: new Date("2026-01-01T00:00:00.000Z"),
             passwordVersion: 2
           }
@@ -1085,6 +1108,7 @@ test("GET /docs.json exposes the swagger specification for the API", async () =>
     expect(payload.paths?.["/admin/auth/invite"]).toBeDefined();
     expect(payload.paths?.["/admin/auth/change_password"]).toBeDefined();
     expect(payload.paths?.["/admin/auth/admins"]).toBeDefined();
+    expect(payload.paths?.["/admin/auth/admins/{id}/revoke"]).toBeDefined();
     expect(payload.paths?.["/api/health"]).toBeDefined();
   } finally {
     await server.close();
