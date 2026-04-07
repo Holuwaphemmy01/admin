@@ -7,7 +7,13 @@ import { QueryResult, QueryResultRow } from "pg";
 import { createAuthenticateAdminMiddleware } from "../../src/modules/admin-auth/middleware";
 import { AuthenticatedAdmin } from "../../src/modules/admin-auth/types";
 import { createAdminUsersRouter } from "../../src/modules/admin-users/routes";
-import { listPlatformUsers } from "../../src/modules/admin-users/service";
+import {
+  getPlatformUserProfile,
+  listPlatformUsers,
+  PlatformUserProfileConflictError,
+  PlatformUserProfileNotFoundError,
+  PlatformUserProfileValidationError
+} from "../../src/modules/admin-users/service";
 
 async function startTestServer(application: ReturnType<typeof express>) {
   const server = application.listen(0);
@@ -183,6 +189,142 @@ test("listPlatformUsers applies role, status, date, and pagination filters consi
   expect(executedQueries[1]?.params).toEqual([2, 1, from, to]);
 });
 
+test("getPlatformUserProfile returns the full profile payload with bio and placeholder summaries", async () => {
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await getPlatformUserProfile("  BUYER-1  ", {
+    queryFn: async <T extends QueryResultRow>(text: string, params?: unknown[]) => {
+      executedQueries.push({ text, params });
+
+      return createQueryResult([
+        {
+          username: "buyer-1",
+          firstName: "Jane",
+          lastName: "Doe",
+          emailAddress: "jane.doe@example.com",
+          phoneNumber: "+2348012345678",
+          userTypeId: 1,
+          createdAt: new Date("2026-04-07T11:00:00.000Z"),
+          bio: "Buyer bio",
+          profileImage: "https://cdn.example.com/profile.jpg",
+          coverImage: "https://cdn.example.com/cover.jpg"
+        }
+      ]) as unknown as QueryResult<T>;
+    }
+  });
+
+  expect(executedQueries).toHaveLength(1);
+  expect(executedQueries[0]?.text).toContain('FROM public."user" u');
+  expect(executedQueries[0]?.text).toContain('LEFT JOIN public.user_bio ub');
+  expect(executedQueries[0]?.text).toContain('LEFT JOIN public.user_profile_img upi');
+  expect(executedQueries[0]?.text).toContain('LEFT JOIN public.user_profile_cover_img upc');
+  expect(executedQueries[0]?.text).toContain('u."userTypeId" IN (1, 2, 3)');
+  expect(executedQueries[0]?.text).toContain('LOWER(u.username) = LOWER($1)');
+  expect(executedQueries[0]?.params).toEqual(["BUYER-1"]);
+  expect(response).toEqual({
+    username: "buyer-1",
+    firstName: "Jane",
+    lastName: "Doe",
+    emailAddress: "jane.doe@example.com",
+    phoneNumber: "+2348012345678",
+    userTypeId: 1,
+    createdAt: "2026-04-07T11:00:00.000Z",
+    social_posts: {
+      total: 0,
+      latestCreatedAt: null
+    },
+    follow: {
+      followers: 0,
+      following: 0
+    },
+    user_bio: {
+      bio: "Buyer bio",
+      profileImage: "https://cdn.example.com/profile.jpg",
+      coverImage: "https://cdn.example.com/cover.jpg"
+    }
+  });
+});
+
+test("getPlatformUserProfile returns null bio fields when profile rows are missing", async () => {
+  const response = await getPlatformUserProfile("buyer-2", {
+    queryFn: async <T extends QueryResultRow>() =>
+      createQueryResult([
+        {
+          username: "buyer-2",
+          firstName: "John",
+          lastName: "Smith",
+          emailAddress: "john.smith@example.com",
+          phoneNumber: null,
+          userTypeId: 1,
+          createdAt: new Date("2026-04-06T09:30:00.000Z"),
+          bio: null,
+          profileImage: null,
+          coverImage: null
+        }
+      ]) as unknown as QueryResult<T>
+  });
+
+  expect(response.user_bio).toEqual({
+    bio: null,
+    profileImage: null,
+    coverImage: null
+  });
+  expect(response.social_posts).toEqual({
+    total: 0,
+    latestCreatedAt: null
+  });
+  expect(response.follow).toEqual({
+    followers: 0,
+    following: 0
+  });
+});
+
+test("getPlatformUserProfile rejects blank, missing, or duplicate username matches", async () => {
+  await expect(
+    getPlatformUserProfile("   ", {
+      queryFn: async <T extends QueryResultRow>() => createQueryResult([]) as unknown as QueryResult<T>
+    })
+  ).rejects.toThrow("username must be a non-empty string");
+
+  await expect(
+    getPlatformUserProfile("missing-user", {
+      queryFn: async <T extends QueryResultRow>() => createQueryResult([]) as unknown as QueryResult<T>
+    })
+  ).rejects.toThrow(PlatformUserProfileNotFoundError);
+
+  await expect(
+    getPlatformUserProfile("duplicate-user", {
+      queryFn: async <T extends QueryResultRow>() =>
+        createQueryResult([
+          {
+            username: "Duplicate-User",
+            firstName: "Jane",
+            lastName: "Doe",
+            emailAddress: "jane@example.com",
+            phoneNumber: "+2348012345678",
+            userTypeId: 1,
+            createdAt: new Date("2026-04-07T11:00:00.000Z"),
+            bio: null,
+            profileImage: null,
+            coverImage: null
+          },
+          {
+            username: "duplicate-user",
+            firstName: "Janet",
+            lastName: "Doe",
+            emailAddress: "janet@example.com",
+            phoneNumber: "+2348099999999",
+            userTypeId: 2,
+            createdAt: new Date("2026-04-06T11:00:00.000Z"),
+            bio: null,
+            profileImage: null,
+            coverImage: null
+          }
+        ]) as unknown as QueryResult<T>
+    })
+  ).rejects.toThrow(PlatformUserProfileConflictError);
+});
+
 test("GET /admin/users returns 401 when the admin token is missing", async () => {
   const application = express();
 
@@ -199,6 +341,29 @@ test("GET /admin/users returns 401 when the admin token is missing", async () =>
 
   try {
     const response = await fetch(`${server.baseUrl}/admin/users`);
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/users/:username returns 401 when the admin token is missing", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/users",
+    createAdminUsersRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/users/buyer-1`);
 
     expect(response.status).toBe(401);
   } finally {
@@ -370,6 +535,226 @@ test("GET /admin/users parses filters, caps limit, and returns paginated users",
     expect(payload.users[0]?.userTypeId).toBe(2);
     expect(payload.users[0]?.status).toBe(1);
     expect(payload.users[0]?.emailAddress).toBe("ada.store@example.com");
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/users/:username returns 404 when the requested user profile does not exist", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/users",
+    createAdminUsersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getPlatformUserProfileHandler: async () => {
+        throw new PlatformUserProfileNotFoundError("User profile not found");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/users/missing-user`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(404);
+
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    expect(payload.message).toBe("User profile not found");
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/users/:username returns 409 when username lookup is ambiguous", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/users",
+    createAdminUsersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getPlatformUserProfileHandler: async () => {
+        throw new PlatformUserProfileConflictError(
+          "Multiple users match the provided username"
+        );
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/users/duplicate-user`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(409);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/users/:username validates the username path parameter", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/users",
+    createAdminUsersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getPlatformUserProfileHandler: async (username) => {
+        if (username.trim() === "") {
+          throw new PlatformUserProfileValidationError("username must be a non-empty string");
+        }
+
+        throw new Error("This handler should not be called for non-blank usernames");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/users/%20%20`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(400);
+
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    expect(payload.message).toBe("username must be a non-empty string");
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/users/:username returns 403 for non-super-admins", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/users",
+    createAdminUsersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "support"
+        })
+      ),
+      getPlatformUserProfileHandler: async () => ({
+        username: "buyer-1",
+        firstName: "Jane",
+        lastName: "Doe",
+        emailAddress: "jane.doe@example.com",
+        phoneNumber: "+2348012345678",
+        userTypeId: 1,
+        createdAt: "2026-04-07T11:00:00.000Z",
+        social_posts: {
+          total: 0,
+          latestCreatedAt: null
+        },
+        follow: {
+          followers: 0,
+          following: 0
+        },
+        user_bio: {
+          bio: "Buyer bio",
+          profileImage: null,
+          coverImage: null
+        }
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/users/buyer-1`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/users/:username returns the full user profile payload for super admins", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/users",
+    createAdminUsersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getPlatformUserProfileHandler: async (username) => {
+        expect(username).toBe("Buyer-1");
+
+        return {
+          username: "buyer-1",
+          firstName: "Jane",
+          lastName: "Doe",
+          emailAddress: "jane.doe@example.com",
+          phoneNumber: "+2348012345678",
+          userTypeId: 1,
+          createdAt: "2026-04-07T11:00:00.000Z",
+          social_posts: {
+            total: 0,
+            latestCreatedAt: null
+          },
+          follow: {
+            followers: 0,
+            following: 0
+          },
+          user_bio: {
+            bio: "Buyer bio",
+            profileImage: "https://cdn.example.com/profile.jpg",
+            coverImage: "https://cdn.example.com/cover.jpg"
+          }
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/users/Buyer-1`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(200);
+
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    expect(payload.username).toBe("buyer-1");
+    expect(payload.emailAddress).toBe("jane.doe@example.com");
+    expect(payload.userTypeId).toBe(1);
+    expect(payload.createdAt).toBe("2026-04-07T11:00:00.000Z");
+    expect(payload.social_posts).toEqual({
+      total: 0,
+      latestCreatedAt: null
+    });
+    expect(payload.follow).toEqual({
+      followers: 0,
+      following: 0
+    });
+    expect(payload.user_bio).toEqual({
+      bio: "Buyer bio",
+      profileImage: "https://cdn.example.com/profile.jpg",
+      coverImage: "https://cdn.example.com/cover.jpg"
+    });
   } finally {
     await server.close();
   }

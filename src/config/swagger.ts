@@ -320,6 +320,99 @@ export const swaggerSpec = {
           }
         }
       },
+      PlatformUserBioSummary: {
+        type: "object",
+        properties: {
+          bio: {
+            type: "string",
+            nullable: true,
+            example: "Buyer bio"
+          },
+          profileImage: {
+            type: "string",
+            nullable: true,
+            example: "https://cdn.example.com/profile.jpg"
+          },
+          coverImage: {
+            type: "string",
+            nullable: true,
+            example: "https://cdn.example.com/cover.jpg"
+          }
+        }
+      },
+      PlatformUserSocialPostsSummary: {
+        type: "object",
+        properties: {
+          total: {
+            type: "integer",
+            example: 0
+          },
+          latestCreatedAt: {
+            type: "string",
+            format: "date-time",
+            nullable: true,
+            example: null
+          }
+        }
+      },
+      PlatformUserFollowSummary: {
+        type: "object",
+        properties: {
+          followers: {
+            type: "integer",
+            example: 0
+          },
+          following: {
+            type: "integer",
+            example: 0
+          }
+        }
+      },
+      PlatformUserProfileResponse: {
+        type: "object",
+        properties: {
+          username: {
+            type: "string",
+            example: "buyer-1"
+          },
+          firstName: {
+            type: "string",
+            example: "Jane"
+          },
+          lastName: {
+            type: "string",
+            example: "Doe"
+          },
+          emailAddress: {
+            type: "string",
+            format: "email",
+            example: "jane.doe@example.com"
+          },
+          phoneNumber: {
+            type: "string",
+            example: "+2348012345678"
+          },
+          userTypeId: {
+            type: "integer",
+            enum: [1, 2, 3],
+            example: 1
+          },
+          createdAt: {
+            type: "string",
+            format: "date-time",
+            example: "2026-04-07T10:00:00.000Z"
+          },
+          social_posts: {
+            $ref: "#/components/schemas/PlatformUserSocialPostsSummary"
+          },
+          follow: {
+            $ref: "#/components/schemas/PlatformUserFollowSummary"
+          },
+          user_bio: {
+            $ref: "#/components/schemas/PlatformUserBioSummary"
+          }
+        }
+      },
       MessageResponse: {
         type: "object",
         properties: {
@@ -838,6 +931,92 @@ export const swaggerSpec = {
               "application/json": {
                 schema: {
                   $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/users/{username}": {
+      get: {
+        tags: ["User Management"],
+        summary: "View full user profile",
+        description:
+          "Returns a full customer user profile by username for authenticated super admin access, including curated bio/profile data and placeholder social/follow summaries.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "path",
+            name: "username",
+            required: true,
+            schema: {
+              type: "string"
+            },
+            description: "Case-insensitive username lookup for a buyer, seller, or logistics user"
+          }
+        ],
+        responses: {
+          "200": {
+            description: "User profile retrieved successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/PlatformUserProfileResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid username path parameter",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to view user profiles",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "User profile was not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            description: "Multiple users match the provided username",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ConflictErrorResponse"
                 }
               }
             }

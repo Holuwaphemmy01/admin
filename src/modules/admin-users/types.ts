@@ -31,3 +31,32 @@ export interface AdminUsersListResponse {
   users: PlatformUserSummary[];
   total: number;
 }
+
+export interface PlatformUserBioSummary {
+  bio: string | null;
+  profileImage: string | null;
+  coverImage: string | null;
+}
+
+export interface PlatformUserSocialPostsSummary {
+  total: number;
+  latestCreatedAt: null;
+}
+
+export interface PlatformUserFollowSummary {
+  followers: number;
+  following: number;
+}
+
+export interface PlatformUserProfileResponse {
+  username: string;
+  firstName: string;
+  lastName: string;
+  emailAddress: string;
+  phoneNumber: string;
+  userTypeId: PlatformUserTypeId;
+  createdAt: string;
+  social_posts: PlatformUserSocialPostsSummary;
+  follow: PlatformUserFollowSummary;
+  user_bio: PlatformUserBioSummary;
+}

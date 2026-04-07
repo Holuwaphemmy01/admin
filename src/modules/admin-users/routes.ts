@@ -1,7 +1,13 @@
 import { Request, RequestHandler, Response, Router } from "express";
 
 import { authenticateAdmin, requireAdminRole } from "../admin-auth/middleware";
-import { listPlatformUsers } from "./service";
+import {
+  getPlatformUserProfile,
+  listPlatformUsers,
+  PlatformUserProfileConflictError,
+  PlatformUserProfileNotFoundError,
+  PlatformUserProfileValidationError
+} from "./service";
 import {
   AdminUsersListFilters,
   DEFAULT_ADMIN_USERS_LIMIT,
@@ -15,6 +21,7 @@ import {
 
 interface AdminUsersRouterDependencies {
   listPlatformUsersHandler?: typeof listPlatformUsers;
+  getPlatformUserProfileHandler?: typeof getPlatformUserProfile;
   authenticateAdminMiddleware?: RequestHandler;
   requireSuperAdminMiddleware?: RequestHandler;
 }
@@ -87,6 +94,8 @@ export function createAdminUsersRouter(
 ): Router {
   const adminUsersRouter = Router();
   const listPlatformUsersHandler = dependencies.listPlatformUsersHandler ?? listPlatformUsers;
+  const getPlatformUserProfileHandler =
+    dependencies.getPlatformUserProfileHandler ?? getPlatformUserProfile;
   const authenticateAdminMiddleware =
     dependencies.authenticateAdminMiddleware ?? authenticateAdmin;
   const requireSuperAdminMiddleware =
@@ -157,6 +166,48 @@ export function createAdminUsersRouter(
       } catch (error) {
         if (error instanceof AdminUsersQueryValidationError) {
           response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
+
+  adminUsersRouter.get(
+    "/:username",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      const rawUsername = request.params.username;
+      const username = Array.isArray(rawUsername) ? rawUsername[0] ?? "" : rawUsername ?? "";
+
+      try {
+        const userProfileResponse = await getPlatformUserProfileHandler(username);
+
+        response.json(userProfileResponse);
+      } catch (error) {
+        if (error instanceof PlatformUserProfileValidationError) {
+          response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof PlatformUserProfileNotFoundError) {
+          response.status(404).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof PlatformUserProfileConflictError) {
+          response.status(409).json({
             message: error.message
           });
 
