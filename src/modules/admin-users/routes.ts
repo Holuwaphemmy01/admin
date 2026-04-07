@@ -6,7 +6,11 @@ import {
   listPlatformUsers,
   PlatformUserProfileConflictError,
   PlatformUserProfileNotFoundError,
-  PlatformUserProfileValidationError
+  PlatformUserProfileValidationError,
+  PlatformUserSuspensionConflictError,
+  PlatformUserSuspensionNotFoundError,
+  PlatformUserSuspensionValidationError,
+  suspendPlatformUser
 } from "./service";
 import {
   AdminUsersListFilters,
@@ -16,12 +20,14 @@ import {
   PLATFORM_USER_STATUS_CODES,
   PLATFORM_USER_TYPE_IDS,
   PlatformUserStatusCode,
-  PlatformUserTypeId
+  PlatformUserTypeId,
+  SUSPENDED_PLATFORM_USER_STATUS_CODE
 } from "./types";
 
 interface AdminUsersRouterDependencies {
   listPlatformUsersHandler?: typeof listPlatformUsers;
   getPlatformUserProfileHandler?: typeof getPlatformUserProfile;
+  suspendPlatformUserHandler?: typeof suspendPlatformUser;
   authenticateAdminMiddleware?: RequestHandler;
   requireSuperAdminMiddleware?: RequestHandler;
 }
@@ -31,6 +37,10 @@ class AdminUsersQueryValidationError extends Error {
     super(message);
     this.name = "AdminUsersQueryValidationError";
   }
+}
+
+function isValidCredentialField(value: unknown): value is string {
+  return typeof value === "string" && value.trim() !== "";
 }
 
 function readSingleQueryValue(value: unknown): string | undefined {
@@ -96,6 +106,8 @@ export function createAdminUsersRouter(
   const listPlatformUsersHandler = dependencies.listPlatformUsersHandler ?? listPlatformUsers;
   const getPlatformUserProfileHandler =
     dependencies.getPlatformUserProfileHandler ?? getPlatformUserProfile;
+  const suspendPlatformUserHandler =
+    dependencies.suspendPlatformUserHandler ?? suspendPlatformUser;
   const authenticateAdminMiddleware =
     dependencies.authenticateAdminMiddleware ?? authenticateAdmin;
   const requireSuperAdminMiddleware =
@@ -166,6 +178,92 @@ export function createAdminUsersRouter(
       } catch (error) {
         if (error instanceof AdminUsersQueryValidationError) {
           response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
+
+  adminUsersRouter.put(
+    "/:username/suspend",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      const rawUsername = request.params.username;
+      const username = Array.isArray(rawUsername) ? rawUsername[0] ?? "" : rawUsername ?? "";
+      const { status, comment } = request.body ?? {};
+
+      if (username.trim() === "") {
+        response.status(400).json({
+          message: "username must be a non-empty string"
+        });
+
+        return;
+      }
+
+      if (status !== SUSPENDED_PLATFORM_USER_STATUS_CODE) {
+        response.status(400).json({
+          message: "status must be 2"
+        });
+
+        return;
+      }
+
+      if (!isValidCredentialField(comment)) {
+        response.status(400).json({
+          message: "comment is required and must be a non-empty string"
+        });
+
+        return;
+      }
+
+      if (!request.admin) {
+        response.status(401).json({
+          message: "Unauthorized admin access"
+        });
+
+        return;
+      }
+
+      try {
+        const suspensionResponse = await suspendPlatformUserHandler({
+          username,
+          status,
+          comment,
+          suspendedByAdmin: request.admin
+        });
+
+        console.info(
+          `User account suspended for "${username.trim()}" by "${request.admin.username}".`
+        );
+
+        response.json(suspensionResponse);
+      } catch (error) {
+        if (error instanceof PlatformUserSuspensionValidationError) {
+          response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof PlatformUserSuspensionNotFoundError) {
+          response.status(404).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof PlatformUserSuspensionConflictError) {
+          console.warn(`User suspension conflict for "${username.trim()}".`);
+
+          response.status(409).json({
             message: error.message
           });
 

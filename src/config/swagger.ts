@@ -413,6 +413,22 @@ export const swaggerSpec = {
           }
         }
       },
+      SuspendPlatformUserRequest: {
+        type: "object",
+        required: ["status", "comment"],
+        properties: {
+          status: {
+            type: "integer",
+            enum: [2],
+            example: 2,
+            description: "2 = suspended"
+          },
+          comment: {
+            type: "string",
+            example: "Repeated policy violations"
+          }
+        }
+      },
       MessageResponse: {
         type: "object",
         properties: {
@@ -1013,6 +1029,102 @@ export const swaggerSpec = {
           },
           "409": {
             description: "Multiple users match the provided username",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ConflictErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/users/{username}/suspend": {
+      put: {
+        tags: ["User Management"],
+        summary: "Suspend a user account",
+        description:
+          "Suspends a buyer, seller, or logistics user by username and records the required suspension comment for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "path",
+            name: "username",
+            required: true,
+            schema: {
+              type: "string"
+            },
+            description: "Case-insensitive username lookup for the user account to suspend"
+          }
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/SuspendPlatformUserRequest"
+              }
+            }
+          }
+        },
+        responses: {
+          "200": {
+            description: "User account suspended successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid username path parameter or request body",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to suspend users",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "User account was not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            description: "User suspension conflict such as duplicate username match or already suspended",
             content: {
               "application/json": {
                 schema: {

@@ -64,12 +64,13 @@ This is a TypeScript Node.js and Express starter for the BrickPine admin API wit
 - `PUT /admin/auth/change_password`: Lets an authenticated admin change their own password.
 - `GET /admin/users`: Lists customer users with admin filters and pagination for a super admin.
 - `GET /admin/users/:username`: Returns the full customer user profile, curated bio data, and placeholder social/follow summaries for a super admin.
+- `PUT /admin/users/:username/suspend`: Suspends a customer user account and records the suspension comment for a super admin.
 - `GET /docs`: Swagger UI for the API documentation.
 - `GET /docs.json`: Raw OpenAPI JSON specification.
 
 ## Database migration
 
-Run the SQL migrations in `migrations/001_create_admin_invites.sql` and `migrations/002_create_admin_auth_tables.sql` against your PostgreSQL database before using the admin auth endpoints.
+Run the SQL migrations in `migrations/001_create_admin_invites.sql`, `migrations/002_create_admin_auth_tables.sql`, `migrations/003_create_admin_access_audit_logs.sql`, and `migrations/004_create_user_access_audit_logs.sql` against your PostgreSQL database before using the admin and user-management endpoints.
 
 ## Testing
 

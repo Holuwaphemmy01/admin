@@ -1,4 +1,6 @@
 export const PLATFORM_USER_TYPE_IDS = [1, 2, 3] as const;
+export const ACTIVE_PLATFORM_USER_STATUS_CODE = 1;
+export const SUSPENDED_PLATFORM_USER_STATUS_CODE = 2;
 export const PLATFORM_USER_STATUS_CODES = [1, 2] as const;
 export const DEFAULT_ADMIN_USERS_PAGE = 1;
 export const DEFAULT_ADMIN_USERS_LIMIT = 20;
@@ -59,4 +61,13 @@ export interface PlatformUserProfileResponse {
   social_posts: PlatformUserSocialPostsSummary;
   follow: PlatformUserFollowSummary;
   user_bio: PlatformUserBioSummary;
+}
+
+export interface SuspendPlatformUserRequestBody {
+  status: typeof SUSPENDED_PLATFORM_USER_STATUS_CODE;
+  comment: string;
+}
+
+export interface SuspendPlatformUserResponse {
+  message: string;
 }

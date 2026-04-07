@@ -12,7 +12,11 @@ import {
   listPlatformUsers,
   PlatformUserProfileConflictError,
   PlatformUserProfileNotFoundError,
-  PlatformUserProfileValidationError
+  PlatformUserProfileValidationError,
+  PlatformUserSuspensionConflictError,
+  PlatformUserSuspensionNotFoundError,
+  PlatformUserSuspensionValidationError,
+  suspendPlatformUser
 } from "../../src/modules/admin-users/service";
 
 async function startTestServer(application: ReturnType<typeof express>) {
@@ -48,6 +52,21 @@ function createQueryResult<T extends QueryResultRow>(rows: T[]): QueryResult<T> 
     fields: [],
     rowCount: rows.length,
     rows
+  };
+}
+
+function createTransactionClient(
+  queryImplementation: (text: string, params?: unknown[]) => Promise<QueryResult<QueryResultRow>>
+) {
+  return {
+    query: async <T extends QueryResultRow>(
+      text: string,
+      params?: unknown[]
+    ): Promise<QueryResult<T>> => {
+      const result = await queryImplementation(text, params);
+
+      return result as unknown as QueryResult<T>;
+    }
   };
 }
 
@@ -323,6 +342,154 @@ test("getPlatformUserProfile rejects blank, missing, or duplicate username match
         ]) as unknown as QueryResult<T>
     })
   ).rejects.toThrow(PlatformUserProfileConflictError);
+});
+
+test("suspendPlatformUser updates the user status and writes a suspension audit log", async () => {
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+  const suspendedByAdmin = createAuthenticatedAdmin();
+
+  const response = await suspendPlatformUser(
+    {
+      username: " Buyer-1 ",
+      status: 2,
+      comment: "  Repeated policy violations  ",
+      suspendedByAdmin
+    },
+    {
+      uuidFactory: () => "audit-log-id",
+      nowFactory: () => new Date("2026-04-07T12:00:00.000Z"),
+      runInTransaction: async (operation) =>
+        operation(
+          createTransactionClient(async (text, params) => {
+            executedQueries.push({ text, params });
+
+            if (text.includes("FOR UPDATE")) {
+              return createQueryResult([
+                {
+                  id: 42,
+                  status: 1
+                }
+              ]);
+            }
+
+            return createQueryResult([]);
+          })
+        )
+    }
+  );
+
+  expect(response).toEqual({
+    message: "Account successfully deactivated"
+  });
+  expect(executedQueries).toHaveLength(3);
+  expect(executedQueries[0]?.text).toContain('FROM public."user" u');
+  expect(executedQueries[0]?.text).toContain('LOWER(u.username) = LOWER($1)');
+  expect(executedQueries[0]?.params).toEqual(["Buyer-1"]);
+  expect(executedQueries[1]?.text).toContain('UPDATE public."user"');
+  expect(executedQueries[1]?.params).toEqual([2, new Date("2026-04-07T12:00:00.000Z"), 42]);
+  expect(executedQueries[2]?.text).toContain("INSERT INTO public.user_access_audit_logs");
+  expect(executedQueries[2]?.params).toEqual([
+    "audit-log-id",
+    42,
+    suspendedByAdmin.sub,
+    "suspend_account",
+    1,
+    2,
+    "Repeated policy violations",
+    new Date("2026-04-07T12:00:00.000Z")
+  ]);
+});
+
+test("suspendPlatformUser rejects invalid requests and conflicting user states", async () => {
+  const suspendedByAdmin = createAuthenticatedAdmin();
+
+  await expect(
+    suspendPlatformUser({
+      username: "   ",
+      status: 2,
+      comment: "Reason",
+      suspendedByAdmin
+    })
+  ).rejects.toThrow(PlatformUserSuspensionValidationError);
+
+  await expect(
+    suspendPlatformUser({
+      username: "buyer-1",
+      status: 1,
+      comment: "Reason",
+      suspendedByAdmin
+    })
+  ).rejects.toThrow("status must be 2");
+
+  await expect(
+    suspendPlatformUser({
+      username: "buyer-1",
+      status: 2,
+      comment: "   ",
+      suspendedByAdmin
+    })
+  ).rejects.toThrow("comment is required and must be a non-empty string");
+
+  await expect(
+    suspendPlatformUser(
+      {
+        username: "missing-user",
+        status: 2,
+        comment: "Reason",
+        suspendedByAdmin
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation(createTransactionClient(async () => createQueryResult([])))
+      }
+    )
+  ).rejects.toThrow(PlatformUserSuspensionNotFoundError);
+
+  await expect(
+    suspendPlatformUser(
+      {
+        username: "duplicate-user",
+        status: 2,
+        comment: "Reason",
+        suspendedByAdmin
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation(
+            createTransactionClient(async () =>
+              createQueryResult([
+                { id: 1, status: 1 },
+                { id: 2, status: 1 }
+              ])
+            )
+          )
+      }
+    )
+  ).rejects.toThrow(PlatformUserSuspensionConflictError);
+
+  await expect(
+    suspendPlatformUser(
+      {
+        username: "suspended-user",
+        status: 2,
+        comment: "Reason",
+        suspendedByAdmin
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation(
+            createTransactionClient(async () =>
+              createQueryResult([
+                {
+                  id: 42,
+                  status: 2
+                }
+              ])
+            )
+          )
+      }
+    )
+  ).rejects.toThrow("User account is already suspended");
 });
 
 test("GET /admin/users returns 401 when the admin token is missing", async () => {
@@ -755,6 +922,255 @@ test("GET /admin/users/:username returns the full user profile payload for super
       profileImage: "https://cdn.example.com/profile.jpg",
       coverImage: "https://cdn.example.com/cover.jpg"
     });
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/users/:username/suspend returns 401 when the admin token is missing", async () => {
+  const application = express();
+
+  application.use(express.json());
+  application.use(
+    "/admin/users",
+    createAdminUsersRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/users/buyer-1/suspend`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        status: 2,
+        comment: "Repeated policy violations"
+      })
+    });
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/users/:username/suspend returns 403 for non-super-admins", async () => {
+  const application = express();
+
+  application.use(express.json());
+  application.use(
+    "/admin/users",
+    createAdminUsersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "support"
+        })
+      ),
+      suspendPlatformUserHandler: async () => ({
+        message: "Account successfully deactivated"
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/users/buyer-1/suspend`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        status: 2,
+        comment: "Repeated policy violations"
+      })
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/users/:username/suspend validates the request body and path parameter", async () => {
+  const application = express();
+
+  application.use(express.json());
+  application.use(
+    "/admin/users",
+    createAdminUsersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      suspendPlatformUserHandler: async () => ({
+        message: "Account successfully deactivated"
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    let response = await fetch(`${server.baseUrl}/admin/users/%20%20/suspend`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        status: 2,
+        comment: "Repeated policy violations"
+      })
+    });
+
+    expect(response.status).toBe(400);
+
+    response = await fetch(`${server.baseUrl}/admin/users/buyer-1/suspend`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        status: 1,
+        comment: "Repeated policy violations"
+      })
+    });
+
+    expect(response.status).toBe(400);
+
+    response = await fetch(`${server.baseUrl}/admin/users/buyer-1/suspend`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        status: 2,
+        comment: "   "
+      })
+    });
+
+    expect(response.status).toBe(400);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/users/:username/suspend maps service not-found and conflict responses", async () => {
+  const notFoundApplication = express();
+
+  notFoundApplication.use(express.json());
+  notFoundApplication.use(
+    "/admin/users",
+    createAdminUsersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      suspendPlatformUserHandler: async () => {
+        throw new PlatformUserSuspensionNotFoundError("User account not found");
+      }
+    })
+  );
+
+  let server = await startTestServer(notFoundApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/users/missing-user/suspend`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        status: 2,
+        comment: "Repeated policy violations"
+      })
+    });
+
+    expect(response.status).toBe(404);
+  } finally {
+    await server.close();
+  }
+
+  const conflictApplication = express();
+
+  conflictApplication.use(express.json());
+  conflictApplication.use(
+    "/admin/users",
+    createAdminUsersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      suspendPlatformUserHandler: async () => {
+        throw new PlatformUserSuspensionConflictError("User account is already suspended");
+      }
+    })
+  );
+
+  server = await startTestServer(conflictApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/users/suspended-user/suspend`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        status: 2,
+        comment: "Repeated policy violations"
+      })
+    });
+
+    expect(response.status).toBe(409);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/users/:username/suspend returns success for a valid super-admin request", async () => {
+  const application = express();
+
+  application.use(express.json());
+  application.use(
+    "/admin/users",
+    createAdminUsersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      suspendPlatformUserHandler: async (input) => {
+        expect(input.username).toBe("Buyer-1");
+        expect(input.status).toBe(2);
+        expect(input.comment).toBe("Repeated policy violations");
+        expect(input.suspendedByAdmin.username).toBe("brickpine-admin");
+
+        return {
+          message: "Account successfully deactivated"
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/users/Buyer-1/suspend`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        status: 2,
+        comment: "Repeated policy violations"
+      })
+    });
+
+    expect(response.status).toBe(200);
+
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    expect(payload.message).toBe("Account successfully deactivated");
   } finally {
     await server.close();
   }
