@@ -4,7 +4,7 @@ export const swaggerSpec = {
     title: "BrickPine Admin API",
     version: "1.0.0",
     description:
-      "Swagger documentation for the BrickPine admin monolith, including health endpoints and admin authentication."
+      "Swagger documentation for the BrickPine admin monolith, including health endpoints and DB-backed admin authentication."
   },
   servers: [
     {
@@ -74,7 +74,7 @@ export const swaggerSpec = {
               serverTime: {
                 type: "string",
                 format: "date-time",
-                example: "2026-04-06T10:00:00.000Z"
+                example: "2026-04-07T10:00:00.000Z"
               }
             }
           },
@@ -197,6 +197,69 @@ export const swaggerSpec = {
           }
         }
       },
+      AdminChangePasswordRequest: {
+        type: "object",
+        required: ["currentPassword", "newPassword"],
+        properties: {
+          currentPassword: {
+            type: "string",
+            example: "old-password"
+          },
+          newPassword: {
+            type: "string",
+            example: "new-secure-password"
+          }
+        }
+      },
+      AdminAccountSummary: {
+        type: "object",
+        properties: {
+          id: {
+            type: "string",
+            format: "uuid",
+            example: "2c5d0f4f-814f-4941-9830-7c2f7d4e3f80"
+          },
+          username: {
+            type: "string",
+            example: "brickpine-admin"
+          },
+          role: {
+            type: "string",
+            enum: ["super_admin", "support", "finance"],
+            example: "support"
+          },
+          status: {
+            type: "string",
+            enum: ["invited", "active", "suspended", "revoked"],
+            example: "active"
+          },
+          createdAt: {
+            type: "string",
+            format: "date-time",
+            example: "2026-04-07T10:00:00.000Z"
+          }
+        }
+      },
+      AdminListResponse: {
+        type: "object",
+        properties: {
+          admins: {
+            type: "array",
+            items: {
+              $ref: "#/components/schemas/AdminAccountSummary"
+            }
+          }
+        }
+      },
+      MessageResponse: {
+        type: "object",
+        properties: {
+          message: {
+            type: "string",
+            example: "Password updated successfully"
+          }
+        }
+      },
       ErrorResponse: {
         type: "object",
         properties: {
@@ -277,7 +340,7 @@ export const swaggerSpec = {
         tags: ["Admin Auth"],
         summary: "Admin login (separate from customer login)",
         description:
-          "Authenticates the embedded super admin with username, email address, or phone number and returns an admin JWT.",
+          "Authenticates an active admin account with username, email address, or phone number and returns an admin JWT.",
         requestBody: {
           required: true,
           content: {
@@ -385,11 +448,110 @@ export const swaggerSpec = {
             }
           },
           "409": {
-            description: "Invite conflict for existing user or pending invite",
+            description: "Invite conflict for existing user, existing admin, or pending invite",
             content: {
               "application/json": {
                 schema: {
                   $ref: "#/components/schemas/ConflictErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/auth/change_password": {
+      put: {
+        tags: ["Admin Auth"],
+        summary: "Admin password change",
+        description: "Allows an authenticated admin to change their own password.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/AdminChangePasswordRequest"
+              }
+            }
+          }
+        },
+        responses: {
+          "200": {
+            description: "Password updated successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid request body or password change request",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/auth/admins": {
+      get: {
+        tags: ["Admin Auth"],
+        summary: "List all admin accounts",
+        description:
+          "Returns the current admin directory and is restricted to authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        responses: {
+          "200": {
+            description: "Admin accounts retrieved successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/AdminListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to list admin accounts",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
                 }
               }
             }

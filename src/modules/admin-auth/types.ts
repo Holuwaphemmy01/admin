@@ -1,6 +1,7 @@
-export const ADMIN_ROLES = ["super_admin", "support", "finance"] as const;
+import { AdminRole, AdminStatus } from "../admin/types";
 
-export type AdminRole = (typeof ADMIN_ROLES)[number];
+export { ADMIN_ROLES, ADMIN_STATUSES } from "../admin/types";
+export type { AdminRole, AdminStatus } from "../admin/types";
 
 export interface AdminLoginRequestBody {
   username: string;
@@ -35,6 +36,19 @@ export interface AdminInviteResponse {
 
 export type AdminInviteStatus = "pending" | "accepted" | "expired" | "revoked";
 
+export interface AdminChangePasswordRequestBody {
+  currentPassword: string;
+  newPassword: string;
+}
+
+export interface AdminChangePasswordRequest extends AdminChangePasswordRequestBody {
+  admin: AuthenticatedAdmin;
+}
+
+export interface AdminChangePasswordResponse {
+  message: string;
+}
+
 export interface AuthenticatedAdmin {
   sub: string;
   scope: "admin";
@@ -42,6 +56,7 @@ export interface AuthenticatedAdmin {
   username: string;
   emailAddress: string;
   userTypeId: number;
+  passwordVersion: number;
 }
 
 export interface AdminJwtPayload extends AuthenticatedAdmin {
@@ -70,9 +85,7 @@ export interface AdminAuthConfig {
     expiresIn: string;
     issuer: "brickpine-admin";
     audience: "admin-api";
-    subject: string;
     scope: "admin";
-    role: AdminRole;
   };
   invite: {
     frontendUrl: string;

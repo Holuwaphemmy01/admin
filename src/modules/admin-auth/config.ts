@@ -63,16 +63,17 @@ function validateJwtSettings(secret: string, expiresIn: string): void {
       {
         scope: "admin",
         role: "super_admin",
-        username: "validation",
+        username: "validation-admin",
         emailAddress: "validation@example.com",
-        userTypeId: 4
+        userTypeId: 4,
+        passwordVersion: 1
       },
       secret,
       {
         algorithm: "HS256",
         issuer: "brickpine-admin",
         audience: "admin-api",
-        subject: "env:super-admin",
+        subject: "validation-admin-id",
         expiresIn: expiresIn as jwt.SignOptions["expiresIn"]
       }
     );
@@ -117,9 +118,7 @@ export function loadAdminAuthConfig(env: NodeJS.ProcessEnv = process.env): Admin
       expiresIn,
       issuer: "brickpine-admin",
       audience: "admin-api",
-      subject: "env:super-admin",
-      scope: "admin",
-      role: "super_admin"
+      scope: "admin"
     },
     invite: {
       frontendUrl,

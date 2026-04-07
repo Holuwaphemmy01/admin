@@ -3,6 +3,7 @@ import dotenv from "dotenv";
 import app from "./app";
 import { checkDatabaseConnection } from "./config/db";
 import { getAdminAuthConfig } from "./modules/admin-auth/config";
+import { ensureSuperAdminSeeded } from "./modules/admin-auth/service";
 
 dotenv.config();
 
@@ -16,7 +17,9 @@ async function startServer(): Promise<void> {
   const database = await checkDatabaseConnection();
 
   if (database.configured && database.connected) {
+    await ensureSuperAdminSeeded();
     console.log(`PostgreSQL connected successfully at ${database.serverTime.toISOString()}`);
+    console.log(`Super admin ensured for "${adminConfig.superAdmin.emailAddress}"`);
   } else if (database.configured) {
     console.error(`PostgreSQL connection failed: ${database.message}`);
   } else {

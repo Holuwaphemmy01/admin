@@ -1,6 +1,6 @@
 # BrickPine Admin API Starter
 
-This is a TypeScript Node.js and Express starter for the BrickPine admin API with PostgreSQL connectivity, separate admin authentication flow, and a Jest-based test setup.
+This is a TypeScript Node.js and Express starter for the BrickPine admin API with PostgreSQL connectivity, DB-backed admin authentication, and a Jest-based test setup.
 
 ## Setup
 
@@ -46,7 +46,7 @@ This is a TypeScript Node.js and Express starter for the BrickPine admin API wit
 - `ADMIN_SUPER_USERNAME`: Login username for the embedded super admin.
 - `ADMIN_SUPER_EMAIL`: Email identifier for the embedded super admin.
 - `ADMIN_SUPER_PHONE`: Phone identifier for the embedded super admin.
-- `ADMIN_SUPER_PASSWORD`: Plain-text password for the embedded super admin in v1.
+- `ADMIN_SUPER_PASSWORD`: Bootstrap password used only to seed the initial super admin credential.
 - `ADMIN_SUPER_FIRST_NAME`: First name returned in the admin login response.
 - `ADMIN_SUPER_LAST_NAME`: Last name returned in the admin login response.
 - `ADMIN_SUPER_USER_TYPE_ID`: Integer role type ID returned in the admin login response.
@@ -59,14 +59,15 @@ This is a TypeScript Node.js and Express starter for the BrickPine admin API wit
 
 - `GET /`: Basic welcome route.
 - `GET /api/health`: Shows API health and tries to connect to PostgreSQL when `DATABASE_URL` is set.
-- `POST /admin/auth/login`: Logs in the embedded super admin with a separate admin JWT.
+- `POST /admin/auth/login`: Logs in an active admin account with a separate admin JWT.
 - `POST /admin/auth/invite`: Creates a pending admin invite and queues an invite email for a super admin.
+- `PUT /admin/auth/change_password`: Lets an authenticated admin change their own password.
 - `GET /docs`: Swagger UI for the API documentation.
 - `GET /docs.json`: Raw OpenAPI JSON specification.
 
 ## Database migration
 
-Run the SQL migration in `migrations/001_create_admin_invites.sql` against your PostgreSQL database before using `POST /admin/auth/invite`.
+Run the SQL migrations in `migrations/001_create_admin_invites.sql` and `migrations/002_create_admin_auth_tables.sql` against your PostgreSQL database before using the admin auth endpoints.
 
 ## Testing
 

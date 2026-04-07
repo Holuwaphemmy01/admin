@@ -1,21 +1,32 @@
 import { AddressInfo } from "node:net";
 
 import { expect, test } from "@jest/globals";
-import express from "express";
+import express, { RequestHandler } from "express";
 import jwt from "jsonwebtoken";
 import { QueryResult, QueryResultRow } from "pg";
 
 import app from "../../src/app";
 import { clearAdminAuthConfigCache, loadAdminAuthConfig } from "../../src/modules/admin-auth/config";
-import { authenticateAdmin } from "../../src/modules/admin-auth/middleware";
+import { createAuthenticateAdminMiddleware } from "../../src/modules/admin-auth/middleware";
 import { createAdminAuthRouter } from "../../src/modules/admin-auth/routes";
 import {
+  AdminAuthenticationError,
   AdminInviteConflictError,
+  AdminPasswordChangeError,
+  authenticateAdminToken,
+  changeAdminPassword,
   createAdminInvite,
+  ensureSuperAdminSeeded,
   loginAdmin,
+  signAdminToken,
   verifyAdminToken
 } from "../../src/modules/admin-auth/service";
-import { AdminAuthConfig, AdminInviteRequest, AdminRole } from "../../src/modules/admin-auth/types";
+import {
+  AdminAuthConfig,
+  AdminInviteRequest,
+  AdminRole,
+  AuthenticatedAdmin
+} from "../../src/modules/admin-auth/types";
 
 const testEnv: NodeJS.ProcessEnv = {
   ADMIN_SUPER_USERNAME: "BrickPine-Admin",
@@ -99,24 +110,60 @@ function createTransactionClient(
   };
 }
 
-function signTestAdminToken(config: AdminAuthConfig, role: AdminRole = "super_admin"): string {
-  return jwt.sign(
-    {
-      scope: "admin",
-      role,
-      username: config.superAdmin.username,
-      emailAddress: config.superAdmin.emailAddress,
-      userTypeId: config.superAdmin.userTypeId
-    },
-    config.jwt.secret,
-    {
-      algorithm: "HS256",
-      issuer: config.jwt.issuer,
-      audience: config.jwt.audience,
-      subject: config.jwt.subject,
-      expiresIn: "1d"
-    }
-  );
+function createQueryFunction(
+  queryImplementation: (text: string, params?: unknown[]) => Promise<QueryResult<QueryResultRow>>
+) {
+  return async <T extends QueryResultRow>(
+    text: string,
+    params?: unknown[]
+  ): Promise<QueryResult<T>> => {
+    const result = await queryImplementation(text, params);
+
+    return result as unknown as QueryResult<T>;
+  };
+}
+
+function createBootstrappedSuperAdminRunInTransaction(superAdminId = "seeded-super-admin-id") {
+  return async <T>(operation: (client: { query: never }) => Promise<T>) =>
+    operation(
+      createTransactionClient(async (text) => {
+        if (text.includes('SELECT id FROM public.admin_users WHERE "emailAddress" = $1')) {
+          return createQueryResult([{ id: superAdminId }]);
+        }
+
+        if (
+          text.includes(
+            'SELECT "adminUserId" FROM public.admin_credentials WHERE "adminUserId" = $1'
+          )
+        ) {
+          return createQueryResult([{ adminUserId: superAdminId }]);
+        }
+
+        return createQueryResult([]);
+      }) as never
+    );
+}
+
+function createAuthenticatedAdmin(
+  overrides: Partial<AuthenticatedAdmin> = {}
+): AuthenticatedAdmin {
+  return {
+    sub: "admin-user-id",
+    scope: "admin",
+    role: "super_admin",
+    username: "brickpine-admin",
+    emailAddress: "admin@brickpine.local",
+    userTypeId: 4,
+    passwordVersion: 1,
+    ...overrides
+  };
+}
+
+function allowAuthenticatedAdmin(admin: AuthenticatedAdmin = createAuthenticatedAdmin()): RequestHandler {
+  return (request, _response, next) => {
+    request.admin = admin;
+    next();
+  };
 }
 
 function createCustomerLikeToken(config: AdminAuthConfig): string {
@@ -167,29 +214,112 @@ test("loadAdminAuthConfig fails fast for missing required admin auth values", ()
   ).toThrow(/ADMIN_INVITE_FRONTEND_URL/);
 });
 
-test("loginAdmin accepts username, email, and phone and always returns the canonical admin profile", () => {
+test("ensureSuperAdminSeeded inserts the super admin user and credentials when missing", async () => {
   const config = loadAdminAuthConfig(testEnv);
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
 
-  const usernameLogin = loginAdmin(
+  await ensureSuperAdminSeeded({
+    config,
+    uuidFactory: () => "seeded-admin-id",
+    nowFactory: () => new Date("2026-04-07T10:00:00.000Z"),
+    passwordHasher: async (value, rounds) => `hashed:${value}:${rounds}`,
+    runInTransaction: async (operation) =>
+      operation(
+        createTransactionClient(async (text, params) => {
+          executedQueries.push({ text, params });
+
+          if (text.includes('SELECT id FROM public.admin_users WHERE "emailAddress" = $1')) {
+            return createQueryResult([]);
+          }
+
+          if (
+            text.includes(
+              'SELECT "adminUserId" FROM public.admin_credentials WHERE "adminUserId" = $1'
+            )
+          ) {
+            return createQueryResult([]);
+          }
+
+          return createQueryResult([]);
+        })
+      )
+  });
+
+  expect(executedQueries).toHaveLength(4);
+  expect(executedQueries[1]?.text).toContain("INSERT INTO public.admin_users");
+  expect(executedQueries[3]?.text).toContain("INSERT INTO public.admin_credentials");
+  expect(executedQueries[1]?.params?.[0]).toBe("seeded-admin-id");
+  expect(executedQueries[1]?.params?.[6]).toBe("super_admin");
+  expect(executedQueries[1]?.params?.[8]).toBe("active");
+  expect(executedQueries[3]?.params?.[1]).toBe("hashed:change-me:12");
+});
+
+test("loginAdmin accepts username, email, and phone for active DB-backed admins", async () => {
+  const config = loadAdminAuthConfig(testEnv);
+  const adminRow = {
+    id: "admin-user-id",
+    username: "BrickPine-Admin",
+    emailAddress: "admin@brickpine.local",
+    phoneNumber: "+2348012345678",
+    firstName: "BrickPine",
+    lastName: "SuperAdmin",
+    role: "super_admin" as AdminRole,
+    userTypeId: 4,
+    status: "active",
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    passwordHash: "stored-hash",
+    passwordVersion: 3
+  };
+
+  const queryFn = async <T extends QueryResultRow>(text: string, params?: unknown[]) => {
+    expect(text).toContain("au.status = 'active'");
+
+    if (
+      params?.[0] === "brickpine-admin" ||
+      params?.[0] === "admin@brickpine.local" ||
+      params?.[0] === "+2348012345678"
+    ) {
+      return createQueryResult([adminRow]) as unknown as QueryResult<T>;
+    }
+
+    return createQueryResult([]) as unknown as QueryResult<T>;
+  };
+
+  const usernameLogin = await loginAdmin(
     {
       username: " brickpine-admin ",
       password: "change-me"
     },
-    config
+    {
+      config,
+      queryFn,
+      runInTransaction: createBootstrappedSuperAdminRunInTransaction(),
+      passwordComparer: async () => true
+    }
   );
-  const emailLogin = loginAdmin(
+  const emailLogin = await loginAdmin(
     {
       username: "ADMIN@BRICKPINE.LOCAL",
       password: "change-me"
     },
-    config
+    {
+      config,
+      queryFn,
+      runInTransaction: createBootstrappedSuperAdminRunInTransaction(),
+      passwordComparer: async () => true
+    }
   );
-  const phoneLogin = loginAdmin(
+  const phoneLogin = await loginAdmin(
     {
       username: "(+234) 801-234-5678",
       password: "change-me"
     },
-    config
+    {
+      config,
+      queryFn,
+      runInTransaction: createBootstrappedSuperAdminRunInTransaction(),
+      passwordComparer: async () => true
+    }
   );
 
   expect(usernameLogin.username).toBe("BrickPine-Admin");
@@ -201,56 +331,272 @@ test("loginAdmin accepts username, email, and phone and always returns the canon
 
   const payload = verifyAdminToken(usernameLogin.token, config);
 
-  expect(payload.sub).toBe("env:super-admin");
+  expect(payload.sub).toBe("admin-user-id");
   expect(payload.scope).toBe("admin");
   expect(payload.role).toBe("super_admin");
   expect(payload.username).toBe("BrickPine-Admin");
   expect(payload.emailAddress).toBe("admin@brickpine.local");
   expect(payload.userTypeId).toBe(4);
+  expect(payload.passwordVersion).toBe(3);
 });
 
-test("loginAdmin rejects unknown identifiers and wrong passwords with a generic auth error", () => {
+test("loginAdmin rejects unknown identifiers and wrong passwords with a generic auth error", async () => {
   const config = loadAdminAuthConfig(testEnv);
 
-  expect(() =>
+  await expect(
     loginAdmin(
       {
         username: "unknown-admin",
         password: "change-me"
       },
-      config
+      {
+        config,
+        queryFn: createQueryFunction(async () => createQueryResult([])),
+        runInTransaction: createBootstrappedSuperAdminRunInTransaction()
+      }
     )
-  ).toThrow(/Invalid admin credentials/);
+  ).rejects.toThrow("Invalid admin credentials");
 
-  expect(() =>
+  await expect(
     loginAdmin(
       {
         username: "brickpine-admin",
         password: "wrong-password"
       },
-      config
+      {
+        config,
+        queryFn: createQueryFunction(async () =>
+          createQueryResult([
+            {
+              id: "admin-user-id",
+              username: "BrickPine-Admin",
+              emailAddress: "admin@brickpine.local",
+              phoneNumber: "+2348012345678",
+              firstName: "BrickPine",
+              lastName: "SuperAdmin",
+              role: "super_admin" as AdminRole,
+              userTypeId: 4,
+              status: "active",
+              createdAt: new Date("2026-01-01T00:00:00.000Z"),
+              passwordHash: "stored-hash",
+              passwordVersion: 1
+            }
+          ])
+        ),
+        runInTransaction: createBootstrappedSuperAdminRunInTransaction(),
+        passwordComparer: async () => false
+      }
     )
-  ).toThrow(/Invalid admin credentials/);
+  ).rejects.toThrow("Invalid admin credentials");
+});
+
+test("authenticateAdminToken accepts valid tokens and rejects customer-like tokens", async () => {
+  const config = loadAdminAuthConfig(testEnv);
+  const validToken = signAdminToken(createAuthenticatedAdmin({ passwordVersion: 2 }), config);
+
+  const authenticatedAdmin = await authenticateAdminToken(validToken, {
+    config,
+    queryFn: createQueryFunction(async () =>
+      createQueryResult([
+        {
+          id: "admin-user-id",
+          username: "brickpine-admin",
+          emailAddress: "admin@brickpine.local",
+          firstName: "BrickPine",
+          lastName: "SuperAdmin",
+          role: "super_admin" as AdminRole,
+          userTypeId: 4,
+          status: "active",
+          createdAt: new Date("2026-01-01T00:00:00.000Z"),
+          passwordVersion: 2
+        }
+      ])
+    )
+  });
+
+  expect(authenticatedAdmin.username).toBe("brickpine-admin");
+
+  await expect(
+    authenticateAdminToken(createCustomerLikeToken(config), {
+      config,
+      queryFn: createQueryFunction(async () => createQueryResult([]))
+    })
+  ).rejects.toThrow();
+});
+
+test("authenticateAdminToken rejects suspended admins and stale password-version tokens", async () => {
+  const config = loadAdminAuthConfig(testEnv);
+  const staleToken = signAdminToken(createAuthenticatedAdmin({ passwordVersion: 1 }), config);
+  const suspendedToken = signAdminToken(createAuthenticatedAdmin({ passwordVersion: 2 }), config);
+
+  await expect(
+    authenticateAdminToken(staleToken, {
+      config,
+      queryFn: createQueryFunction(async () =>
+        createQueryResult([
+          {
+            id: "admin-user-id",
+            username: "brickpine-admin",
+            emailAddress: "admin@brickpine.local",
+            firstName: "BrickPine",
+            lastName: "SuperAdmin",
+            role: "super_admin" as AdminRole,
+            userTypeId: 4,
+            status: "active",
+            createdAt: new Date("2026-01-01T00:00:00.000Z"),
+            passwordVersion: 2
+          }
+        ])
+      )
+    })
+  ).rejects.toThrow();
+
+  await expect(
+    authenticateAdminToken(suspendedToken, {
+      config,
+      queryFn: createQueryFunction(async () =>
+        createQueryResult([
+          {
+            id: "admin-user-id",
+            username: "brickpine-admin",
+            emailAddress: "admin@brickpine.local",
+            firstName: "BrickPine",
+            lastName: "SuperAdmin",
+            role: "super_admin" as AdminRole,
+            userTypeId: 4,
+            status: "suspended",
+            createdAt: new Date("2026-01-01T00:00:00.000Z"),
+            passwordVersion: 2
+          }
+        ])
+      )
+    })
+  ).rejects.toThrow();
+});
+
+test("changeAdminPassword updates the password hash and increments password version", async () => {
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+  const admin = createAuthenticatedAdmin();
+
+  const response = await changeAdminPassword(
+    {
+      currentPassword: "change-me",
+      newPassword: "new-password-123",
+      admin
+    },
+    {
+      nowFactory: () => new Date("2026-04-07T12:00:00.000Z"),
+      passwordComparer: async () => true,
+      passwordHasher: async (value, rounds) => `hashed:${value}:${rounds}`,
+      runInTransaction: async (operation) =>
+        operation(
+          createTransactionClient(async (text, params) => {
+            executedQueries.push({ text, params });
+
+            if (text.includes("FOR UPDATE OF ac")) {
+              return createQueryResult([
+                {
+                  id: admin.sub,
+                  username: admin.username,
+                  emailAddress: admin.emailAddress,
+                  phoneNumber: "+2348012345678",
+                  firstName: "BrickPine",
+                  lastName: "SuperAdmin",
+                  role: admin.role,
+                  userTypeId: admin.userTypeId,
+                  status: "active",
+                  createdAt: new Date("2026-01-01T00:00:00.000Z"),
+                  passwordHash: "old-hash",
+                  passwordVersion: 1
+                }
+              ]);
+            }
+
+            return createQueryResult([]);
+          })
+        )
+    }
+  );
+
+  expect(response).toEqual({
+    message: "Password updated successfully"
+  });
+  expect(executedQueries[1]?.text).toContain("UPDATE public.admin_credentials");
+  expect(executedQueries[1]?.params?.[0]).toBe("hashed:new-password-123:12");
+  expect(executedQueries[1]?.params?.[2]).toBe("admin-user-id");
+});
+
+test("changeAdminPassword rejects invalid or incorrect password change requests", async () => {
+  const admin = createAuthenticatedAdmin();
+
+  await expect(
+    changeAdminPassword({
+      currentPassword: "same-password",
+      newPassword: "same-password",
+      admin
+    })
+  ).rejects.toThrow("newPassword must be different from currentPassword");
+
+  await expect(
+    changeAdminPassword({
+      currentPassword: "change-me",
+      newPassword: "short",
+      admin
+    })
+  ).rejects.toThrow("newPassword must be between 8 and 72 characters");
+
+  await expect(
+    changeAdminPassword(
+      {
+        currentPassword: "wrong-password",
+        newPassword: "new-password-123",
+        admin
+      },
+      {
+        passwordComparer: async () => false,
+        runInTransaction: async (operation) =>
+          operation(
+            createTransactionClient(async (text) => {
+              if (text.includes("FOR UPDATE OF ac")) {
+                return createQueryResult([
+                  {
+                    id: admin.sub,
+                    username: admin.username,
+                    emailAddress: admin.emailAddress,
+                    phoneNumber: "+2348012345678",
+                    firstName: "BrickPine",
+                    lastName: "SuperAdmin",
+                    role: admin.role,
+                    userTypeId: admin.userTypeId,
+                    status: "active",
+                    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+                    passwordHash: "old-hash",
+                    passwordVersion: 1
+                  }
+                ]);
+              }
+
+              return createQueryResult([]);
+            })
+          )
+      }
+    )
+  ).rejects.toThrow("currentPassword is incorrect");
 });
 
 test("createAdminInvite stores a pending invite and queues an admin-invite email", async () => {
   const config = loadAdminAuthConfig(testEnv);
   const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
-  const createdAt = new Date("2026-04-06T12:00:00.000Z");
+  const createdAt = new Date("2026-04-07T12:00:00.000Z");
 
   const inviteRequest: AdminInviteRequest = {
     email: " New.Admin@BrickPine.Local ",
     role: "support",
     firstName: "  Jane ",
     lastName: " Doe  ",
-    invitedByAdmin: {
-      sub: "env:super-admin",
-      scope: "admin",
-      role: "super_admin",
-      username: config.superAdmin.username,
-      emailAddress: config.superAdmin.emailAddress,
-      userTypeId: config.superAdmin.userTypeId
-    }
+    invitedByAdmin: createAuthenticatedAdmin({
+      username: "BrickPine-Admin"
+    })
   };
 
   const response = await createAdminInvite(inviteRequest, {
@@ -268,6 +614,10 @@ test("createAdminInvite stores a pending invite and queues an admin-invite email
             return createQueryResult([]);
           }
 
+          if (text.includes("FROM public.admin_users")) {
+            return createQueryResult([]);
+          }
+
           if (text.includes("FROM public.admin_invites")) {
             return createQueryResult([]);
           }
@@ -281,50 +631,31 @@ test("createAdminInvite stores a pending invite and queues an admin-invite email
     message: "Invite sent successfully",
     inviteId: "8b8a2c88-c4f4-4a9d-b6d0-26fcb6d82770"
   });
-  expect(executedQueries).toHaveLength(4);
+  expect(executedQueries).toHaveLength(5);
 
-  const inviteInsertParams = executedQueries[2]?.params ?? [];
-  const emailInsertParams = executedQueries[3]?.params ?? [];
+  const inviteInsertParams = executedQueries[3]?.params ?? [];
+  const emailInsertParams = executedQueries[4]?.params ?? [];
 
-  expect(inviteInsertParams[0]).toBe("8b8a2c88-c4f4-4a9d-b6d0-26fcb6d82770");
   expect(inviteInsertParams[1]).toBe("new.admin@brickpine.local");
   expect(inviteInsertParams[2]).toBe("support");
-  expect(inviteInsertParams[3]).toBe("Jane");
-  expect(inviteInsertParams[4]).toBe("Doe");
-  expect(inviteInsertParams[5]).toBe("pending");
   expect(inviteInsertParams[6]).toBe("hashed-invite-token");
-  expect(String(inviteInsertParams[6])).not.toContain("raw-invite-token");
-  expect((inviteInsertParams[7] as Date).toISOString()).toBe("2026-04-13T12:00:00.000Z");
-  expect(inviteInsertParams[8]).toBe("BrickPine-Admin");
-  expect(inviteInsertParams[9]).toBe("admin@brickpine.local");
-
+  expect((inviteInsertParams[7] as Date).toISOString()).toBe("2026-04-14T12:00:00.000Z");
   expect(emailInsertParams[0]).toBe("admin@brickpine.local");
-  expect(emailInsertParams[1]).toBe("new.admin@brickpine.local");
-  expect(emailInsertParams[2]).toBe("BrickPine Admin Invite - Support");
-  expect(String(emailInsertParams[3])).toMatch(/inviteId=8b8a2c88-c4f4-4a9d-b6d0-26fcb6d82770/);
-  expect(String(emailInsertParams[3])).toMatch(/token=raw-invite-token/);
   expect(emailInsertParams[4]).toBe("admin-invite");
-  expect(emailInsertParams[5]).toBe("1");
+  expect(String(emailInsertParams[3])).toMatch(/token=raw-invite-token/);
 });
 
-test("createAdminInvite rejects emails that already belong to an existing platform user", async () => {
+test("createAdminInvite rejects emails that already belong to an existing platform user or admin", async () => {
   const config = loadAdminAuthConfig(testEnv);
 
   await expect(
     createAdminInvite(
       {
-        email: "existing@brickpine.local",
+        email: "existing-user@brickpine.local",
         role: "support",
         firstName: "Existing",
         lastName: "User",
-        invitedByAdmin: {
-          sub: "env:super-admin",
-          scope: "admin",
-          role: "super_admin",
-          username: config.superAdmin.username,
-          emailAddress: config.superAdmin.emailAddress,
-          userTypeId: config.superAdmin.userTypeId
-        }
+        invitedByAdmin: createAuthenticatedAdmin()
       },
       {
         config,
@@ -341,6 +672,35 @@ test("createAdminInvite rejects emails that already belong to an existing platfo
       }
     )
   ).rejects.toThrow("This email address already belongs to an existing user");
+
+  await expect(
+    createAdminInvite(
+      {
+        email: "existing-admin@brickpine.local",
+        role: "support",
+        firstName: "Existing",
+        lastName: "Admin",
+        invitedByAdmin: createAuthenticatedAdmin()
+      },
+      {
+        config,
+        runInTransaction: async (operation) =>
+          operation(
+            createTransactionClient(async (text) => {
+              if (text.includes('FROM public."user"')) {
+                return createQueryResult([]);
+              }
+
+              if (text.includes("FROM public.admin_users")) {
+                return createQueryResult([{ id: "admin-user-id" }]);
+              }
+
+              return createQueryResult([]);
+            })
+          )
+      }
+    )
+  ).rejects.toThrow("This email address already belongs to an existing admin");
 });
 
 test("createAdminInvite rejects duplicate pending invites for the same email address", async () => {
@@ -353,14 +713,7 @@ test("createAdminInvite rejects duplicate pending invites for the same email add
         role: "finance",
         firstName: "Pending",
         lastName: "Invite",
-        invitedByAdmin: {
-          sub: "env:super-admin",
-          scope: "admin",
-          role: "super_admin",
-          username: config.superAdmin.username,
-          emailAddress: config.superAdmin.emailAddress,
-          userTypeId: config.superAdmin.userTypeId
-        }
+        invitedByAdmin: createAuthenticatedAdmin()
       },
       {
         config,
@@ -368,6 +721,10 @@ test("createAdminInvite rejects duplicate pending invites for the same email add
           operation(
             createTransactionClient(async (text) => {
               if (text.includes('FROM public."user"')) {
+                return createQueryResult([]);
+              }
+
+              if (text.includes("FROM public.admin_users")) {
                 return createQueryResult([]);
               }
 
@@ -384,11 +741,29 @@ test("createAdminInvite rejects duplicate pending invites for the same email add
 });
 
 test("POST /admin/auth/login validates request body, returns 401 for bad credentials, and returns admin session data on success", async () => {
-  const previousEnv = applyTestEnv();
   const application = express();
 
   application.use(express.json());
-  application.use("/admin/auth", createAdminAuthRouter());
+  application.use(
+    "/admin/auth",
+    createAdminAuthRouter({
+      loginAdminHandler: async ({ username, password }) => {
+        if (password !== "change-me" || username === "unknown-admin") {
+          throw new AdminAuthenticationError();
+        }
+
+        return {
+          username: "BrickPine-Admin",
+          firstName: "BrickPine",
+          lastName: "SuperAdmin",
+          emailAddress: "admin@brickpine.local",
+          userTypeId: 4,
+          token: "admin-jwt-token",
+          createdAt: "2026-01-01T00:00:00.000Z"
+        };
+      }
+    })
+  );
 
   const server = await startTestServer(application);
 
@@ -412,7 +787,7 @@ test("POST /admin/auth/login validates request body, returns 401 for bad credent
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        username: "brickpine-admin",
+        username: "unknown-admin",
         password: "wrong-password"
       })
     });
@@ -439,91 +814,164 @@ test("POST /admin/auth/login validates request body, returns 401 for bad credent
     expect(payload.lastName).toBe("SuperAdmin");
     expect(payload.emailAddress).toBe("admin@brickpine.local");
     expect(payload.userTypeId).toBe(4);
-    expect(typeof payload.token).toBe("string");
+    expect(payload.token).toBe("admin-jwt-token");
   } finally {
     await server.close();
-    restoreEnv(previousEnv);
   }
 });
 
-test("POST /admin/auth/invite returns 401 when the admin token is missing", async () => {
-  const previousEnv = applyTestEnv();
+test("PUT /admin/auth/change_password returns 401 when the admin token is missing", async () => {
   const application = express();
 
   application.use(express.json());
-  application.use("/admin/auth", createAdminAuthRouter());
+  application.use(
+    "/admin/auth",
+    createAdminAuthRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
 
   const server = await startTestServer(application);
 
   try {
-    const response = await fetch(`${server.baseUrl}/admin/auth/invite`, {
-      method: "POST",
+    const response = await fetch(`${server.baseUrl}/admin/auth/change_password`, {
+      method: "PUT",
       headers: {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        email: "support-admin@brickpine.local",
-        role: "support",
-        firstName: "Support",
-        lastName: "Admin"
+        currentPassword: "change-me",
+        newPassword: "new-password-123"
       })
     });
 
     expect(response.status).toBe(401);
   } finally {
     await server.close();
-    restoreEnv(previousEnv);
   }
 });
 
-test("POST /admin/auth/invite rejects customer-like tokens with 401", async () => {
-  const previousEnv = applyTestEnv();
-  const config = loadAdminAuthConfig(process.env);
+test("PUT /admin/auth/change_password validates request body and returns success when the request is valid", async () => {
   const application = express();
 
   application.use(express.json());
-  application.use("/admin/auth", createAdminAuthRouter());
+  application.use(
+    "/admin/auth",
+    createAdminAuthRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      changeAdminPasswordHandler: async () => ({
+        message: "Password updated successfully"
+      })
+    })
+  );
 
   const server = await startTestServer(application);
 
   try {
-    const response = await fetch(`${server.baseUrl}/admin/auth/invite`, {
-      method: "POST",
+    let response = await fetch(`${server.baseUrl}/admin/auth/change_password`, {
+      method: "PUT",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${createCustomerLikeToken(config)}`
+        Authorization: "Bearer any-token"
       },
       body: JSON.stringify({
-        email: "support-admin@brickpine.local",
-        role: "support",
-        firstName: "Support",
-        lastName: "Admin"
+        currentPassword: "",
+        newPassword: "new-password-123"
       })
     });
 
-    expect(response.status).toBe(401);
+    expect(response.status).toBe(400);
+
+    response = await fetch(`${server.baseUrl}/admin/auth/change_password`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        currentPassword: "change-me",
+        newPassword: "new-password-123"
+      })
+    });
+
+    expect(response.status).toBe(200);
+
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    expect(payload.message).toBe("Password updated successfully");
   } finally {
     await server.close();
-    restoreEnv(previousEnv);
   }
 });
 
-test("POST /admin/auth/invite returns 403 for authenticated admins without the super_admin role", async () => {
-  const previousEnv = applyTestEnv();
-  const config = loadAdminAuthConfig(process.env);
+test("PUT /admin/auth/change_password returns 400 when the service rejects the password change", async () => {
   const application = express();
 
   application.use(express.json());
-  application.use("/admin/auth", createAdminAuthRouter());
+  application.use(
+    "/admin/auth",
+    createAdminAuthRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      changeAdminPasswordHandler: async () => {
+        throw new AdminPasswordChangeError("currentPassword is incorrect");
+      }
+    })
+  );
 
   const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/auth/change_password`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        currentPassword: "wrong-password",
+        newPassword: "new-password-123"
+      })
+    });
+
+    expect(response.status).toBe(400);
+
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    expect(payload.message).toBe("currentPassword is incorrect");
+  } finally {
+    await server.close();
+  }
+});
+
+test("POST /admin/auth/invite enforces admin auth, super-admin role, and conflict handling", async () => {
+  const forbiddenApplication = express();
+
+  forbiddenApplication.use(express.json());
+  forbiddenApplication.use(
+    "/admin/auth",
+    createAdminAuthRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "support"
+        })
+      ),
+      createAdminInviteHandler: async () => ({
+        message: "Invite sent successfully",
+        inviteId: "ignored"
+      })
+    })
+  );
+
+  let server = await startTestServer(forbiddenApplication);
 
   try {
     const response = await fetch(`${server.baseUrl}/admin/auth/invite`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${signTestAdminToken(config, "support")}`
+        Authorization: "Bearer any-token"
       },
       body: JSON.stringify({
         email: "support-admin@brickpine.local",
@@ -536,99 +984,17 @@ test("POST /admin/auth/invite returns 403 for authenticated admins without the s
     expect(response.status).toBe(403);
   } finally {
     await server.close();
-    restoreEnv(previousEnv);
   }
-});
 
-test("POST /admin/auth/invite validates email, role, and name fields before calling the service", async () => {
-  const previousEnv = applyTestEnv();
-  const config = loadAdminAuthConfig(process.env);
-  let inviteCallCount = 0;
-  const application = express();
+  const successApplication = express();
 
-  application.use(express.json());
-  application.use(
+  successApplication.use(express.json());
+  successApplication.use(
     "/admin/auth",
     createAdminAuthRouter({
-      createAdminInviteHandler: async () => {
-        inviteCallCount += 1;
-
-        return {
-          message: "Invite sent successfully",
-          inviteId: "should-not-run"
-        };
-      }
-    })
-  );
-
-  const server = await startTestServer(application);
-
-  try {
-    let response = await fetch(`${server.baseUrl}/admin/auth/invite`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${signTestAdminToken(config)}`
-      },
-      body: JSON.stringify({
-        email: "not-an-email",
-        role: "support",
-        firstName: "Support",
-        lastName: "Admin"
-      })
-    });
-
-    expect(response.status).toBe(400);
-
-    response = await fetch(`${server.baseUrl}/admin/auth/invite`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${signTestAdminToken(config)}`
-      },
-      body: JSON.stringify({
-        email: "support-admin@brickpine.local",
-        role: "operations",
-        firstName: "Support",
-        lastName: "Admin"
-      })
-    });
-
-    expect(response.status).toBe(400);
-
-    response = await fetch(`${server.baseUrl}/admin/auth/invite`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${signTestAdminToken(config)}`
-      },
-      body: JSON.stringify({
-        email: "support-admin@brickpine.local",
-        role: "support",
-        firstName: "Support"
-      })
-    });
-
-    expect(response.status).toBe(400);
-    expect(inviteCallCount).toBe(0);
-  } finally {
-    await server.close();
-    restoreEnv(previousEnv);
-  }
-});
-
-test("POST /admin/auth/invite returns 201 with the invite id when the request succeeds", async () => {
-  const previousEnv = applyTestEnv();
-  const config = loadAdminAuthConfig(process.env);
-  let invitedByUsername = "";
-  const application = express();
-
-  application.use(express.json());
-  application.use(
-    "/admin/auth",
-    createAdminAuthRouter({
-      createAdminInviteHandler: async (invite) => {
-        invitedByUsername = invite.invitedByAdmin.username;
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      createAdminInviteHandler: async ({ invitedByAdmin }) => {
+        expect(invitedByAdmin.username).toBe("brickpine-admin");
 
         return {
           message: "Invite sent successfully",
@@ -638,14 +1004,14 @@ test("POST /admin/auth/invite returns 201 with the invite id when the request su
     })
   );
 
-  const server = await startTestServer(application);
+  server = await startTestServer(successApplication);
 
   try {
     const response = await fetch(`${server.baseUrl}/admin/auth/invite`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${signTestAdminToken(config)}`
+        Authorization: "Bearer any-token"
       },
       body: JSON.stringify({
         email: "support-admin@brickpine.local",
@@ -659,38 +1025,32 @@ test("POST /admin/auth/invite returns 201 with the invite id when the request su
 
     const payload = (await response.json()) as Record<string, unknown>;
 
-    expect(payload.message).toBe("Invite sent successfully");
     expect(payload.inviteId).toBe("11111111-2222-3333-4444-555555555555");
-    expect(invitedByUsername).toBe("BrickPine-Admin");
   } finally {
     await server.close();
-    restoreEnv(previousEnv);
   }
-});
 
-test("POST /admin/auth/invite returns 409 when the invite conflicts with existing data", async () => {
-  const previousEnv = applyTestEnv();
-  const config = loadAdminAuthConfig(process.env);
-  const application = express();
+  const conflictApplication = express();
 
-  application.use(express.json());
-  application.use(
+  conflictApplication.use(express.json());
+  conflictApplication.use(
     "/admin/auth",
     createAdminAuthRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
       createAdminInviteHandler: async () => {
-        throw new AdminInviteConflictError("An admin invite is already pending for this email address");
+        throw new AdminInviteConflictError("This email address already belongs to an existing admin");
       }
     })
   );
 
-  const server = await startTestServer(application);
+  server = await startTestServer(conflictApplication);
 
   try {
     const response = await fetch(`${server.baseUrl}/admin/auth/invite`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${signTestAdminToken(config)}`
+        Authorization: "Bearer any-token"
       },
       body: JSON.stringify({
         email: "support-admin@brickpine.local",
@@ -703,50 +1063,11 @@ test("POST /admin/auth/invite returns 409 when the invite conflicts with existin
     expect(response.status).toBe(409);
   } finally {
     await server.close();
-    restoreEnv(previousEnv);
-  }
-});
-
-test("authenticateAdmin accepts valid admin tokens and rejects customer-like tokens", async () => {
-  const previousEnv = applyTestEnv();
-  const config = loadAdminAuthConfig(process.env);
-  const application = express();
-
-  application.get("/protected", authenticateAdmin, (request, response) => {
-    response.json({
-      username: request.admin?.username
-    });
-  });
-
-  const server = await startTestServer(application);
-
-  try {
-    let response = await fetch(`${server.baseUrl}/protected`, {
-      headers: {
-        Authorization: `Bearer ${signTestAdminToken(config)}`
-      }
-    });
-
-    expect(response.status).toBe(200);
-
-    const successPayload = (await response.json()) as Record<string, unknown>;
-
-    expect(successPayload.username).toBe("BrickPine-Admin");
-
-    response = await fetch(`${server.baseUrl}/protected`, {
-      headers: {
-        Authorization: `Bearer ${createCustomerLikeToken(config)}`
-      }
-    });
-
-    expect(response.status).toBe(401);
-  } finally {
-    await server.close();
-    restoreEnv(previousEnv);
   }
 });
 
 test("GET /docs.json exposes the swagger specification for the API", async () => {
+  const previousEnv = applyTestEnv();
   const server = await startTestServer(app);
 
   try {
@@ -762,8 +1083,11 @@ test("GET /docs.json exposes the swagger specification for the API", async () =>
     expect(payload.info?.title).toBe("BrickPine Admin API");
     expect(payload.paths?.["/admin/auth/login"]).toBeDefined();
     expect(payload.paths?.["/admin/auth/invite"]).toBeDefined();
+    expect(payload.paths?.["/admin/auth/change_password"]).toBeDefined();
+    expect(payload.paths?.["/admin/auth/admins"]).toBeDefined();
     expect(payload.paths?.["/api/health"]).toBeDefined();
   } finally {
     await server.close();
+    restoreEnv(previousEnv);
   }
 });

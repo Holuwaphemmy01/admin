@@ -1,7 +1,7 @@
-import { NextFunction, Request, Response } from "express";
+import { NextFunction, Request, RequestHandler, Response } from "express";
 
 import { AdminRole, AuthenticatedAdmin } from "./types";
-import { verifyAdminToken } from "./service";
+import { authenticateAdminToken } from "./service";
 
 declare global {
   namespace Express {
@@ -9,6 +9,10 @@ declare global {
       admin?: AuthenticatedAdmin;
     }
   }
+}
+
+interface AuthenticateAdminMiddlewareDependencies {
+  authenticateAdminTokenHandler?: typeof authenticateAdminToken;
 }
 
 function getBearerToken(request: Request): string | null {
@@ -27,28 +31,37 @@ function getBearerToken(request: Request): string | null {
   return token;
 }
 
-export function authenticateAdmin(request: Request, response: Response, next: NextFunction): void {
-  const token = getBearerToken(request);
+export function createAuthenticateAdminMiddleware(
+  dependencies: AuthenticateAdminMiddlewareDependencies = {}
+): RequestHandler {
+  const authenticateAdminTokenHandler =
+    dependencies.authenticateAdminTokenHandler ?? authenticateAdminToken;
 
-  if (!token) {
-    response.status(401).json({
-      message: "Unauthorized admin access"
-    });
+  return async (request: Request, response: Response, next: NextFunction): Promise<void> => {
+    const token = getBearerToken(request);
 
-    return;
-  }
+    if (!token) {
+      response.status(401).json({
+        message: "Unauthorized admin access"
+      });
 
-  try {
-    request.admin = verifyAdminToken(token);
-    next();
-  } catch {
-    console.warn("Admin token verification failed.");
+      return;
+    }
 
-    response.status(401).json({
-      message: "Unauthorized admin access"
-    });
-  }
+    try {
+      request.admin = await authenticateAdminTokenHandler(token);
+      next();
+    } catch {
+      console.warn("Admin token verification failed.");
+
+      response.status(401).json({
+        message: "Unauthorized admin access"
+      });
+    }
+  };
 }
+
+export const authenticateAdmin = createAuthenticateAdminMiddleware();
 
 export function requireAdminRole(role: AdminRole) {
   return (request: Request, response: Response, next: NextFunction): void => {

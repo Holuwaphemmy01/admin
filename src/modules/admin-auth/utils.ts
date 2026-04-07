@@ -1,4 +1,8 @@
-import { ADMIN_ROLES, AdminRole } from "./types";
+import {
+  ADMIN_PASSWORD_MAX_LENGTH,
+  ADMIN_PASSWORD_MIN_LENGTH
+} from "./utils.constants";
+import { ADMIN_ROLES, AdminRole } from "../admin/types";
 
 export function normalizeCredentialValue(value: string): string {
   return value.trim();
@@ -47,4 +51,18 @@ export function formatAdminRole(role: AdminRole): string {
     .split("_")
     .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
     .join(" ");
+}
+
+export function isValidAdminPassword(value: string): boolean {
+  return value.length >= ADMIN_PASSWORD_MIN_LENGTH && value.length <= ADMIN_PASSWORD_MAX_LENGTH;
+}
+
+export function resolveAdminUsername(username: string | null, emailAddress: string): string {
+  if (typeof username !== "string") {
+    return emailAddress;
+  }
+
+  const normalizedUsername = normalizeCredentialValue(username);
+
+  return normalizedUsername === "" ? emailAddress : normalizedUsername;
 }

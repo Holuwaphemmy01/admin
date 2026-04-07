@@ -5,6 +5,8 @@ import {
   AdminAuthenticationError,
   AdminInviteConflictError,
   AdminInviteValidationError,
+  AdminPasswordChangeError,
+  changeAdminPassword,
   createAdminInvite,
   loginAdmin
 } from "./service";
@@ -13,6 +15,7 @@ import { isAdminRole, isValidEmailAddress } from "./utils";
 interface AdminAuthRouterDependencies {
   loginAdminHandler?: typeof loginAdmin;
   createAdminInviteHandler?: typeof createAdminInvite;
+  changeAdminPasswordHandler?: typeof changeAdminPassword;
   authenticateAdminMiddleware?: RequestHandler;
   requireSuperAdminMiddleware?: RequestHandler;
 }
@@ -27,12 +30,14 @@ export function createAdminAuthRouter(
   const adminAuthRouter = Router();
   const loginAdminHandler = dependencies.loginAdminHandler ?? loginAdmin;
   const createAdminInviteHandler = dependencies.createAdminInviteHandler ?? createAdminInvite;
+  const changeAdminPasswordHandler =
+    dependencies.changeAdminPasswordHandler ?? changeAdminPassword;
   const authenticateAdminMiddleware =
     dependencies.authenticateAdminMiddleware ?? authenticateAdmin;
   const requireSuperAdminMiddleware =
     dependencies.requireSuperAdminMiddleware ?? requireAdminRole("super_admin");
 
-  adminAuthRouter.post("/login", (request: Request, response: Response) => {
+  adminAuthRouter.post("/login", async (request: Request, response: Response, next) => {
     const { username, password } = request.body ?? {};
 
     if (!isValidCredentialField(username) || !isValidCredentialField(password)) {
@@ -44,7 +49,7 @@ export function createAdminAuthRouter(
     }
 
     try {
-      const adminSession = loginAdminHandler({
+      const adminSession = await loginAdminHandler({
         username,
         password
       });
@@ -63,7 +68,7 @@ export function createAdminAuthRouter(
         return;
       }
 
-      throw error;
+      next(error);
     }
   });
 
@@ -138,6 +143,54 @@ export function createAdminAuthRouter(
           console.warn(`Admin invite conflict for "${email.trim().toLowerCase()}".`);
 
           response.status(409).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
+
+  adminAuthRouter.put(
+    "/change_password",
+    authenticateAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      const { currentPassword, newPassword } = request.body ?? {};
+
+      if (!isValidCredentialField(currentPassword) || !isValidCredentialField(newPassword)) {
+        response.status(400).json({
+          message: "currentPassword and newPassword are required and must be non-empty strings"
+        });
+
+        return;
+      }
+
+      if (!request.admin) {
+        response.status(401).json({
+          message: "Unauthorized admin access"
+        });
+
+        return;
+      }
+
+      try {
+        const passwordChangeResponse = await changeAdminPasswordHandler({
+          currentPassword,
+          newPassword,
+          admin: request.admin
+        });
+
+        console.info(`Admin password updated for "${request.admin.username}".`);
+
+        response.json(passwordChangeResponse);
+      } catch (error) {
+        if (error instanceof AdminPasswordChangeError) {
+          console.warn(`Admin password change rejected for "${request.admin.username}".`);
+
+          response.status(400).json({
             message: error.message
           });
 
