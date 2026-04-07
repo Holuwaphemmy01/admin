@@ -1,6 +1,6 @@
 import { NextFunction, Request, Response } from "express";
 
-import { AuthenticatedAdmin } from "./types";
+import { AdminRole, AuthenticatedAdmin } from "./types";
 import { verifyAdminToken } from "./service";
 
 declare global {
@@ -48,4 +48,26 @@ export function authenticateAdmin(request: Request, response: Response, next: Ne
       message: "Unauthorized admin access"
     });
   }
+}
+
+export function requireAdminRole(role: AdminRole) {
+  return (request: Request, response: Response, next: NextFunction): void => {
+    if (!request.admin) {
+      response.status(401).json({
+        message: "Unauthorized admin access"
+      });
+
+      return;
+    }
+
+    if (request.admin.role !== role) {
+      response.status(403).json({
+        message: "Forbidden admin action"
+      });
+
+      return;
+    }
+
+    next();
+  };
 }

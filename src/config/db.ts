@@ -1,4 +1,4 @@
-import { Pool, QueryResult, QueryResultRow } from "pg";
+import { Pool, PoolClient, QueryResult, QueryResultRow } from "pg";
 
 export type DatabaseStatus =
   | {
@@ -80,4 +80,29 @@ export function query<T extends QueryResultRow = QueryResultRow>(
   }
 
   return currentPool.query<T>(text, params);
+}
+
+export async function withTransaction<T>(
+  operation: (client: PoolClient) => Promise<T>
+): Promise<T> {
+  const currentPool = getPool();
+
+  if (!currentPool) {
+    throw new Error("DATABASE_URL is not configured.");
+  }
+
+  const client = await currentPool.connect();
+
+  try {
+    await client.query("BEGIN");
+    const result = await operation(client);
+    await client.query("COMMIT");
+
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }

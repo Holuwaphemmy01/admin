@@ -159,6 +159,44 @@ export const swaggerSpec = {
           }
         }
       },
+      AdminInviteRequest: {
+        type: "object",
+        required: ["email", "role", "firstName", "lastName"],
+        properties: {
+          email: {
+            type: "string",
+            format: "email",
+            example: "support-admin@brickpine.local"
+          },
+          role: {
+            type: "string",
+            enum: ["super_admin", "support", "finance"],
+            example: "support"
+          },
+          firstName: {
+            type: "string",
+            example: "Jane"
+          },
+          lastName: {
+            type: "string",
+            example: "Doe"
+          }
+        }
+      },
+      AdminInviteResponse: {
+        type: "object",
+        properties: {
+          message: {
+            type: "string",
+            example: "Invite sent successfully"
+          },
+          inviteId: {
+            type: "string",
+            format: "uuid",
+            example: "0f11ec2d-16ef-4ce3-a52e-6a4b73dc2c58"
+          }
+        }
+      },
       ErrorResponse: {
         type: "object",
         properties: {
@@ -174,6 +212,24 @@ export const swaggerSpec = {
           message: {
             type: "string",
             example: "username and password are required and must be non-empty strings"
+          }
+        }
+      },
+      ForbiddenErrorResponse: {
+        type: "object",
+        properties: {
+          message: {
+            type: "string",
+            example: "Forbidden admin action"
+          }
+        }
+      },
+      ConflictErrorResponse: {
+        type: "object",
+        properties: {
+          message: {
+            type: "string",
+            example: "An admin invite is already pending for this email address"
           }
         }
       }
@@ -259,6 +315,81 @@ export const swaggerSpec = {
               "application/json": {
                 schema: {
                   $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/auth/invite": {
+      post: {
+        tags: ["Admin Auth"],
+        summary: "Invite a new admin user",
+        description:
+          "Creates a pending admin invite, queues an invite email, and is restricted to authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/AdminInviteRequest"
+              }
+            }
+          }
+        },
+        responses: {
+          "201": {
+            description: "Admin invite created successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/AdminInviteResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid request body or unsupported role",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to send invites",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            description: "Invite conflict for existing user or pending invite",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ConflictErrorResponse"
                 }
               }
             }

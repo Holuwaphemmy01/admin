@@ -1,3 +1,7 @@
+export const ADMIN_ROLES = ["super_admin", "support", "finance"] as const;
+
+export type AdminRole = (typeof ADMIN_ROLES)[number];
+
 export interface AdminLoginRequestBody {
   username: string;
   password: string;
@@ -13,10 +17,28 @@ export interface AdminLoginResponse {
   createdAt?: string;
 }
 
+export interface AdminInviteRequestBody {
+  email: string;
+  role: AdminRole;
+  firstName: string;
+  lastName: string;
+}
+
+export interface AdminInviteRequest extends AdminInviteRequestBody {
+  invitedByAdmin: AuthenticatedAdmin;
+}
+
+export interface AdminInviteResponse {
+  message: string;
+  inviteId: string;
+}
+
+export type AdminInviteStatus = "pending" | "accepted" | "expired" | "revoked";
+
 export interface AuthenticatedAdmin {
-  sub: "env:super-admin";
+  sub: string;
   scope: "admin";
-  role: "super_admin";
+  role: AdminRole;
   username: string;
   emailAddress: string;
   userTypeId: number;
@@ -48,8 +70,12 @@ export interface AdminAuthConfig {
     expiresIn: string;
     issuer: "brickpine-admin";
     audience: "admin-api";
-    subject: "env:super-admin";
+    subject: string;
     scope: "admin";
-    role: "super_admin";
+    role: AdminRole;
+  };
+  invite: {
+    frontendUrl: string;
+    expiryDays: number;
   };
 }

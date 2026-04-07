@@ -4,10 +4,12 @@ import { AdminAuthConfig } from "./types";
 import {
   normalizeCaseInsensitiveValue,
   normalizeCredentialValue,
+  normalizeEmailAddress,
   normalizePhoneNumber
 } from "./utils";
 
 let cachedAdminAuthConfig: AdminAuthConfig | null = null;
+const ADMIN_INVITE_EXPIRY_DAYS = 7;
 
 function requireEnvValue(env: NodeJS.ProcessEnv, key: string): string {
   const rawValue = env[key];
@@ -45,6 +47,16 @@ function parseCreatedAt(env: NodeJS.ProcessEnv): string | undefined {
   return createdAt.toISOString();
 }
 
+function parseFrontendInviteUrl(env: NodeJS.ProcessEnv): string {
+  const inviteUrl = requireEnvValue(env, "ADMIN_INVITE_FRONTEND_URL");
+
+  try {
+    return new URL(inviteUrl).toString();
+  } catch {
+    throw new Error("ADMIN_INVITE_FRONTEND_URL must be a valid absolute URL.");
+  }
+}
+
 function validateJwtSettings(secret: string, expiresIn: string): void {
   try {
     jwt.sign(
@@ -73,7 +85,7 @@ function validateJwtSettings(secret: string, expiresIn: string): void {
 
 export function loadAdminAuthConfig(env: NodeJS.ProcessEnv = process.env): AdminAuthConfig {
   const username = requireEnvValue(env, "ADMIN_SUPER_USERNAME");
-  const emailAddress = requireEnvValue(env, "ADMIN_SUPER_EMAIL");
+  const emailAddress = normalizeEmailAddress(requireEnvValue(env, "ADMIN_SUPER_EMAIL"));
   const phoneNumber = requireEnvValue(env, "ADMIN_SUPER_PHONE");
   const password = requireEnvValue(env, "ADMIN_SUPER_PASSWORD");
   const firstName = requireEnvValue(env, "ADMIN_SUPER_FIRST_NAME");
@@ -82,6 +94,7 @@ export function loadAdminAuthConfig(env: NodeJS.ProcessEnv = process.env): Admin
   const createdAt = parseCreatedAt(env);
   const secret = requireEnvValue(env, "ADMIN_JWT_SECRET");
   const expiresIn = requireEnvValue(env, "ADMIN_JWT_EXPIRES_IN");
+  const frontendUrl = parseFrontendInviteUrl(env);
 
   validateJwtSettings(secret, expiresIn);
 
@@ -107,6 +120,10 @@ export function loadAdminAuthConfig(env: NodeJS.ProcessEnv = process.env): Admin
       subject: "env:super-admin",
       scope: "admin",
       role: "super_admin"
+    },
+    invite: {
+      frontendUrl,
+      expiryDays: ADMIN_INVITE_EXPIRY_DAYS
     }
   };
 }

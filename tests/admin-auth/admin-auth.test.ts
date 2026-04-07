@@ -1,15 +1,21 @@
-import assert from "node:assert/strict";
 import { AddressInfo } from "node:net";
-import test from "node:test";
 
+import { expect, test } from "@jest/globals";
 import express from "express";
 import jwt from "jsonwebtoken";
+import { QueryResult, QueryResultRow } from "pg";
 
 import app from "../../src/app";
 import { clearAdminAuthConfigCache, loadAdminAuthConfig } from "../../src/modules/admin-auth/config";
 import { authenticateAdmin } from "../../src/modules/admin-auth/middleware";
-import adminAuthRouter from "../../src/modules/admin-auth/routes";
-import { loginAdmin, verifyAdminToken } from "../../src/modules/admin-auth/service";
+import { createAdminAuthRouter } from "../../src/modules/admin-auth/routes";
+import {
+  AdminInviteConflictError,
+  createAdminInvite,
+  loginAdmin,
+  verifyAdminToken
+} from "../../src/modules/admin-auth/service";
+import { AdminAuthConfig, AdminInviteRequest, AdminRole } from "../../src/modules/admin-auth/types";
 
 const testEnv: NodeJS.ProcessEnv = {
   ADMIN_SUPER_USERNAME: "BrickPine-Admin",
@@ -21,7 +27,8 @@ const testEnv: NodeJS.ProcessEnv = {
   ADMIN_SUPER_USER_TYPE_ID: "4",
   ADMIN_SUPER_CREATED_AT: "2026-01-01T00:00:00.000Z",
   ADMIN_JWT_SECRET: "brickpine-admin-secret",
-  ADMIN_JWT_EXPIRES_IN: "1d"
+  ADMIN_JWT_EXPIRES_IN: "1d",
+  ADMIN_INVITE_FRONTEND_URL: "http://localhost:5173/admin/invite"
 };
 
 function restoreEnv(previousEnv: NodeJS.ProcessEnv): void {
@@ -67,25 +74,97 @@ async function startTestServer(application: ReturnType<typeof express>) {
   };
 }
 
+function createQueryResult<T extends QueryResultRow>(rows: T[]): QueryResult<T> {
+  return {
+    command: "SELECT",
+    oid: 0,
+    fields: [],
+    rowCount: rows.length,
+    rows
+  };
+}
+
+function createTransactionClient(
+  queryImplementation: (text: string, params?: unknown[]) => Promise<QueryResult<QueryResultRow>>
+) {
+  return {
+    query: async <T extends QueryResultRow>(
+      text: string,
+      params?: unknown[]
+    ): Promise<QueryResult<T>> => {
+      const result = await queryImplementation(text, params);
+
+      return result as unknown as QueryResult<T>;
+    }
+  };
+}
+
+function signTestAdminToken(config: AdminAuthConfig, role: AdminRole = "super_admin"): string {
+  return jwt.sign(
+    {
+      scope: "admin",
+      role,
+      username: config.superAdmin.username,
+      emailAddress: config.superAdmin.emailAddress,
+      userTypeId: config.superAdmin.userTypeId
+    },
+    config.jwt.secret,
+    {
+      algorithm: "HS256",
+      issuer: config.jwt.issuer,
+      audience: config.jwt.audience,
+      subject: config.jwt.subject,
+      expiresIn: "1d"
+    }
+  );
+}
+
+function createCustomerLikeToken(config: AdminAuthConfig): string {
+  return jwt.sign(
+    {
+      scope: "customer",
+      role: "buyer",
+      username: "buyer-1",
+      emailAddress: "buyer@example.com",
+      userTypeId: 1
+    },
+    config.jwt.secret,
+    {
+      algorithm: "HS256",
+      issuer: "brickpine-customer",
+      audience: "customer-api",
+      subject: "customer:1",
+      expiresIn: "1d"
+    }
+  );
+}
+
 test("loadAdminAuthConfig validates and normalizes the embedded super admin settings", () => {
   const config = loadAdminAuthConfig(testEnv);
 
-  assert.equal(config.superAdmin.username, "BrickPine-Admin");
-  assert.equal(config.superAdmin.normalizedUsername, "brickpine-admin");
-  assert.equal(config.superAdmin.normalizedEmailAddress, "admin@brickpine.local");
-  assert.equal(config.superAdmin.normalizedPhoneNumber, "+2348012345678");
-  assert.equal(config.superAdmin.createdAt, "2026-01-01T00:00:00.000Z");
+  expect(config.superAdmin.username).toBe("BrickPine-Admin");
+  expect(config.superAdmin.normalizedUsername).toBe("brickpine-admin");
+  expect(config.superAdmin.normalizedEmailAddress).toBe("admin@brickpine.local");
+  expect(config.superAdmin.normalizedPhoneNumber).toBe("+2348012345678");
+  expect(config.superAdmin.createdAt).toBe("2026-01-01T00:00:00.000Z");
+  expect(config.invite.frontendUrl).toBe("http://localhost:5173/admin/invite");
+  expect(config.invite.expiryDays).toBe(7);
 });
 
 test("loadAdminAuthConfig fails fast for missing required admin auth values", () => {
-  assert.throws(
-    () =>
-      loadAdminAuthConfig({
-        ...testEnv,
-        ADMIN_JWT_SECRET: ""
-      }),
-    /ADMIN_JWT_SECRET/
-  );
+  expect(() =>
+    loadAdminAuthConfig({
+      ...testEnv,
+      ADMIN_JWT_SECRET: ""
+    })
+  ).toThrow(/ADMIN_JWT_SECRET/);
+
+  expect(() =>
+    loadAdminAuthConfig({
+      ...testEnv,
+      ADMIN_INVITE_FRONTEND_URL: ""
+    })
+  ).toThrow(/ADMIN_INVITE_FRONTEND_URL/);
 });
 
 test("loginAdmin accepts username, email, and phone and always returns the canonical admin profile", () => {
@@ -113,49 +192,195 @@ test("loginAdmin accepts username, email, and phone and always returns the canon
     config
   );
 
-  assert.equal(usernameLogin.username, "BrickPine-Admin");
-  assert.equal(emailLogin.username, "BrickPine-Admin");
-  assert.equal(phoneLogin.username, "BrickPine-Admin");
-  assert.equal(usernameLogin.emailAddress, "admin@brickpine.local");
-  assert.equal(usernameLogin.userTypeId, 4);
-  assert.equal(usernameLogin.createdAt, "2026-01-01T00:00:00.000Z");
+  expect(usernameLogin.username).toBe("BrickPine-Admin");
+  expect(emailLogin.username).toBe("BrickPine-Admin");
+  expect(phoneLogin.username).toBe("BrickPine-Admin");
+  expect(usernameLogin.emailAddress).toBe("admin@brickpine.local");
+  expect(usernameLogin.userTypeId).toBe(4);
+  expect(usernameLogin.createdAt).toBe("2026-01-01T00:00:00.000Z");
 
   const payload = verifyAdminToken(usernameLogin.token, config);
 
-  assert.equal(payload.sub, "env:super-admin");
-  assert.equal(payload.scope, "admin");
-  assert.equal(payload.role, "super_admin");
-  assert.equal(payload.username, "BrickPine-Admin");
-  assert.equal(payload.emailAddress, "admin@brickpine.local");
-  assert.equal(payload.userTypeId, 4);
+  expect(payload.sub).toBe("env:super-admin");
+  expect(payload.scope).toBe("admin");
+  expect(payload.role).toBe("super_admin");
+  expect(payload.username).toBe("BrickPine-Admin");
+  expect(payload.emailAddress).toBe("admin@brickpine.local");
+  expect(payload.userTypeId).toBe(4);
 });
 
 test("loginAdmin rejects unknown identifiers and wrong passwords with a generic auth error", () => {
   const config = loadAdminAuthConfig(testEnv);
 
-  assert.throws(
-    () =>
-      loginAdmin(
-        {
-          username: "unknown-admin",
-          password: "change-me"
-        },
-        config
-      ),
-    /Invalid admin credentials/
-  );
+  expect(() =>
+    loginAdmin(
+      {
+        username: "unknown-admin",
+        password: "change-me"
+      },
+      config
+    )
+  ).toThrow(/Invalid admin credentials/);
 
-  assert.throws(
-    () =>
-      loginAdmin(
-        {
-          username: "brickpine-admin",
-          password: "wrong-password"
-        },
-        config
-      ),
-    /Invalid admin credentials/
-  );
+  expect(() =>
+    loginAdmin(
+      {
+        username: "brickpine-admin",
+        password: "wrong-password"
+      },
+      config
+    )
+  ).toThrow(/Invalid admin credentials/);
+});
+
+test("createAdminInvite stores a pending invite and queues an admin-invite email", async () => {
+  const config = loadAdminAuthConfig(testEnv);
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+  const createdAt = new Date("2026-04-06T12:00:00.000Z");
+
+  const inviteRequest: AdminInviteRequest = {
+    email: " New.Admin@BrickPine.Local ",
+    role: "support",
+    firstName: "  Jane ",
+    lastName: " Doe  ",
+    invitedByAdmin: {
+      sub: "env:super-admin",
+      scope: "admin",
+      role: "super_admin",
+      username: config.superAdmin.username,
+      emailAddress: config.superAdmin.emailAddress,
+      userTypeId: config.superAdmin.userTypeId
+    }
+  };
+
+  const response = await createAdminInvite(inviteRequest, {
+    config,
+    inviteIdFactory: () => "8b8a2c88-c4f4-4a9d-b6d0-26fcb6d82770",
+    inviteTokenFactory: () => "raw-invite-token",
+    inviteTokenHasher: () => "hashed-invite-token",
+    nowFactory: () => createdAt,
+    runInTransaction: async (operation) =>
+      operation(
+        createTransactionClient(async (text, params) => {
+          executedQueries.push({ text, params });
+
+          if (text.includes('FROM public."user"')) {
+            return createQueryResult([]);
+          }
+
+          if (text.includes("FROM public.admin_invites")) {
+            return createQueryResult([]);
+          }
+
+          return createQueryResult([]);
+        })
+      )
+  });
+
+  expect(response).toEqual({
+    message: "Invite sent successfully",
+    inviteId: "8b8a2c88-c4f4-4a9d-b6d0-26fcb6d82770"
+  });
+  expect(executedQueries).toHaveLength(4);
+
+  const inviteInsertParams = executedQueries[2]?.params ?? [];
+  const emailInsertParams = executedQueries[3]?.params ?? [];
+
+  expect(inviteInsertParams[0]).toBe("8b8a2c88-c4f4-4a9d-b6d0-26fcb6d82770");
+  expect(inviteInsertParams[1]).toBe("new.admin@brickpine.local");
+  expect(inviteInsertParams[2]).toBe("support");
+  expect(inviteInsertParams[3]).toBe("Jane");
+  expect(inviteInsertParams[4]).toBe("Doe");
+  expect(inviteInsertParams[5]).toBe("pending");
+  expect(inviteInsertParams[6]).toBe("hashed-invite-token");
+  expect(String(inviteInsertParams[6])).not.toContain("raw-invite-token");
+  expect((inviteInsertParams[7] as Date).toISOString()).toBe("2026-04-13T12:00:00.000Z");
+  expect(inviteInsertParams[8]).toBe("BrickPine-Admin");
+  expect(inviteInsertParams[9]).toBe("admin@brickpine.local");
+
+  expect(emailInsertParams[0]).toBe("admin@brickpine.local");
+  expect(emailInsertParams[1]).toBe("new.admin@brickpine.local");
+  expect(emailInsertParams[2]).toBe("BrickPine Admin Invite - Support");
+  expect(String(emailInsertParams[3])).toMatch(/inviteId=8b8a2c88-c4f4-4a9d-b6d0-26fcb6d82770/);
+  expect(String(emailInsertParams[3])).toMatch(/token=raw-invite-token/);
+  expect(emailInsertParams[4]).toBe("admin-invite");
+  expect(emailInsertParams[5]).toBe("1");
+});
+
+test("createAdminInvite rejects emails that already belong to an existing platform user", async () => {
+  const config = loadAdminAuthConfig(testEnv);
+
+  await expect(
+    createAdminInvite(
+      {
+        email: "existing@brickpine.local",
+        role: "support",
+        firstName: "Existing",
+        lastName: "User",
+        invitedByAdmin: {
+          sub: "env:super-admin",
+          scope: "admin",
+          role: "super_admin",
+          username: config.superAdmin.username,
+          emailAddress: config.superAdmin.emailAddress,
+          userTypeId: config.superAdmin.userTypeId
+        }
+      },
+      {
+        config,
+        runInTransaction: async (operation) =>
+          operation(
+            createTransactionClient(async (text) => {
+              if (text.includes('FROM public."user"')) {
+                return createQueryResult([{ id: 1 }]);
+              }
+
+              return createQueryResult([]);
+            })
+          )
+      }
+    )
+  ).rejects.toThrow("This email address already belongs to an existing user");
+});
+
+test("createAdminInvite rejects duplicate pending invites for the same email address", async () => {
+  const config = loadAdminAuthConfig(testEnv);
+
+  await expect(
+    createAdminInvite(
+      {
+        email: "pending@brickpine.local",
+        role: "finance",
+        firstName: "Pending",
+        lastName: "Invite",
+        invitedByAdmin: {
+          sub: "env:super-admin",
+          scope: "admin",
+          role: "super_admin",
+          username: config.superAdmin.username,
+          emailAddress: config.superAdmin.emailAddress,
+          userTypeId: config.superAdmin.userTypeId
+        }
+      },
+      {
+        config,
+        runInTransaction: async (operation) =>
+          operation(
+            createTransactionClient(async (text) => {
+              if (text.includes('FROM public."user"')) {
+                return createQueryResult([]);
+              }
+
+              if (text.includes("FROM public.admin_invites")) {
+                return createQueryResult([{ id: "pending-invite-id" }]);
+              }
+
+              return createQueryResult([]);
+            })
+          )
+      }
+    )
+  ).rejects.toThrow("An admin invite is already pending for this email address");
 });
 
 test("POST /admin/auth/login validates request body, returns 401 for bad credentials, and returns admin session data on success", async () => {
@@ -163,7 +388,7 @@ test("POST /admin/auth/login validates request body, returns 401 for bad credent
   const application = express();
 
   application.use(express.json());
-  application.use("/admin/auth", adminAuthRouter);
+  application.use("/admin/auth", createAdminAuthRouter());
 
   const server = await startTestServer(application);
 
@@ -179,7 +404,7 @@ test("POST /admin/auth/login validates request body, returns 401 for bad credent
       })
     });
 
-    assert.equal(response.status, 400);
+    expect(response.status).toBe(400);
 
     response = await fetch(`${server.baseUrl}/admin/auth/login`, {
       method: "POST",
@@ -192,7 +417,7 @@ test("POST /admin/auth/login validates request body, returns 401 for bad credent
       })
     });
 
-    assert.equal(response.status, 401);
+    expect(response.status).toBe(401);
 
     response = await fetch(`${server.baseUrl}/admin/auth/login`, {
       method: "POST",
@@ -205,16 +430,277 @@ test("POST /admin/auth/login validates request body, returns 401 for bad credent
       })
     });
 
-    assert.equal(response.status, 200);
+    expect(response.status).toBe(200);
 
     const payload = (await response.json()) as Record<string, unknown>;
 
-    assert.equal(payload.username, "BrickPine-Admin");
-    assert.equal(payload.firstName, "BrickPine");
-    assert.equal(payload.lastName, "SuperAdmin");
-    assert.equal(payload.emailAddress, "admin@brickpine.local");
-    assert.equal(payload.userTypeId, 4);
-    assert.equal(typeof payload.token, "string");
+    expect(payload.username).toBe("BrickPine-Admin");
+    expect(payload.firstName).toBe("BrickPine");
+    expect(payload.lastName).toBe("SuperAdmin");
+    expect(payload.emailAddress).toBe("admin@brickpine.local");
+    expect(payload.userTypeId).toBe(4);
+    expect(typeof payload.token).toBe("string");
+  } finally {
+    await server.close();
+    restoreEnv(previousEnv);
+  }
+});
+
+test("POST /admin/auth/invite returns 401 when the admin token is missing", async () => {
+  const previousEnv = applyTestEnv();
+  const application = express();
+
+  application.use(express.json());
+  application.use("/admin/auth", createAdminAuthRouter());
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/auth/invite`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        email: "support-admin@brickpine.local",
+        role: "support",
+        firstName: "Support",
+        lastName: "Admin"
+      })
+    });
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+    restoreEnv(previousEnv);
+  }
+});
+
+test("POST /admin/auth/invite rejects customer-like tokens with 401", async () => {
+  const previousEnv = applyTestEnv();
+  const config = loadAdminAuthConfig(process.env);
+  const application = express();
+
+  application.use(express.json());
+  application.use("/admin/auth", createAdminAuthRouter());
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/auth/invite`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${createCustomerLikeToken(config)}`
+      },
+      body: JSON.stringify({
+        email: "support-admin@brickpine.local",
+        role: "support",
+        firstName: "Support",
+        lastName: "Admin"
+      })
+    });
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+    restoreEnv(previousEnv);
+  }
+});
+
+test("POST /admin/auth/invite returns 403 for authenticated admins without the super_admin role", async () => {
+  const previousEnv = applyTestEnv();
+  const config = loadAdminAuthConfig(process.env);
+  const application = express();
+
+  application.use(express.json());
+  application.use("/admin/auth", createAdminAuthRouter());
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/auth/invite`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${signTestAdminToken(config, "support")}`
+      },
+      body: JSON.stringify({
+        email: "support-admin@brickpine.local",
+        role: "support",
+        firstName: "Support",
+        lastName: "Admin"
+      })
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+    restoreEnv(previousEnv);
+  }
+});
+
+test("POST /admin/auth/invite validates email, role, and name fields before calling the service", async () => {
+  const previousEnv = applyTestEnv();
+  const config = loadAdminAuthConfig(process.env);
+  let inviteCallCount = 0;
+  const application = express();
+
+  application.use(express.json());
+  application.use(
+    "/admin/auth",
+    createAdminAuthRouter({
+      createAdminInviteHandler: async () => {
+        inviteCallCount += 1;
+
+        return {
+          message: "Invite sent successfully",
+          inviteId: "should-not-run"
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    let response = await fetch(`${server.baseUrl}/admin/auth/invite`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${signTestAdminToken(config)}`
+      },
+      body: JSON.stringify({
+        email: "not-an-email",
+        role: "support",
+        firstName: "Support",
+        lastName: "Admin"
+      })
+    });
+
+    expect(response.status).toBe(400);
+
+    response = await fetch(`${server.baseUrl}/admin/auth/invite`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${signTestAdminToken(config)}`
+      },
+      body: JSON.stringify({
+        email: "support-admin@brickpine.local",
+        role: "operations",
+        firstName: "Support",
+        lastName: "Admin"
+      })
+    });
+
+    expect(response.status).toBe(400);
+
+    response = await fetch(`${server.baseUrl}/admin/auth/invite`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${signTestAdminToken(config)}`
+      },
+      body: JSON.stringify({
+        email: "support-admin@brickpine.local",
+        role: "support",
+        firstName: "Support"
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect(inviteCallCount).toBe(0);
+  } finally {
+    await server.close();
+    restoreEnv(previousEnv);
+  }
+});
+
+test("POST /admin/auth/invite returns 201 with the invite id when the request succeeds", async () => {
+  const previousEnv = applyTestEnv();
+  const config = loadAdminAuthConfig(process.env);
+  let invitedByUsername = "";
+  const application = express();
+
+  application.use(express.json());
+  application.use(
+    "/admin/auth",
+    createAdminAuthRouter({
+      createAdminInviteHandler: async (invite) => {
+        invitedByUsername = invite.invitedByAdmin.username;
+
+        return {
+          message: "Invite sent successfully",
+          inviteId: "11111111-2222-3333-4444-555555555555"
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/auth/invite`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${signTestAdminToken(config)}`
+      },
+      body: JSON.stringify({
+        email: "support-admin@brickpine.local",
+        role: "support",
+        firstName: "Support",
+        lastName: "Admin"
+      })
+    });
+
+    expect(response.status).toBe(201);
+
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    expect(payload.message).toBe("Invite sent successfully");
+    expect(payload.inviteId).toBe("11111111-2222-3333-4444-555555555555");
+    expect(invitedByUsername).toBe("BrickPine-Admin");
+  } finally {
+    await server.close();
+    restoreEnv(previousEnv);
+  }
+});
+
+test("POST /admin/auth/invite returns 409 when the invite conflicts with existing data", async () => {
+  const previousEnv = applyTestEnv();
+  const config = loadAdminAuthConfig(process.env);
+  const application = express();
+
+  application.use(express.json());
+  application.use(
+    "/admin/auth",
+    createAdminAuthRouter({
+      createAdminInviteHandler: async () => {
+        throw new AdminInviteConflictError("An admin invite is already pending for this email address");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/auth/invite`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${signTestAdminToken(config)}`
+      },
+      body: JSON.stringify({
+        email: "support-admin@brickpine.local",
+        role: "support",
+        firstName: "Support",
+        lastName: "Admin"
+      })
+    });
+
+    expect(response.status).toBe(409);
   } finally {
     await server.close();
     restoreEnv(previousEnv);
@@ -235,50 +721,25 @@ test("authenticateAdmin accepts valid admin tokens and rejects customer-like tok
   const server = await startTestServer(application);
 
   try {
-    const adminToken = loginAdmin(
-      {
-        username: "brickpine-admin",
-        password: "change-me"
-      },
-      config
-    ).token;
-    const customerLikeToken = jwt.sign(
-      {
-        scope: "customer",
-        role: "buyer",
-        username: "buyer-1",
-        emailAddress: "buyer@example.com",
-        userTypeId: 2
-      },
-      config.jwt.secret,
-      {
-        algorithm: "HS256",
-        issuer: "brickpine-customer",
-        audience: "customer-api",
-        subject: "customer:1",
-        expiresIn: "1d"
-      }
-    );
-
     let response = await fetch(`${server.baseUrl}/protected`, {
       headers: {
-        Authorization: `Bearer ${adminToken}`
+        Authorization: `Bearer ${signTestAdminToken(config)}`
       }
     });
 
-    assert.equal(response.status, 200);
+    expect(response.status).toBe(200);
 
     const successPayload = (await response.json()) as Record<string, unknown>;
 
-    assert.equal(successPayload.username, "BrickPine-Admin");
+    expect(successPayload.username).toBe("BrickPine-Admin");
 
     response = await fetch(`${server.baseUrl}/protected`, {
       headers: {
-        Authorization: `Bearer ${customerLikeToken}`
+        Authorization: `Bearer ${createCustomerLikeToken(config)}`
       }
     });
 
-    assert.equal(response.status, 401);
+    expect(response.status).toBe(401);
   } finally {
     await server.close();
     restoreEnv(previousEnv);
@@ -291,16 +752,17 @@ test("GET /docs.json exposes the swagger specification for the API", async () =>
   try {
     const response = await fetch(`${server.baseUrl}/docs.json`);
 
-    assert.equal(response.status, 200);
+    expect(response.status).toBe(200);
 
     const payload = (await response.json()) as {
       info?: { title?: string };
       paths?: Record<string, unknown>;
     };
 
-    assert.equal(payload.info?.title, "BrickPine Admin API");
-    assert.ok(payload.paths?.["/admin/auth/login"]);
-    assert.ok(payload.paths?.["/api/health"]);
+    expect(payload.info?.title).toBe("BrickPine Admin API");
+    expect(payload.paths?.["/admin/auth/login"]).toBeDefined();
+    expect(payload.paths?.["/admin/auth/invite"]).toBeDefined();
+    expect(payload.paths?.["/api/health"]).toBeDefined();
   } finally {
     await server.close();
   }

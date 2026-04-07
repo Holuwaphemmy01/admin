@@ -1,9 +1,15 @@
+import { ADMIN_ROLES, AdminRole } from "./types";
+
 export function normalizeCredentialValue(value: string): string {
   return value.trim();
 }
 
 export function normalizeCaseInsensitiveValue(value: string): string {
   return normalizeCredentialValue(value).toLowerCase();
+}
+
+export function normalizeEmailAddress(value: string): string {
+  return normalizeCaseInsensitiveValue(value);
 }
 
 export function normalizePhoneNumber(value: string): string {
@@ -26,4 +32,19 @@ export function isPhoneLike(value: string): boolean {
   const digitsOnly = normalizedValue.replace(/\D/g, "");
 
   return /^[+()\d\s-]+$/.test(normalizedValue) && digitsOnly.length >= 6;
+}
+
+export function isValidEmailAddress(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmailAddress(value));
+}
+
+export function isAdminRole(value: string): value is AdminRole {
+  return ADMIN_ROLES.includes(value as AdminRole);
+}
+
+export function formatAdminRole(role: AdminRole): string {
+  return role
+    .split("_")
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(" ");
 }
