@@ -401,6 +401,66 @@ export const swaggerSpec = {
           }
         }
       },
+      AdminTransactionItem: {
+        type: "object",
+        properties: {
+          id: {
+            type: "integer",
+            example: 173
+          },
+          userId: {
+            type: "integer",
+            example: 25
+          },
+          amount: {
+            type: "number",
+            example: 10403.01
+          },
+          currency: {
+            type: "string",
+            example: "NGN"
+          },
+          transactionId: {
+            type: "string",
+            nullable: true,
+            example: "HOLD:X0i2sZMEkPwkh45t:DELIVERY:10115926"
+          },
+          transactionType: {
+            type: "string",
+            enum: ["credit", "debit"],
+            example: "debit"
+          },
+          description: {
+            type: "string",
+            nullable: true,
+            example: "Checkout hold for delivery funds"
+          },
+          status: {
+            type: "integer",
+            example: 1
+          },
+          createdAt: {
+            type: "string",
+            format: "date-time",
+            example: "2026-03-24T20:47:55.000Z"
+          }
+        }
+      },
+      AdminTransactionsListResponse: {
+        type: "object",
+        properties: {
+          transactions: {
+            type: "array",
+            items: {
+              $ref: "#/components/schemas/AdminTransactionItem"
+            }
+          },
+          total: {
+            type: "integer",
+            example: 172
+          }
+        }
+      },
       CreateProductCategoryRequest: {
         type: "object",
         required: [
@@ -1455,6 +1515,126 @@ export const swaggerSpec = {
               "application/json": {
                 schema: {
                   $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/transactions": {
+      get: {
+        tags: ["Wallet & Transactions"],
+        summary: "List all platform transactions",
+        description:
+          "Returns paginated platform wallet transactions with optional user, transaction-type, and date filters for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "query",
+            name: "userId",
+            required: false,
+            schema: {
+              type: "integer",
+              minimum: 1
+            },
+            description: "Filter by user ID"
+          },
+          {
+            in: "query",
+            name: "transactionType",
+            required: false,
+            schema: {
+              type: "string",
+              enum: ["credit", "debit"]
+            },
+            description: "Filter by transaction type"
+          },
+          {
+            in: "query",
+            name: "from",
+            required: false,
+            schema: {
+              type: "string",
+              format: "date-time"
+            },
+            description: "Start date filter"
+          },
+          {
+            in: "query",
+            name: "to",
+            required: false,
+            schema: {
+              type: "string",
+              format: "date-time"
+            },
+            description: "End date filter"
+          },
+          {
+            in: "query",
+            name: "page",
+            required: false,
+            schema: {
+              type: "integer",
+              minimum: 1,
+              default: 1
+            },
+            description: "Pagination page number"
+          },
+          {
+            in: "query",
+            name: "limit",
+            required: false,
+            schema: {
+              type: "integer",
+              minimum: 1,
+              maximum: 100,
+              default: 20
+            },
+            description: "Results per page"
+          }
+        ],
+        responses: {
+          "200": {
+            description: "Platform transactions retrieved successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/AdminTransactionsListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid transaction-list query parameters",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to list platform transactions",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
                 }
               }
             }
