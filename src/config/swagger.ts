@@ -461,6 +461,68 @@ export const swaggerSpec = {
           }
         }
       },
+      AdminTransactionDetailsResponse: {
+        type: "object",
+        properties: {
+          id: {
+            type: "integer",
+            example: 173
+          },
+          userId: {
+            type: "integer",
+            example: 25
+          },
+          amount: {
+            type: "number",
+            example: 10403.01
+          },
+          currency: {
+            type: "string",
+            example: "NGN"
+          },
+          transactionId: {
+            type: "string",
+            example: "HOLD:X0i2sZMEkPwkh45t:DELIVERY:10115926"
+          },
+          settlementId: {
+            type: "integer",
+            nullable: true,
+            example: 21
+          },
+          refundId: {
+            type: "integer",
+            nullable: true,
+            example: null
+          },
+          transactionType: {
+            type: "string",
+            enum: ["credit", "debit"],
+            example: "debit"
+          },
+          description: {
+            type: "string",
+            nullable: true,
+            example: "Checkout hold for delivery funds"
+          },
+          ledgerBalance: {
+            type: "number",
+            example: 12000
+          },
+          availableBalance: {
+            type: "number",
+            example: 0
+          },
+          status: {
+            type: "integer",
+            example: 1
+          },
+          createdAt: {
+            type: "string",
+            format: "date-time",
+            example: "2026-03-24T20:47:55.000Z"
+          }
+        }
+      },
       CreateProductCategoryRequest: {
         type: "object",
         required: [
@@ -1635,6 +1697,92 @@ export const swaggerSpec = {
               "application/json": {
                 schema: {
                   $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/transactions/{transactionId}": {
+      get: {
+        tags: ["Wallet & Transactions"],
+        summary: "View a specific transaction",
+        description:
+          "Returns the full wallet transaction details for a deterministic transaction reference for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "path",
+            name: "transactionId",
+            required: true,
+            schema: {
+              type: "string"
+            },
+            description: "Deterministic wallet transaction reference"
+          }
+        ],
+        responses: {
+          "200": {
+            description: "Transaction retrieved successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/AdminTransactionDetailsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid transactionId path parameter",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to view platform transactions",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "Transaction not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            description: "Transaction reference is ambiguous",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ConflictErrorResponse"
                 }
               }
             }

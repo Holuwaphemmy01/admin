@@ -8,9 +8,16 @@ import {
   AdminTransactionType,
   AdminTransactionsListFilters
 } from "./types";
-import { AdminTransactionsValidationError, listAdminTransactions } from "./service";
+import {
+  AdminTransactionConflictError,
+  AdminTransactionNotFoundError,
+  AdminTransactionsValidationError,
+  getAdminTransactionDetails,
+  listAdminTransactions
+} from "./service";
 
 interface AdminTransactionsRouterDependencies {
+  getAdminTransactionDetailsHandler?: typeof getAdminTransactionDetails;
   listAdminTransactionsHandler?: typeof listAdminTransactions;
   authenticateAdminMiddleware?: RequestHandler;
   requireSuperAdminMiddleware?: RequestHandler;
@@ -75,6 +82,8 @@ export function createAdminTransactionsRouter(
   dependencies: AdminTransactionsRouterDependencies = {}
 ): Router {
   const adminTransactionsRouter = Router();
+  const getAdminTransactionDetailsHandler =
+    dependencies.getAdminTransactionDetailsHandler ?? getAdminTransactionDetails;
   const listAdminTransactionsHandler =
     dependencies.listAdminTransactionsHandler ?? listAdminTransactions;
   const authenticateAdminMiddleware =
@@ -152,6 +161,58 @@ export function createAdminTransactionsRouter(
           error instanceof AdminTransactionsValidationError
         ) {
           response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
+
+  adminTransactionsRouter.get(
+    "/:transactionId",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      const rawTransactionId = request.params.transactionId;
+      const transactionId = (
+        Array.isArray(rawTransactionId) ? rawTransactionId[0] ?? "" : rawTransactionId ?? ""
+      ).trim();
+
+      if (transactionId === "") {
+        response.status(400).json({
+          message: "transactionId must be a non-empty string"
+        });
+
+        return;
+      }
+
+      try {
+        const transactionResponse = await getAdminTransactionDetailsHandler(transactionId);
+
+        response.json(transactionResponse);
+      } catch (error) {
+        if (error instanceof AdminTransactionsValidationError) {
+          response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof AdminTransactionNotFoundError) {
+          response.status(404).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof AdminTransactionConflictError) {
+          response.status(409).json({
             message: error.message
           });
 

@@ -8,10 +8,16 @@ import { createAuthenticateAdminMiddleware } from "../../src/modules/admin-auth/
 import { AuthenticatedAdmin } from "../../src/modules/admin-auth/types";
 import { createAdminTransactionsRouter } from "../../src/modules/admin-transactions/routes";
 import {
+  AdminTransactionConflictError,
+  AdminTransactionNotFoundError,
   AdminTransactionsValidationError,
+  getAdminTransactionDetails,
   listAdminTransactions
 } from "../../src/modules/admin-transactions/service";
-import { AdminTransactionsListResponse } from "../../src/modules/admin-transactions/types";
+import {
+  AdminTransactionDetailsResponse,
+  AdminTransactionsListResponse
+} from "../../src/modules/admin-transactions/types";
 
 async function startTestServer(application: ReturnType<typeof express>) {
   const server = application.listen(0);
@@ -456,6 +462,323 @@ test("GET /admin/transactions parses filters, caps limit, and returns the pagina
         }
       ],
       total: 32
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("getAdminTransactionDetails returns the full transaction payload", async () => {
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await getAdminTransactionDetails(" HOLD:X0i2sZMEkPwkh45t:DELIVERY:10115926 ", {
+    queryFn: async <T extends QueryResultRow = QueryResultRow>(
+      text: string,
+      params?: unknown[]
+    ): Promise<QueryResult<T>> => {
+      executedQueries.push({ text, params });
+
+      return createQueryResult([
+        {
+          id: 173,
+          userId: "25",
+          amount: 10403.01,
+          currency: "NGN",
+          transactionId: "HOLD:X0i2sZMEkPwkh45t:DELIVERY:10115926",
+          settlementId: null,
+          refundId: "4",
+          transactionType: 2,
+          description: "Checkout hold for delivery funds",
+          ledgerBalance: "12000",
+          availableBalance: "0",
+          status: 1,
+          createdAt: new Date("2026-03-24T20:47:55.000Z")
+        }
+      ]) as unknown as QueryResult<T>;
+    }
+  });
+
+  expect(executedQueries).toHaveLength(1);
+  expect(executedQueries[0]?.text).toContain('BTRIM(wt."transactionId") = BTRIM($1)');
+  expect(executedQueries[0]?.params).toEqual(["HOLD:X0i2sZMEkPwkh45t:DELIVERY:10115926"]);
+  expect(response).toEqual({
+    id: 173,
+    userId: 25,
+    amount: 10403.01,
+    currency: "NGN",
+    transactionId: "HOLD:X0i2sZMEkPwkh45t:DELIVERY:10115926",
+    settlementId: null,
+    refundId: 4,
+    transactionType: "debit",
+    description: "Checkout hold for delivery funds",
+    ledgerBalance: 12000,
+    availableBalance: 0,
+    status: 1,
+    createdAt: "2026-03-24T20:47:55.000Z"
+  });
+});
+
+test("getAdminTransactionDetails validates, rejects missing references, and reports ambiguous matches", async () => {
+  await expect(getAdminTransactionDetails("   ")).rejects.toThrow(
+    "transactionId must be a non-empty string"
+  );
+
+  await expect(
+    getAdminTransactionDetails("missing-ref", {
+      queryFn: async <T extends QueryResultRow = QueryResultRow>() =>
+        createQueryResult([]) as unknown as QueryResult<T>
+    })
+  ).rejects.toThrow(AdminTransactionNotFoundError);
+
+  await expect(
+    getAdminTransactionDetails("duplicate-ref", {
+      queryFn: async <T extends QueryResultRow = QueryResultRow>() =>
+        createQueryResult([
+          {
+            id: 166,
+            userId: "1",
+            amount: 608.64,
+            currency: "NGN",
+            transactionId: "duplicate-ref",
+            settlementId: null,
+            refundId: null,
+            transactionType: 1,
+            description: "duplicate one",
+            ledgerBalance: 1,
+            availableBalance: 1,
+            status: 1,
+            createdAt: new Date("2026-03-11T14:17:57.000Z")
+          },
+          {
+            id: 168,
+            userId: "1",
+            amount: 608.64,
+            currency: "NGN",
+            transactionId: "duplicate-ref",
+            settlementId: null,
+            refundId: null,
+            transactionType: 1,
+            description: "duplicate two",
+            ledgerBalance: 2,
+            availableBalance: 2,
+            status: 1,
+            createdAt: new Date("2026-03-11T14:17:58.000Z")
+          }
+        ]) as unknown as QueryResult<T>
+    })
+  ).rejects.toThrow(AdminTransactionConflictError);
+});
+
+test("GET /admin/transactions/:transactionId returns 401 when the admin token is missing", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/transactions",
+    createAdminTransactionsRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(
+      `${server.baseUrl}/admin/transactions/HOLD:X0i2sZMEkPwkh45t:DELIVERY:10115926`
+    );
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/transactions/:transactionId returns 403 for non-super-admins", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/transactions",
+    createAdminTransactionsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "finance"
+        })
+      ),
+      getAdminTransactionDetailsHandler: async () => {
+        throw new Error("This handler should not be called when access is forbidden");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(
+      `${server.baseUrl}/admin/transactions/HOLD:X0i2sZMEkPwkh45t:DELIVERY:10115926`,
+      {
+        headers: {
+          Authorization: "Bearer any-token"
+        }
+      }
+    );
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/transactions/:transactionId validates the path param and maps 404 and 409 errors", async () => {
+  let server;
+  const validationApplication = express();
+
+  validationApplication.use(
+    "/admin/transactions",
+    createAdminTransactionsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getAdminTransactionDetailsHandler: async () => {
+        throw new Error("This handler should not be called when path validation fails");
+      }
+    })
+  );
+
+  server = await startTestServer(validationApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/transactions/%20%20`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "transactionId must be a non-empty string"
+    });
+  } finally {
+    await server.close();
+  }
+
+  const notFoundApplication = express();
+
+  notFoundApplication.use(
+    "/admin/transactions",
+    createAdminTransactionsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getAdminTransactionDetailsHandler: async () => {
+        throw new AdminTransactionNotFoundError("Transaction not found");
+      }
+    })
+  );
+
+  server = await startTestServer(notFoundApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/transactions/missing-ref`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(404);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Transaction not found"
+    });
+  } finally {
+    await server.close();
+  }
+
+  const conflictApplication = express();
+
+  conflictApplication.use(
+    "/admin/transactions",
+    createAdminTransactionsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getAdminTransactionDetailsHandler: async () => {
+        throw new AdminTransactionConflictError(
+          "Multiple transactions match the provided transactionId"
+        );
+      }
+    })
+  );
+
+  server = await startTestServer(conflictApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/transactions/duplicate-ref`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(409);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Multiple transactions match the provided transactionId"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/transactions/:transactionId returns the full transaction payload", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/transactions",
+    createAdminTransactionsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getAdminTransactionDetailsHandler: async (
+        transactionId
+      ): Promise<AdminTransactionDetailsResponse> => {
+        expect(transactionId).toBe("HOLD:X0i2sZMEkPwkh45t:DELIVERY:10115926");
+
+        return {
+          id: 173,
+          userId: 25,
+          amount: 10403.01,
+          currency: "NGN",
+          transactionId: "HOLD:X0i2sZMEkPwkh45t:DELIVERY:10115926",
+          settlementId: null,
+          refundId: 4,
+          transactionType: "debit",
+          description: "Checkout hold for delivery funds",
+          ledgerBalance: 12000,
+          availableBalance: 0,
+          status: 1,
+          createdAt: "2026-03-24T20:47:55.000Z"
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(
+      `${server.baseUrl}/admin/transactions/%20HOLD:X0i2sZMEkPwkh45t:DELIVERY:10115926%20`,
+      {
+        headers: {
+          Authorization: "Bearer any-token"
+        }
+      }
+    );
+
+    expect(response.status).toBe(200);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      id: 173,
+      userId: 25,
+      amount: 10403.01,
+      currency: "NGN",
+      transactionId: "HOLD:X0i2sZMEkPwkh45t:DELIVERY:10115926",
+      settlementId: null,
+      refundId: 4,
+      transactionType: "debit",
+      description: "Checkout hold for delivery funds",
+      ledgerBalance: 12000,
+      availableBalance: 0,
+      status: 1,
+      createdAt: "2026-03-24T20:47:55.000Z"
     });
   } finally {
     await server.close();
