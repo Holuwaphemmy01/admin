@@ -22,6 +22,10 @@ export const swaggerSpec = {
       description: "Admin authentication endpoints separated from customer auth"
     },
     {
+      name: "Product Management",
+      description: "Administrative product and product-category management endpoints"
+    },
+    {
       name: "User Management",
       description: "Administrative customer-user management endpoints"
     },
@@ -265,6 +269,75 @@ export const swaggerSpec = {
             items: {
               $ref: "#/components/schemas/AdminAccountSummary"
             }
+          }
+        }
+      },
+      CreateProductCategoryRequest: {
+        type: "object",
+        required: [
+          "name",
+          "description",
+          "basicCommissionVat",
+          "standardCommissionVat",
+          "premiumCommissionVat"
+        ],
+        properties: {
+          name: {
+            type: "string",
+            example: "Audio & Hifi"
+          },
+          description: {
+            type: "string",
+            example: "Audio devices and related products"
+          },
+          basicCommissionVat: {
+            type: "number",
+            example: 15.5
+          },
+          standardCommissionVat: {
+            type: "number",
+            example: 14
+          },
+          premiumCommissionVat: {
+            type: "number",
+            example: 13
+          }
+        }
+      },
+      ProductCategorySummary: {
+        type: "object",
+        properties: {
+          id: {
+            type: "integer",
+            example: 7
+          },
+          name: {
+            type: "string",
+            example: "Audio & Hifi"
+          },
+          basicCommissionVat: {
+            type: "number",
+            example: 15.5
+          },
+          standardCommissionVat: {
+            type: "number",
+            example: 14
+          },
+          premiumCommissionVat: {
+            type: "number",
+            example: 13
+          }
+        }
+      },
+      CreateProductCategoryResponse: {
+        type: "object",
+        properties: {
+          message: {
+            type: "string",
+            example: "Category created successfully"
+          },
+          productCategory: {
+            $ref: "#/components/schemas/ProductCategorySummary"
           }
         }
       },
@@ -1059,6 +1132,81 @@ export const swaggerSpec = {
           },
           "409": {
             description: "Admin revoke conflict such as self-revoke, already revoked, or last super admin",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ConflictErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/product/categories": {
+      post: {
+        tags: ["Product Management"],
+        summary: "Create product category with commission VAT tiers",
+        description:
+          "Creates an active product category with required description and commission VAT percentages across the basic, standard, and premium tiers for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/CreateProductCategoryRequest"
+              }
+            }
+          }
+        },
+        responses: {
+          "201": {
+            description: "Product category created successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/CreateProductCategoryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid product category request body",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to create product categories",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            description: "A product category with the same normalized name already exists",
             content: {
               "application/json": {
                 schema: {

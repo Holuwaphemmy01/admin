@@ -254,6 +254,54 @@ test("ensureSuperAdminSeeded inserts the super admin user and credentials when m
   expect(executedQueries[3]?.params?.[1]).toBe("hashed:change-me:12");
 });
 
+test("ensureSuperAdminSeeded does not insert duplicate admin users or credentials when the super admin is already seeded", async () => {
+  const config = loadAdminAuthConfig(testEnv);
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  await ensureSuperAdminSeeded({
+    config,
+    passwordHasher: async (value, rounds) => `hashed:${value}:${rounds}`,
+    runInTransaction: async (operation) =>
+      operation(
+        createTransactionClient(async (text, params) => {
+          executedQueries.push({ text, params });
+
+          if (text.includes('SELECT id FROM public.admin_users WHERE "emailAddress" = $1')) {
+            return createQueryResult([
+              {
+                id: "existing-admin-id"
+              }
+            ]);
+          }
+
+          if (
+            text.includes(
+              'SELECT "adminUserId" FROM public.admin_credentials WHERE "adminUserId" = $1'
+            )
+          ) {
+            return createQueryResult([
+              {
+                adminUserId: "existing-admin-id"
+              }
+            ]);
+          }
+
+          return createQueryResult([]);
+        })
+      )
+  });
+
+  expect(executedQueries).toHaveLength(2);
+  expect(executedQueries[0]?.params).toEqual([config.superAdmin.emailAddress]);
+  expect(executedQueries[1]?.params).toEqual(["existing-admin-id"]);
+  expect(executedQueries.some((query) => query.text.includes("INSERT INTO public.admin_users"))).toBe(
+    false
+  );
+  expect(
+    executedQueries.some((query) => query.text.includes("INSERT INTO public.admin_credentials"))
+  ).toBe(false);
+});
+
 test("loginAdmin accepts username, email, and phone for active DB-backed admins", async () => {
   const config = loadAdminAuthConfig(testEnv);
   const adminRow = {
@@ -1109,6 +1157,7 @@ test("GET /docs.json exposes the swagger specification for the API", async () =>
     expect(payload.paths?.["/admin/auth/change_password"]).toBeDefined();
     expect(payload.paths?.["/admin/auth/admins"]).toBeDefined();
     expect(payload.paths?.["/admin/auth/admins/{id}/revoke"]).toBeDefined();
+    expect(payload.paths?.["/admin/product/categories"]).toBeDefined();
     expect(payload.paths?.["/admin/kyc/pending"]).toBeDefined();
     expect(payload.paths?.["/admin/kyc/stats"]).toBeDefined();
     expect(payload.paths?.["/admin/kyc/{username}"]).toBeDefined();

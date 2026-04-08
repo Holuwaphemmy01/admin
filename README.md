@@ -62,6 +62,7 @@ This is a TypeScript Node.js and Express starter for the BrickPine admin API wit
 - `POST /admin/auth/login`: Logs in an active admin account with a separate admin JWT.
 - `POST /admin/auth/invite`: Creates a pending admin invite and queues an invite email for a super admin.
 - `PUT /admin/auth/change_password`: Lets an authenticated admin change their own password.
+- `POST /admin/product/categories`: Creates an active product category with required description and commission VAT tiers for a super admin.
 - `GET /admin/kyc/pending`: Lists the latest real pending KYC submissions for sellers and logistics users for a super admin.
 - `GET /admin/kyc/stats`: Returns aggregate pending, approved, rejected, and approval-rate KYC stats for the latest real seller and logistics submissions for a super admin.
 - `GET /admin/kyc/:username`: Returns the latest full KYC submission for a seller or logistics user for a super admin.
@@ -78,7 +79,7 @@ This is a TypeScript Node.js and Express starter for the BrickPine admin API wit
 
 ## Database migration
 
-Run the SQL migrations in `migrations/001_create_admin_invites.sql`, `migrations/002_create_admin_auth_tables.sql`, `migrations/003_create_admin_access_audit_logs.sql`, `migrations/004_create_user_access_audit_logs.sql`, `migrations/005_update_user_access_audit_logs_for_reactivation.sql`, and `migrations/006_create_user_deletion_audit_logs.sql` against your PostgreSQL database before using the admin and user-management endpoints.
+Run the SQL migrations in `migrations/001_create_admin_invites.sql`, `migrations/002_create_admin_auth_tables.sql`, `migrations/003_create_admin_access_audit_logs.sql`, `migrations/004_create_user_access_audit_logs.sql`, `migrations/005_update_user_access_audit_logs_for_reactivation.sql`, `migrations/006_create_user_deletion_audit_logs.sql`, `migrations/007_create_kyc_rejection_audit_logs.sql`, and `migrations/008_add_product_category_normalized_name_unique_index.sql` against your PostgreSQL database before using the admin and user-management endpoints.
 
 ## Testing
 

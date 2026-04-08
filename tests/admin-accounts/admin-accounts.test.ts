@@ -141,6 +141,43 @@ test("listAdminAccounts reads from admin_users only and maps response-safe admin
   });
 });
 
+test("listAdminAccounts falls back to email when username is blank and returns an empty list when no admins exist", async () => {
+  const firstResponse = await listAdminAccounts({
+    queryFn: async <T extends QueryResultRow>() =>
+      createQueryResult([
+        {
+          id: "blank-username-admin-id",
+          username: "   ",
+          emailAddress: "blank-admin@brickpine.local",
+          role: "support",
+          status: "active",
+          createdAt: new Date("2026-04-08T09:00:00.000Z")
+        }
+      ]) as unknown as QueryResult<T>
+  });
+
+  expect(firstResponse).toEqual({
+    admins: [
+      {
+        id: "blank-username-admin-id",
+        username: "blank-admin@brickpine.local",
+        role: "support",
+        status: "active",
+        createdAt: "2026-04-08T09:00:00.000Z"
+      }
+    ]
+  });
+
+  const secondResponse = await listAdminAccounts({
+    queryFn: async <T extends QueryResultRow>() =>
+      createQueryResult([]) as unknown as QueryResult<T>
+  });
+
+  expect(secondResponse).toEqual({
+    admins: []
+  });
+});
+
 test("revokeAdminAccess updates admin status to revoked and writes an audit log", async () => {
   const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
 

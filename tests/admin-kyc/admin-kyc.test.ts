@@ -210,6 +210,8 @@ test("getKycStats returns aggregate totals and approval rate from the latest rea
 
   expect(executedQueries).toHaveLength(1);
   expect(executedQueries[0]?.text).toContain("WITH latest_kyc AS");
+  expect(executedQueries[0]?.text).toContain("ROW_NUMBER() OVER");
+  expect(executedQueries[0]?.text).toContain('u."userTypeId" IN (2, 3)');
   expect(executedQueries[0]?.text).toContain('COUNT(*) FILTER (WHERE ls."kycStatus" = 0)');
   expect(executedQueries[0]?.text).toContain('COUNT(*) FILTER (WHERE ls."kycStatus" = 1)');
   expect(executedQueries[0]?.text).toContain('COUNT(*) FILTER (WHERE ls."kycStatus" = 3)');
@@ -218,6 +220,40 @@ test("getKycStats returns aggregate totals and approval rate from the latest rea
     totalApproved: 44,
     totalRejected: 6,
     approvalRate: 70.97
+  });
+});
+
+test("getKycStats returns zeros and avoids divide-by-zero when no latest KYC submissions exist", async () => {
+  const response = await getKycStats({
+    queryFn: async <T extends QueryResultRow>() =>
+      createQueryResult([]) as unknown as QueryResult<T>
+  });
+
+  expect(response).toEqual({
+    totalPending: 0,
+    totalApproved: 0,
+    totalRejected: 0,
+    approvalRate: 0
+  });
+});
+
+test("getKycStats coerces aggregate values and rounds approvalRate to two decimal places", async () => {
+  const response = await getKycStats({
+    queryFn: async <T extends QueryResultRow>() =>
+      createQueryResult([
+        {
+          totalPending: "1",
+          totalApproved: "2",
+          totalRejected: "3"
+        }
+      ]) as unknown as QueryResult<T>
+  });
+
+  expect(response).toEqual({
+    totalPending: 1,
+    totalApproved: 2,
+    totalRejected: 3,
+    approvalRate: 33.33
   });
 });
 

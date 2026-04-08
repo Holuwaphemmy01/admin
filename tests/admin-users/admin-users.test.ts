@@ -317,6 +317,82 @@ test("getPlatformUserStats validates the requested period and builds the correct
   expect(executedQueries[1]?.text).toContain("INTERVAL '1 week'");
 });
 
+test("getPlatformUserStats returns zeros for empty datasets and coerces aggregate values while rounding growth payloads correctly", async () => {
+  const emptyResponse = await getPlatformUserStats(undefined, {
+    nowFactory: () => new Date("2026-04-08T12:00:00.000Z"),
+    queryFn: async <T extends QueryResultRow>(text: string) => {
+      if (text.includes('COUNT(*)::int AS "totalUsers"')) {
+        return createQueryResult([]) as unknown as QueryResult<T>;
+      }
+
+      return createQueryResult([]) as unknown as QueryResult<T>;
+    }
+  });
+
+  expect(emptyResponse).toEqual({
+    totalUsers: 0,
+    buyers: 0,
+    sellers: 0,
+    logistics: 0,
+    suspended: 0,
+    newUsersToday: 0,
+    growthTrend: []
+  });
+
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+  const coercedResponse = await getPlatformUserStats("daily", {
+    nowFactory: () => new Date("2026-04-08T12:00:00.000Z"),
+    queryFn: async <T extends QueryResultRow>(text: string, params?: unknown[]) => {
+      executedQueries.push({ text, params });
+
+      if (text.includes('COUNT(*)::int AS "totalUsers"')) {
+        return createQueryResult([
+          {
+            totalUsers: "9",
+            buyers: "4",
+            sellers: "3",
+            logistics: "2",
+            suspended: "1",
+            newUsersToday: "2"
+          }
+        ]) as unknown as QueryResult<T>;
+      }
+
+      return createQueryResult([
+        {
+          date: new Date("2026-04-07T00:00:00.000Z"),
+          newUsers: "1"
+        },
+        {
+          date: new Date("2026-04-08T00:00:00.000Z"),
+          newUsers: "2"
+        }
+      ]) as unknown as QueryResult<T>;
+    }
+  });
+
+  expect(executedQueries[1]?.text).toContain("date_trunc('day', $1::timestamptz)");
+  expect(executedQueries[1]?.text).toContain("INTERVAL '1 day'");
+  expect(coercedResponse).toEqual({
+    totalUsers: 9,
+    buyers: 4,
+    sellers: 3,
+    logistics: 2,
+    suspended: 1,
+    newUsersToday: 2,
+    growthTrend: [
+      {
+        date: "2026-04-07",
+        newUsers: 1
+      },
+      {
+        date: "2026-04-08",
+        newUsers: 2
+      }
+    ]
+  });
+});
+
 test("getPlatformUserProfile returns the full profile payload with bio and placeholder summaries", async () => {
   const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
 
