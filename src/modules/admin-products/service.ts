@@ -1,11 +1,20 @@
+import { randomUUID } from "node:crypto";
+
 import { QueryResult, QueryResultRow } from "pg";
 
 import { query, withTransaction } from "../../config/db";
 import { normalizeCredentialValue } from "../admin-auth/utils";
 import {
+  AdminProductComputedStatus,
+  AdminProductsListFilters,
+  AdminProductsListResponse,
   CreateProductCategoryRequestBody,
   CreateProductCategoryResponse,
   DeleteProductCategoryResponse,
+  ModerateProductRequestBody,
+  ModerateProductResponse,
+  ProductModerationAction,
+  AdminProductStatusFilter,
   UpdateProductCategoryRequestBody,
   UpdateProductCategoryResponse
 } from "./types";
@@ -37,6 +46,32 @@ interface ExistingProductCategoryRow extends QueryResultRow {
 interface ProductCategoryDeleteUsageRow extends QueryResultRow {
   productCount: string | number;
   productCategoryCommissionCount: string | number;
+}
+
+interface ProductModerationRow extends QueryResultRow {
+  id: number;
+  showProduct: boolean | null;
+  policyAction: ProductModerationAction | null;
+  removedByPolicy: boolean | null;
+}
+
+interface ProductListRow extends QueryResultRow {
+  id: number;
+  name: string | null;
+  sellerUsername: string | null;
+  categoryId: string | number | null;
+  categoryName: string | null;
+  price: string | number | null;
+  currency: string | null;
+  quantity: string | number | null;
+  showProduct: boolean | null;
+  policyAction: ProductModerationAction | null;
+  removedByPolicy: boolean | null;
+  createdAt: Date;
+}
+
+interface TotalCountRow extends QueryResultRow {
+  total: number;
 }
 
 interface CreatedProductCategoryRow extends QueryResultRow {
@@ -77,6 +112,34 @@ export class ProductCategoryNotFoundError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ProductCategoryNotFoundError";
+  }
+}
+
+export class ProductModerationValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProductModerationValidationError";
+  }
+}
+
+export class ProductModerationConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProductModerationConflictError";
+  }
+}
+
+export class ProductNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProductNotFoundError";
+  }
+}
+
+export class ProductListValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProductListValidationError";
   }
 }
 
@@ -179,6 +242,66 @@ function mapNumericValue(value: string | number | null, fieldName: string): numb
   return numericValue;
 }
 
+function mapNullableNumber(value: string | number | null, fieldName: string): number | null {
+  if (value === null) {
+    return null;
+  }
+
+  const numericValue = typeof value === "number" ? value : Number(value);
+
+  if (!Number.isFinite(numericValue)) {
+    throw new Error(`Product list returned an invalid ${fieldName} value`);
+  }
+
+  return numericValue;
+}
+
+function mapNullableInteger(value: string | number | null, fieldName: string): number | null {
+  if (value === null) {
+    return null;
+  }
+
+  const numericValue = typeof value === "number" ? value : Number(value);
+
+  if (!Number.isInteger(numericValue) || numericValue < 0) {
+    throw new Error(`Product list returned an invalid ${fieldName} value`);
+  }
+
+  return numericValue;
+}
+
+function normalizeProductModerationAction(
+  value: ProductModerationAction,
+  ErrorType: MessageErrorConstructor
+): ProductModerationAction {
+  if (value !== "flag" && value !== "remove") {
+    throw new ErrorType("action must be either 'flag' or 'remove'");
+  }
+
+  return value;
+}
+
+function normalizeProductListStatus(
+  value: string | undefined,
+  ErrorType: MessageErrorConstructor
+): AdminProductStatusFilter | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const normalizedValue = normalizeCredentialValue(value).toLowerCase();
+
+  if (
+    normalizedValue !== "active" &&
+    normalizedValue !== "flagged" &&
+    normalizedValue !== "out_of_stock"
+  ) {
+    throw new ErrorType("status must be one of active, flagged, out_of_stock");
+  }
+
+  return normalizedValue as AdminProductStatusFilter;
+}
+
 function mapNullableNumericValue(value: string | number | null): number | null {
   if (value === null) {
     return null;
@@ -229,6 +352,145 @@ function mapProductCategoryDetails(
     basicCommissionVat: mapNullableNumericValue(row.basicCommissionVat),
     standardCommissionVat: mapNullableNumericValue(row.standardCommissionVat),
     premiumCommissionVat: mapNullableNumericValue(row.premiumCommissionVat)
+  };
+}
+
+function buildAdminProductListFilters(
+  filters: AdminProductsListFilters
+): { whereSql: string; params: unknown[] } {
+  const clauses = ["1 = 1"];
+  const params: unknown[] = [];
+
+  if (typeof filters.username === "string") {
+    params.push(filters.username);
+    clauses.push(`u.username IS NOT NULL`);
+    clauses.push(`BTRIM(u.username) <> ''`);
+    clauses.push(`LOWER(BTRIM(u.username)) = LOWER(BTRIM($${params.length}))`);
+  }
+
+  if (typeof filters.categoryId === "number") {
+    params.push(filters.categoryId);
+    clauses.push(`p."productCategoryId" = $${params.length}`);
+  }
+
+  if (filters.status === "active") {
+    clauses.push(`COALESCE(p."removedByPolicy", false) = false`);
+    clauses.push(`COALESCE(p."policyAction", '') NOT IN ('flag', 'remove')`);
+    clauses.push(`(p.quantity IS NULL OR p.quantity > 0)`);
+  } else if (filters.status === "flagged") {
+    clauses.push(`p."policyAction" = 'flag'`);
+    clauses.push(`COALESCE(p."removedByPolicy", false) = false`);
+  } else if (filters.status === "out_of_stock") {
+    clauses.push(`COALESCE(p."removedByPolicy", false) = false`);
+    clauses.push(`COALESCE(p."policyAction", '') NOT IN ('flag', 'remove')`);
+    clauses.push(`p.quantity IS NOT NULL`);
+    clauses.push(`p.quantity <= 0`);
+  }
+
+  return {
+    whereSql: `WHERE ${clauses.join(" AND ")}`,
+    params
+  };
+}
+
+function mapAdminProductStatus(row: ProductListRow): AdminProductComputedStatus {
+  if (row.removedByPolicy === true || row.policyAction === "remove") {
+    return "removed";
+  }
+
+  if (row.policyAction === "flag") {
+    return "flagged";
+  }
+
+  const quantity = mapNullableNumber(row.quantity, "quantity");
+
+  if (quantity !== null && quantity <= 0) {
+    return "out_of_stock";
+  }
+
+  return "active";
+}
+
+export async function listProducts(
+  filters: AdminProductsListFilters,
+  dependencies: AdminProductsServiceDependencies = {}
+): Promise<AdminProductsListResponse> {
+  const queryFn = getQueryFn(dependencies);
+  const normalizedFilters: AdminProductsListFilters = {
+    page: normalizeCategoryId(filters.page, ProductListValidationError),
+    limit: normalizeCategoryId(filters.limit, ProductListValidationError),
+    ...(filters.username !== undefined
+      ? {
+          username: normalizeRequiredTextField(
+            filters.username,
+            "username",
+            ProductListValidationError
+          )
+        }
+      : {}),
+    ...(filters.categoryId !== undefined
+      ? {
+          categoryId: normalizeCategoryId(filters.categoryId, ProductListValidationError)
+        }
+      : {}),
+    ...(filters.status !== undefined
+      ? {
+          status: normalizeProductListStatus(filters.status, ProductListValidationError)
+        }
+      : {})
+  };
+
+  const { whereSql, params } = buildAdminProductListFilters(normalizedFilters);
+  const paginationParams = [
+    ...params,
+    normalizedFilters.limit,
+    (normalizedFilters.page - 1) * normalizedFilters.limit
+  ];
+
+  const productsResult = await queryFn<ProductListRow>(
+    [
+      "SELECT",
+      '  p.id, p.name, p.price, p.currency, p.quantity, p."showProduct", p."policyAction",',
+      '  p."removedByPolicy", p."createdAt", u.username AS "sellerUsername",',
+      '  p."productCategoryId" AS "categoryId", pc.name AS "categoryName"',
+      "FROM public.product p",
+      'LEFT JOIN public."user" u ON u.id = p."userId"',
+      'LEFT JOIN public.product_category pc ON pc.id = p."productCategoryId"',
+      whereSql,
+      'ORDER BY p."createdAt" DESC, p.id DESC',
+      `LIMIT $${params.length + 1}`,
+      `OFFSET $${params.length + 2}`
+    ].join("\n"),
+    paginationParams
+  );
+
+  const totalResult = await queryFn<TotalCountRow>(
+    [
+      "SELECT",
+      "  COUNT(*)::int AS total",
+      "FROM public.product p",
+      'LEFT JOIN public."user" u ON u.id = p."userId"',
+      'LEFT JOIN public.product_category pc ON pc.id = p."productCategoryId"',
+      whereSql
+    ].join("\n"),
+    params
+  );
+
+  return {
+    products: productsResult.rows.map((product) => ({
+      id: Number(product.id),
+      name: typeof product.name === "string" ? product.name : null,
+      sellerUsername:
+        typeof product.sellerUsername === "string" ? product.sellerUsername : null,
+      categoryId: mapNullableInteger(product.categoryId, "categoryId"),
+      categoryName: typeof product.categoryName === "string" ? product.categoryName : null,
+      price: mapNullableNumber(product.price, "price"),
+      currency: typeof product.currency === "string" ? product.currency : null,
+      quantity: mapNullableNumber(product.quantity, "quantity"),
+      status: mapAdminProductStatus(product),
+      createdAt: product.createdAt.toISOString()
+    })),
+    total: Number(totalResult.rows[0]?.total ?? 0)
   };
 }
 
@@ -571,6 +833,131 @@ export async function deleteProductCategory(
 
     return {
       message: "Category deleted successfully"
+    };
+  });
+}
+
+interface ModerateProductInput extends ModerateProductRequestBody {
+  productId: number;
+  actedByAdminUserId: string;
+}
+
+export async function moderateProduct(
+  input: ModerateProductInput,
+  dependencies: AdminProductsServiceDependencies = {}
+): Promise<ModerateProductResponse> {
+  const productId = normalizeCategoryId(input.productId, ProductModerationValidationError);
+  const reason = normalizeRequiredTextField(
+    input.reason,
+    "reason",
+    ProductModerationValidationError
+  );
+  const action = normalizeProductModerationAction(
+    input.action,
+    ProductModerationValidationError
+  );
+  const actedByAdminUserId = normalizeRequiredTextField(
+    input.actedByAdminUserId,
+    "actedByAdminUserId",
+    ProductModerationValidationError
+  );
+  const nowFactory = getNowFactory(dependencies);
+  const runInTransaction = getRunInTransaction(dependencies);
+
+  return runInTransaction(async (client) => {
+    const currentProductResult = await client.query<ProductModerationRow>(
+      [
+        "SELECT",
+        '  p.id, p."showProduct", p."policyAction", p."removedByPolicy"',
+        "FROM public.product p",
+        "WHERE p.id = $1",
+        "FOR UPDATE"
+      ].join("\n"),
+      [productId]
+    );
+
+    const currentProduct = currentProductResult.rows[0];
+
+    if (!currentProduct) {
+      throw new ProductNotFoundError("Product not found");
+    }
+
+    const isCurrentlyRemoved =
+      currentProduct.removedByPolicy === true || currentProduct.showProduct === false;
+
+    if (action === "flag" && currentProduct.policyAction === "flag" && !isCurrentlyRemoved) {
+      throw new ProductModerationConflictError("Product is already flagged");
+    }
+
+    if (action === "remove" && isCurrentlyRemoved) {
+      throw new ProductModerationConflictError("Product is already removed");
+    }
+
+    if (action === "flag" && currentProduct.policyAction === "remove") {
+      throw new ProductModerationConflictError(
+        "Product has already been removed and cannot be flagged"
+      );
+    }
+
+    const timestamp = nowFactory();
+    const nextShowProduct = action === "remove" ? false : (currentProduct.showProduct ?? true);
+    const nextRemovedByPolicy = action === "remove";
+
+    const updatedProductResult = await client.query<ProductModerationRow>(
+      [
+        "UPDATE public.product",
+        'SET "policyAction" = $1,',
+        '    "policyReason" = $2,',
+        '    "policyActionAt" = $3,',
+        '    "policyUpdatedByAdminUserId" = $4,',
+        '    "removedByPolicy" = $5,',
+        '    "showProduct" = $6,',
+        '    "updatedAt" = $7',
+        "WHERE id = $8",
+        "RETURNING id"
+      ].join("\n"),
+      [
+        action,
+        reason,
+        timestamp,
+        actedByAdminUserId,
+        nextRemovedByPolicy,
+        nextShowProduct,
+        timestamp,
+        productId
+      ]
+    );
+
+    if (!updatedProductResult.rows[0]) {
+      throw new Error("Product moderation update did not return an updated row");
+    }
+
+    await client.query(
+      [
+        "INSERT INTO public.product_policy_action_audit_logs (",
+        '  id, "targetProductId", "actedByAdminUserId", action, reason,',
+        '  "previousPolicyAction", "previousShowProduct", "nextShowProduct", "createdAt"',
+        ") VALUES (",
+        "  $1, $2, $3, $4, $5, $6, $7, $8, $9",
+        ")"
+      ].join("\n"),
+      [
+        randomUUID(),
+        productId,
+        actedByAdminUserId,
+        action,
+        reason,
+        currentProduct.policyAction,
+        currentProduct.showProduct ?? true,
+        nextShowProduct,
+        timestamp
+      ]
+    );
+
+    return {
+      message:
+        action === "flag" ? "Product flagged successfully" : "Product removed successfully",
+      productId
     };
   });
 }

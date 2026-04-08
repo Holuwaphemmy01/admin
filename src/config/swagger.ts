@@ -411,6 +411,103 @@ export const swaggerSpec = {
           }
         }
       },
+      ModerateProductRequest: {
+        type: "object",
+        required: ["reason", "action"],
+        properties: {
+          reason: {
+            type: "string",
+            example: "Counterfeit product listing"
+          },
+          action: {
+            type: "string",
+            enum: ["flag", "remove"],
+            example: "flag"
+          }
+        }
+      },
+      ModerateProductResponse: {
+        type: "object",
+        properties: {
+          message: {
+            type: "string",
+            example: "Product flagged successfully"
+          },
+          productId: {
+            type: "integer",
+            example: 65
+          }
+        }
+      },
+      AdminProductSummary: {
+        type: "object",
+        properties: {
+          id: {
+            type: "integer",
+            example: 65
+          },
+          name: {
+            type: "string",
+            nullable: true,
+            example: "Sandwich Maker"
+          },
+          sellerUsername: {
+            type: "string",
+            nullable: true,
+            example: "seller_117825241"
+          },
+          categoryId: {
+            type: "integer",
+            nullable: true,
+            example: 7
+          },
+          categoryName: {
+            type: "string",
+            nullable: true,
+            example: "Home Appliances"
+          },
+          price: {
+            type: "number",
+            nullable: true,
+            example: 25000
+          },
+          currency: {
+            type: "string",
+            nullable: true,
+            example: "NGN"
+          },
+          quantity: {
+            type: "number",
+            nullable: true,
+            example: 12
+          },
+          status: {
+            type: "string",
+            enum: ["active", "flagged", "out_of_stock", "removed"],
+            example: "active"
+          },
+          createdAt: {
+            type: "string",
+            format: "date-time",
+            example: "2026-04-08T12:00:00.000Z"
+          }
+        }
+      },
+      AdminProductsListResponse: {
+        type: "object",
+        properties: {
+          products: {
+            type: "array",
+            items: {
+              $ref: "#/components/schemas/AdminProductSummary"
+            }
+          },
+          total: {
+            type: "integer",
+            example: 65
+          }
+        }
+      },
       PlatformUserSummary: {
         type: "object",
         properties: {
@@ -1463,6 +1560,212 @@ export const swaggerSpec = {
               "application/json": {
                 schema: {
                   $ref: "#/components/schemas/ConflictErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/product/{productId}/flag": {
+      put: {
+        tags: ["Product Management"],
+        summary: "Flag/remove a product violating policy",
+        description:
+          "Flags a product for policy review or soft-removes it from customer visibility by updating product moderation fields and recording an audit log for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "path",
+            name: "productId",
+            required: true,
+            schema: {
+              type: "integer",
+              minimum: 1
+            },
+            description: "Positive integer product id"
+          }
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/ModerateProductRequest"
+              }
+            }
+          }
+        },
+        responses: {
+          "200": {
+            description: "Product moderation action applied successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ModerateProductResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid product id or request body",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to moderate products",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "Product was not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            description: "Product moderation conflict such as already flagged or already removed",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ConflictErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/products": {
+      get: {
+        tags: ["Product Management"],
+        summary: "List all products across all sellers",
+        description:
+          "Returns paginated products across sellers with optional seller-username, category, and computed-status filters for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "query",
+            name: "username",
+            required: false,
+            schema: {
+              type: "string"
+            },
+            description: "Filter by seller username"
+          },
+          {
+            in: "query",
+            name: "categoryId",
+            required: false,
+            schema: {
+              type: "integer",
+              minimum: 1
+            },
+            description: "Filter by product category id"
+          },
+          {
+            in: "query",
+            name: "status",
+            required: false,
+            schema: {
+              type: "string",
+              enum: ["active", "flagged", "out_of_stock"]
+            },
+            description: "Filter by computed product status"
+          },
+          {
+            in: "query",
+            name: "page",
+            required: false,
+            schema: {
+              type: "integer",
+              minimum: 1,
+              default: 1
+            },
+            description: "Pagination page number"
+          },
+          {
+            in: "query",
+            name: "limit",
+            required: false,
+            schema: {
+              type: "integer",
+              minimum: 1,
+              maximum: 100,
+              default: 20
+            },
+            description: "Results per page"
+          }
+        ],
+        responses: {
+          "200": {
+            description: "Products retrieved successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/AdminProductsListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid product-list query parameters",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to list products",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
                 }
               }
             }
