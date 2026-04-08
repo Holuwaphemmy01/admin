@@ -56,3 +56,8 @@ export interface ApproveUserKycResponse {
   message: string;
   username: string;
 }
+
+export interface RejectUserKycResponse {
+  message: string;
+  username: string;
+}

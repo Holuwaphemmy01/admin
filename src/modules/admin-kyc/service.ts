@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { QueryResult, QueryResultRow } from "pg";
 
 import { query, withTransaction } from "../../config/db";
@@ -12,6 +14,7 @@ import {
   PendingKycStatus,
   PendingKycType,
   PENDING_KYC_STATUS,
+  RejectUserKycResponse,
   REJECTED_KYC_STATUS,
   UserKycSubmissionResponse
 } from "./types";
@@ -34,6 +37,7 @@ interface AdminKycServiceDependencies {
   queryFn?: QueryFunction;
   runInTransaction?: RunInTransaction;
   nowFactory?: () => Date;
+  uuidFactory?: () => string;
 }
 
 interface PendingKycSubmissionRow extends QueryResultRow {
@@ -128,6 +132,10 @@ function getNowFactory(dependencies: AdminKycServiceDependencies = {}): () => Da
   return dependencies.nowFactory ?? (() => new Date());
 }
 
+function getUuidFactory(dependencies: AdminKycServiceDependencies = {}): () => string {
+  return dependencies.uuidFactory ?? randomUUID;
+}
+
 function mapTextValue(value: string | null): string {
   return typeof value === "string" ? value : "";
 }
@@ -146,6 +154,16 @@ function normalizeKycUsername(username: string, ErrorType: MessageErrorConstruct
   }
 
   return normalizedUsername;
+}
+
+function normalizeRequiredReason(reason: string, ErrorType: MessageErrorConstructor): string {
+  const normalizedReason = reason.trim();
+
+  if (normalizedReason === "") {
+    throw new ErrorType("reason is required and must be a non-empty string");
+  }
+
+  return normalizedReason;
 }
 
 function hasNonBlankText(value: string | null): boolean {
@@ -335,6 +353,27 @@ export class ApproveUserKycConflictError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ApproveUserKycConflictError";
+  }
+}
+
+export class RejectUserKycValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RejectUserKycValidationError";
+  }
+}
+
+export class RejectUserKycNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RejectUserKycNotFoundError";
+  }
+}
+
+export class RejectUserKycConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RejectUserKycConflictError";
   }
 }
 
@@ -583,6 +622,109 @@ export async function approveUserKyc(
 
     return {
       message: "KYC status updated to approved",
+      username: mapTextValue(matchedUser.username)
+    };
+  });
+}
+
+interface RejectUserKycInput {
+  username: string;
+  reason: string;
+  rejectedByAdminId: string;
+}
+
+export async function rejectUserKyc(
+  input: RejectUserKycInput,
+  dependencies: AdminKycServiceDependencies = {}
+): Promise<RejectUserKycResponse> {
+  const normalizedUsername = normalizeKycUsername(input.username, RejectUserKycValidationError);
+  const normalizedReason = normalizeRequiredReason(input.reason, RejectUserKycValidationError);
+  const normalizedRejectedByAdminId = input.rejectedByAdminId.trim();
+
+  if (normalizedRejectedByAdminId === "") {
+    throw new RejectUserKycValidationError("rejectedByAdminId must be a non-empty string");
+  }
+
+  const runInTransaction = getRunInTransaction(dependencies);
+  const nowFactory = getNowFactory(dependencies);
+  const uuidFactory = getUuidFactory(dependencies);
+
+  return runInTransaction(async (client) => {
+    const matchedUserResult = await client.query<UserKycMatchRow>(
+      [
+        "SELECT",
+        '  u.id, u.username, u."userTypeId", u."kycStatus"',
+        'FROM public."user" u',
+        'WHERE u."userTypeId" IN (2, 3) AND LOWER(u.username) = LOWER($1)',
+        'ORDER BY u."createdAt" DESC',
+        "LIMIT 2",
+        "FOR UPDATE"
+      ].join("\n"),
+      [normalizedUsername]
+    );
+
+    if ((matchedUserResult.rowCount ?? 0) === 0) {
+      throw new RejectUserKycNotFoundError("KYC submission not found");
+    }
+
+    if ((matchedUserResult.rowCount ?? 0) > 1) {
+      throw new RejectUserKycConflictError("Multiple users match the provided username");
+    }
+
+    const matchedUser = matchedUserResult.rows[0];
+    const formsResult = await client.query<UserKycFormRow>(
+      [
+        "SELECT",
+        "  k.id",
+        "FROM public.kyc k",
+        'WHERE k."userId" = $1',
+        'ORDER BY k."createdAt" DESC, k.id DESC',
+        "LIMIT 1"
+      ].join("\n"),
+      [matchedUser.id]
+    );
+
+    if ((formsResult.rowCount ?? 0) === 0) {
+      throw new RejectUserKycNotFoundError("KYC submission not found");
+    }
+
+    if (matchedUser.kycStatus === 3) {
+      throw new RejectUserKycConflictError("KYC is already rejected");
+    }
+
+    const latestSubmission = formsResult.rows[0];
+    const timestamp = nowFactory();
+
+    await client.query(
+      [
+        'UPDATE public."user"',
+        'SET "kycStatus" = $1,',
+        '    "updatedAt" = $2',
+        "WHERE id = $3"
+      ].join("\n"),
+      [3, timestamp, matchedUser.id]
+    );
+
+    await client.query(
+      [
+        "INSERT INTO public.kyc_rejection_audit_logs (",
+        '  id, "targetUserId", "targetKycId", "actedByAdminUserId", reason, "createdAt"',
+        ") VALUES (",
+        "  $1, $2, $3, $4, $5, $6",
+        ")"
+      ].join("\n"),
+      [
+        uuidFactory(),
+        matchedUser.id,
+        latestSubmission.id,
+        normalizedRejectedByAdminId,
+        normalizedReason,
+        timestamp
+      ]
+    );
+
+    return {
+      message: "KYC rejected",
       username: mapTextValue(matchedUser.username)
     };
   });

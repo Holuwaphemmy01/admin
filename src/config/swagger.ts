@@ -471,6 +471,29 @@ export const swaggerSpec = {
           }
         }
       },
+      RejectKycRequest: {
+        type: "object",
+        required: ["reason"],
+        properties: {
+          reason: {
+            type: "string",
+            example: "Submitted documents do not match the registered business details"
+          }
+        }
+      },
+      RejectKycResponse: {
+        type: "object",
+        properties: {
+          message: {
+            type: "string",
+            example: "KYC rejected"
+          },
+          username: {
+            type: "string",
+            example: "seller_117825241"
+          }
+        }
+      },
       PendingKycListResponse: {
         type: "object",
         properties: {
@@ -1283,6 +1306,102 @@ export const swaggerSpec = {
           },
           "409": {
             description: "KYC approval conflict such as duplicate username match or already approved",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ConflictErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/kyc/{username}/reject": {
+      put: {
+        tags: ["KYC Verification"],
+        summary: "Reject KYC with reason",
+        description:
+          "Rejects the latest KYC submission for a seller or logistics user, requires a rejection reason, and records that reason for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "path",
+            name: "username",
+            required: true,
+            schema: {
+              type: "string"
+            },
+            description: "Case-insensitive username lookup for the user whose KYC should be rejected"
+          }
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/RejectKycRequest"
+              }
+            }
+          }
+        },
+        responses: {
+          "200": {
+            description: "KYC rejected successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/RejectKycResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid username path parameter or missing rejection reason",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to reject KYC submissions",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "KYC submission was not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            description: "KYC rejection conflict such as duplicate username match or already rejected",
             content: {
               "application/json": {
                 schema: {

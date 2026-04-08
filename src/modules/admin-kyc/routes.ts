@@ -8,6 +8,10 @@ import {
   ApproveUserKycValidationError,
   getUserKycSubmission,
   listPendingKycSubmissions,
+  rejectUserKyc,
+  RejectUserKycConflictError,
+  RejectUserKycNotFoundError,
+  RejectUserKycValidationError,
   UserKycSubmissionConflictError,
   UserKycSubmissionNotFoundError,
   UserKycSubmissionValidationError
@@ -24,6 +28,7 @@ import {
 interface AdminKycRouterDependencies {
   listPendingKycSubmissionsHandler?: typeof listPendingKycSubmissions;
   approveUserKycHandler?: typeof approveUserKyc;
+  rejectUserKycHandler?: typeof rejectUserKyc;
   getUserKycSubmissionHandler?: typeof getUserKycSubmission;
   authenticateAdminMiddleware?: RequestHandler;
   requireSuperAdminMiddleware?: RequestHandler;
@@ -81,6 +86,7 @@ export function createAdminKycRouter(
   const listPendingKycSubmissionsHandler =
     dependencies.listPendingKycSubmissionsHandler ?? listPendingKycSubmissions;
   const approveUserKycHandler = dependencies.approveUserKycHandler ?? approveUserKyc;
+  const rejectUserKycHandler = dependencies.rejectUserKycHandler ?? rejectUserKyc;
   const getUserKycSubmissionHandler =
     dependencies.getUserKycSubmissionHandler ?? getUserKycSubmission;
   const authenticateAdminMiddleware =
@@ -130,6 +136,73 @@ export function createAdminKycRouter(
       } catch (error) {
         if (error instanceof AdminKycQueryValidationError) {
           response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
+
+  adminKycRouter.put(
+    "/:username/reject",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      const rawUsername = request.params.username;
+      const username = Array.isArray(rawUsername) ? rawUsername[0] ?? "" : rawUsername ?? "";
+      const { reason } = request.body ?? {};
+
+      if (typeof reason !== "string" || reason.trim() === "") {
+        response.status(400).json({
+          message: "reason is required and must be a non-empty string"
+        });
+
+        return;
+      }
+
+      if (!request.admin) {
+        response.status(401).json({
+          message: "Unauthorized admin access"
+        });
+
+        return;
+      }
+
+      try {
+        const rejectKycResponse = await rejectUserKycHandler({
+          username,
+          reason,
+          rejectedByAdminId: request.admin.sub
+        });
+
+        console.info(`KYC rejected for "${username.trim()}".`);
+
+        response.json(rejectKycResponse);
+      } catch (error) {
+        if (error instanceof RejectUserKycValidationError) {
+          response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof RejectUserKycNotFoundError) {
+          response.status(404).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof RejectUserKycConflictError) {
+          console.warn(`KYC rejection conflict for "${username.trim()}".`);
+
+          response.status(409).json({
             message: error.message
           });
 
