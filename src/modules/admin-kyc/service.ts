@@ -14,6 +14,7 @@ import {
   PendingKycStatus,
   PendingKycType,
   PENDING_KYC_STATUS,
+  KycStatsResponse,
   RejectUserKycResponse,
   REJECTED_KYC_STATUS,
   UserKycSubmissionResponse
@@ -48,6 +49,12 @@ interface PendingKycSubmissionRow extends QueryResultRow {
 
 interface TotalCountRow extends QueryResultRow {
   total: number;
+}
+
+interface KycStatsRow extends QueryResultRow {
+  totalPending: number;
+  totalApproved: number;
+  totalRejected: number;
 }
 
 interface UserKycMatchRow extends QueryResultRow {
@@ -418,6 +425,24 @@ function buildPendingKycBaseQuery(): string {
   ].join("\n");
 }
 
+function buildKycStatsBaseQuery(): string {
+  return [
+    "WITH latest_kyc AS (",
+    "  SELECT",
+    '    k.id, k."userId",',
+    '    ROW_NUMBER() OVER (PARTITION BY k."userId" ORDER BY k."createdAt" DESC, k.id DESC) AS row_number',
+    "  FROM public.kyc k",
+    "), latest_submissions AS (",
+    "  SELECT",
+    '    u."kycStatus"',
+    "  FROM latest_kyc",
+    '  JOIN public."user" u ON u.id = latest_kyc."userId"',
+    "  WHERE latest_kyc.row_number = 1",
+    '    AND u."userTypeId" IN (2, 3)',
+    ")"
+  ].join("\n");
+}
+
 function buildPendingKycFilters(
   filters: PendingKycListFilters
 ): { whereSql: string; params: unknown[] } {
@@ -476,6 +501,39 @@ export async function listPendingKycSubmissions(
   return {
     submissions: submissionsResult.rows.map(mapPendingKycSubmission),
     total: Number(totalResult.rows[0]?.total ?? 0)
+  };
+}
+
+export async function getKycStats(
+  dependencies: AdminKycServiceDependencies = {}
+): Promise<KycStatsResponse> {
+  const queryFn = getQueryFn(dependencies);
+  const statsResult = await queryFn<KycStatsRow>(
+    [
+      buildKycStatsBaseQuery(),
+      "SELECT",
+      '  COUNT(*) FILTER (WHERE ls."kycStatus" = 0)::int AS "totalPending",',
+      '  COUNT(*) FILTER (WHERE ls."kycStatus" = 1)::int AS "totalApproved",',
+      '  COUNT(*) FILTER (WHERE ls."kycStatus" = 3)::int AS "totalRejected"',
+      "FROM latest_submissions ls"
+    ].join("\n")
+  );
+
+  const totals = statsResult.rows[0];
+  const totalPending = Number(totals?.totalPending ?? 0);
+  const totalApproved = Number(totals?.totalApproved ?? 0);
+  const totalRejected = Number(totals?.totalRejected ?? 0);
+  const totalSubmissions = totalPending + totalApproved + totalRejected;
+  const approvalRate =
+    totalSubmissions === 0
+      ? 0
+      : Number(((totalApproved / totalSubmissions) * 100).toFixed(2));
+
+  return {
+    totalPending,
+    totalApproved,
+    totalRejected,
+    approvalRate
   };
 }
 

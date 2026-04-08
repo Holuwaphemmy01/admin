@@ -13,6 +13,7 @@ import {
   ApproveUserKycNotFoundError,
   ApproveUserKycValidationError,
   getUserKycSubmission,
+  getKycStats,
   listPendingKycSubmissions,
   rejectUserKyc,
   RejectUserKycConflictError,
@@ -23,6 +24,7 @@ import {
   UserKycSubmissionValidationError
 } from "../../src/modules/admin-kyc/service";
 import {
+  KycStatsResponse,
   RejectUserKycResponse,
   UserKycSubmissionResponse
 } from "../../src/modules/admin-kyc/types";
@@ -187,6 +189,36 @@ test("listPendingKycSubmissions applies the derived KYC type filter consistently
   expect(executedQueries[0]?.text).toContain('ps."kycType" = $1');
   expect(executedQueries[0]?.params).toEqual(["registered_logistic", 10, 10]);
   expect(executedQueries[1]?.params).toEqual(["registered_logistic"]);
+});
+
+test("getKycStats returns aggregate totals and approval rate from the latest real KYC submissions", async () => {
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await getKycStats({
+    queryFn: async <T extends QueryResultRow>(text: string, params?: unknown[]) => {
+      executedQueries.push({ text, params });
+
+      return createQueryResult([
+        {
+          totalPending: 12,
+          totalApproved: 44,
+          totalRejected: 6
+        }
+      ]) as unknown as QueryResult<T>;
+    }
+  });
+
+  expect(executedQueries).toHaveLength(1);
+  expect(executedQueries[0]?.text).toContain("WITH latest_kyc AS");
+  expect(executedQueries[0]?.text).toContain('COUNT(*) FILTER (WHERE ls."kycStatus" = 0)');
+  expect(executedQueries[0]?.text).toContain('COUNT(*) FILTER (WHERE ls."kycStatus" = 1)');
+  expect(executedQueries[0]?.text).toContain('COUNT(*) FILTER (WHERE ls."kycStatus" = 3)');
+  expect(response).toEqual({
+    totalPending: 12,
+    totalApproved: 44,
+    totalRejected: 6,
+    approvalRate: 70.97
+  });
 });
 
 test("getUserKycSubmission returns the latest KYC submission grouped into form sections", async () => {
@@ -901,6 +933,29 @@ test("GET /admin/kyc/pending returns 401 when the admin token is missing", async
   }
 });
 
+test("GET /admin/kyc/stats returns 401 when the admin token is missing", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/kyc",
+    createAdminKycRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/kyc/stats`);
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
 test("PUT /admin/kyc/:username/approve returns 401 when the admin token is missing", async () => {
   const application = express();
 
@@ -1076,6 +1131,41 @@ test("GET /admin/kyc/pending returns 403 for non-super-admins", async () => {
 
   try {
     const response = await fetch(`${server.baseUrl}/admin/kyc/pending`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/kyc/stats returns 403 for non-super-admins", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/kyc",
+    createAdminKycRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "support"
+        })
+      ),
+      getKycStatsHandler: async () => ({
+        totalPending: 1,
+        totalApproved: 2,
+        totalRejected: 3,
+        approvalRate: 33.33
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/kyc/stats`, {
       headers: {
         Authorization: "Bearer any-token"
       }
@@ -1578,6 +1668,46 @@ test("GET /admin/kyc/pending parses filters, defaults page, caps limit, and retu
         submittedAt: "2026-03-31T04:26:08.916Z"
       }
     ]);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/kyc/stats returns aggregate KYC stats for super admins", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/kyc",
+    createAdminKycRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getKycStatsHandler: async (): Promise<KycStatsResponse> => ({
+        totalPending: 12,
+        totalApproved: 44,
+        totalRejected: 6,
+        approvalRate: 70.97
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/kyc/stats`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(200);
+
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    expect(payload).toEqual({
+      totalPending: 12,
+      totalApproved: 44,
+      totalRejected: 6,
+      approvalRate: 70.97
+    });
   } finally {
     await server.close();
   }

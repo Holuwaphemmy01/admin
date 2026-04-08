@@ -61,3 +61,10 @@ export interface RejectUserKycResponse {
   message: string;
   username: string;
 }
+
+export interface KycStatsResponse {
+  totalPending: number;
+  totalApproved: number;
+  totalRejected: number;
+  approvalRate: number;
+}

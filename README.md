@@ -63,6 +63,7 @@ This is a TypeScript Node.js and Express starter for the BrickPine admin API wit
 - `POST /admin/auth/invite`: Creates a pending admin invite and queues an invite email for a super admin.
 - `PUT /admin/auth/change_password`: Lets an authenticated admin change their own password.
 - `GET /admin/kyc/pending`: Lists the latest real pending KYC submissions for sellers and logistics users for a super admin.
+- `GET /admin/kyc/stats`: Returns aggregate pending, approved, rejected, and approval-rate KYC stats for the latest real seller and logistics submissions for a super admin.
 - `GET /admin/kyc/:username`: Returns the latest full KYC submission for a seller or logistics user for a super admin.
 - `PUT /admin/kyc/:username/approve`: Approves the latest KYC submission for a seller or logistics user for a super admin.
 - `PUT /admin/kyc/:username/reject`: Rejects the latest KYC submission for a seller or logistics user, requires a rejection reason, and records it for a super admin.

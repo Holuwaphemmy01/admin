@@ -7,6 +7,7 @@ import {
   ApproveUserKycNotFoundError,
   ApproveUserKycValidationError,
   getUserKycSubmission,
+  getKycStats,
   listPendingKycSubmissions,
   rejectUserKyc,
   RejectUserKycConflictError,
@@ -26,6 +27,7 @@ import {
 } from "./types";
 
 interface AdminKycRouterDependencies {
+  getKycStatsHandler?: typeof getKycStats;
   listPendingKycSubmissionsHandler?: typeof listPendingKycSubmissions;
   approveUserKycHandler?: typeof approveUserKyc;
   rejectUserKycHandler?: typeof rejectUserKyc;
@@ -83,6 +85,7 @@ export function createAdminKycRouter(
   dependencies: AdminKycRouterDependencies = {}
 ): Router {
   const adminKycRouter = Router();
+  const getKycStatsHandler = dependencies.getKycStatsHandler ?? getKycStats;
   const listPendingKycSubmissionsHandler =
     dependencies.listPendingKycSubmissionsHandler ?? listPendingKycSubmissions;
   const approveUserKycHandler = dependencies.approveUserKycHandler ?? approveUserKyc;
@@ -93,6 +96,21 @@ export function createAdminKycRouter(
     dependencies.authenticateAdminMiddleware ?? authenticateAdmin;
   const requireSuperAdminMiddleware =
     dependencies.requireSuperAdminMiddleware ?? requireAdminRole("super_admin");
+
+  adminKycRouter.get(
+    "/stats",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (_request: Request, response: Response, next) => {
+      try {
+        const kycStatsResponse = await getKycStatsHandler();
+
+        response.json(kycStatsResponse);
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
 
   adminKycRouter.get(
     "/pending",

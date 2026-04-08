@@ -494,6 +494,27 @@ export const swaggerSpec = {
           }
         }
       },
+      KycStatsResponse: {
+        type: "object",
+        properties: {
+          totalPending: {
+            type: "integer",
+            example: 12
+          },
+          totalApproved: {
+            type: "integer",
+            example: 44
+          },
+          totalRejected: {
+            type: "integer",
+            example: 6
+          },
+          approvalRate: {
+            type: "number",
+            example: 70.97
+          }
+        }
+      },
       PendingKycListResponse: {
         type: "object",
         properties: {
@@ -1134,6 +1155,51 @@ export const swaggerSpec = {
           },
           "403": {
             description: "Authenticated admin is not allowed to list pending KYC submissions",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/kyc/stats": {
+      get: {
+        tags: ["KYC Verification"],
+        summary: "KYC approval stats",
+        description:
+          "Returns aggregate KYC totals across the latest real seller and logistics submissions, including pending, approved, rejected, and approval rate, for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        responses: {
+          "200": {
+            description: "KYC stats returned successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/KycStatsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to view KYC stats",
             content: {
               "application/json": {
                 schema: {
