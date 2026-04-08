@@ -2,6 +2,8 @@ import { Request, RequestHandler, Response, Router } from "express";
 
 import { authenticateAdmin, requireAdminRole } from "../admin-auth/middleware";
 import {
+  ADMIN_ORDER_STATS_PERIODS,
+  AdminOrdersStatsPeriod,
   AdminOrdersListFilters,
   CancelAdminOrdersRequestBody,
   DEFAULT_ADMIN_ORDERS_LIMIT,
@@ -11,14 +13,17 @@ import {
 import {
   AdminOrderConflictError,
   AdminOrderNotFoundError,
+  AdminOrderStatsValidationError,
   AdminOrdersValidationError,
   cancelOrdersByAdmin,
+  getOrderStats,
   getOrderDetails,
   listOrders
 } from "./service";
 
 interface AdminOrdersRouterDependencies {
   cancelOrdersByAdminHandler?: typeof cancelOrdersByAdmin;
+  getOrderStatsHandler?: typeof getOrderStats;
   getOrderDetailsHandler?: typeof getOrderDetails;
   listOrdersHandler?: typeof listOrders;
   authenticateAdminMiddleware?: RequestHandler;
@@ -86,12 +91,23 @@ function parseIsoDate(value: string, fieldName: string): Date {
   return parsedDate;
 }
 
+function parseStatsPeriod(value: string): AdminOrdersStatsPeriod {
+  const normalizedValue = value.trim().toLowerCase();
+
+  if (!ADMIN_ORDER_STATS_PERIODS.includes(normalizedValue as AdminOrdersStatsPeriod)) {
+    throw new AdminOrdersQueryValidationError("period must be one of daily, weekly, monthly");
+  }
+
+  return normalizedValue as AdminOrdersStatsPeriod;
+}
+
 export function createAdminOrdersRouter(
   dependencies: AdminOrdersRouterDependencies = {}
 ): Router {
   const adminOrdersRouter = Router();
   const cancelOrdersByAdminHandler =
     dependencies.cancelOrdersByAdminHandler ?? cancelOrdersByAdmin;
+  const getOrderStatsHandler = dependencies.getOrderStatsHandler ?? getOrderStats;
   const getOrderDetailsHandler = dependencies.getOrderDetailsHandler ?? getOrderDetails;
   const listOrdersHandler = dependencies.listOrdersHandler ?? listOrders;
   const authenticateAdminMiddleware =
@@ -178,6 +194,41 @@ export function createAdminOrdersRouter(
         if (
           error instanceof AdminOrdersQueryValidationError ||
           error instanceof AdminOrdersValidationError
+        ) {
+          response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
+
+  adminOrdersRouter.get(
+    "/stats",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      try {
+        const periodQuery = readSingleQueryValue(request.query.period);
+        let period: AdminOrdersStatsPeriod | undefined;
+
+        if (typeof periodQuery === "string" && periodQuery !== "") {
+          period = parseStatsPeriod(periodQuery);
+        } else if (periodQuery === "") {
+          throw new AdminOrdersQueryValidationError("period must be one of daily, weekly, monthly");
+        }
+
+        const statsResponse = await getOrderStatsHandler(period);
+
+        response.json(statsResponse);
+      } catch (error) {
+        if (
+          error instanceof AdminOrdersQueryValidationError ||
+          error instanceof AdminOrderStatsValidationError
         ) {
           response.status(400).json({
             message: error.message

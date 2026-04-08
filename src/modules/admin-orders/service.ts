@@ -11,10 +11,13 @@ import {
   AdminOrderItemDetails,
   AdminOrderLogisticsDetails,
   AdminOrderPartyDetails,
+  AdminOrdersStatsPeriod,
+  AdminOrdersStatsResponse,
   AdminOrderStatus,
   AdminOrderStatusFilter,
   AdminOrdersListFilters,
-  AdminOrdersListResponse
+  AdminOrdersListResponse,
+  DEFAULT_ADMIN_ORDERS_STATS_PERIOD
 } from "./types";
 
 type QueryFunction = <T extends QueryResultRow = QueryResultRow>(
@@ -55,6 +58,18 @@ interface AdminOrderRow extends QueryResultRow {
 
 interface TotalCountRow extends QueryResultRow {
   total: number;
+}
+
+interface AdminOrdersStatsRow extends QueryResultRow {
+  totalOrders: number;
+  completed: number;
+  cancelled: number;
+  pending: number;
+}
+
+interface AdminOrdersTrendRow extends QueryResultRow {
+  date: Date;
+  totalOrders: number;
 }
 
 interface AdminOrderDetailsRow extends QueryResultRow {
@@ -136,6 +151,13 @@ export class AdminOrderConflictError extends Error {
   }
 }
 
+export class AdminOrderStatsValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AdminOrderStatsValidationError";
+  }
+}
+
 function getQueryFn(dependencies: AdminOrdersServiceDependencies = {}): QueryFunction {
   return dependencies.queryFn ?? query;
 }
@@ -196,6 +218,24 @@ function normalizeOptionalStatus(value: string | undefined): AdminOrderStatusFil
   }
 
   return normalizedValue as AdminOrderStatusFilter;
+}
+
+function normalizeStatsPeriod(value: string | undefined): AdminOrdersStatsPeriod {
+  if (value === undefined) {
+    return DEFAULT_ADMIN_ORDERS_STATS_PERIOD;
+  }
+
+  const normalizedValue = normalizeCredentialValue(value).toLowerCase();
+
+  if (
+    normalizedValue !== "daily" &&
+    normalizedValue !== "weekly" &&
+    normalizedValue !== "monthly"
+  ) {
+    throw new AdminOrderStatsValidationError("period must be one of daily, weekly, monthly");
+  }
+
+  return normalizedValue;
 }
 
 function normalizeRequiredString(value: string, fieldName: string): string {
@@ -342,6 +382,88 @@ function mapOrderLogisticsDetails(input: {
     vehicleType: mapOptionalText(input.vehicleType),
     deliveryStatus: mapOptionalText(input.deliveryStatus)
   };
+}
+
+function mapCountValue(value: number | null | undefined): number {
+  return typeof value === "number" ? value : Number(value ?? 0);
+}
+
+function buildOrderTrendQuery(period: AdminOrdersStatsPeriod): string {
+  switch (period) {
+    case "daily":
+      return [
+        "WITH series AS (",
+        "  SELECT generate_series(",
+        "    date_trunc('day', $1::timestamptz) - INTERVAL '6 days',",
+        "    date_trunc('day', $1::timestamptz),",
+        "    INTERVAL '1 day'",
+        '  ) AS "date"',
+        "), order_counts AS (",
+        "  SELECT",
+        '    date_trunc(\'day\', o."createdAt") AS "date",',
+        '    COUNT(*)::int AS "totalOrders"',
+        "  FROM public.order_tb o",
+        "  WHERE o.\"createdAt\" >= date_trunc('day', $1::timestamptz) - INTERVAL '6 days'",
+        "    AND o.\"createdAt\" < date_trunc('day', $1::timestamptz) + INTERVAL '1 day'",
+        '  GROUP BY "date"',
+        ")",
+        "SELECT",
+        '  series."date",',
+        '  COALESCE(order_counts."totalOrders", 0)::int AS "totalOrders"',
+        "FROM series",
+        'LEFT JOIN order_counts ON order_counts."date" = series."date"',
+        'ORDER BY series."date" ASC'
+      ].join("\n");
+    case "weekly":
+      return [
+        "WITH series AS (",
+        "  SELECT generate_series(",
+        "    date_trunc('week', $1::timestamptz) - INTERVAL '7 weeks',",
+        "    date_trunc('week', $1::timestamptz),",
+        "    INTERVAL '1 week'",
+        '  ) AS "date"',
+        "), order_counts AS (",
+        "  SELECT",
+        '    date_trunc(\'week\', o."createdAt") AS "date",',
+        '    COUNT(*)::int AS "totalOrders"',
+        "  FROM public.order_tb o",
+        "  WHERE o.\"createdAt\" >= date_trunc('week', $1::timestamptz) - INTERVAL '7 weeks'",
+        "    AND o.\"createdAt\" < date_trunc('week', $1::timestamptz) + INTERVAL '1 week'",
+        '  GROUP BY "date"',
+        ")",
+        "SELECT",
+        '  series."date",',
+        '  COALESCE(order_counts."totalOrders", 0)::int AS "totalOrders"',
+        "FROM series",
+        'LEFT JOIN order_counts ON order_counts."date" = series."date"',
+        'ORDER BY series."date" ASC'
+      ].join("\n");
+    case "monthly":
+    default:
+      return [
+        "WITH series AS (",
+        "  SELECT generate_series(",
+        "    date_trunc('month', $1::timestamptz) - INTERVAL '11 months',",
+        "    date_trunc('month', $1::timestamptz),",
+        "    INTERVAL '1 month'",
+        '  ) AS "date"',
+        "), order_counts AS (",
+        "  SELECT",
+        '    date_trunc(\'month\', o."createdAt") AS "date",',
+        '    COUNT(*)::int AS "totalOrders"',
+        "  FROM public.order_tb o",
+        "  WHERE o.\"createdAt\" >= date_trunc('month', $1::timestamptz) - INTERVAL '11 months'",
+        "    AND o.\"createdAt\" < date_trunc('month', $1::timestamptz) + INTERVAL '1 month'",
+        '  GROUP BY "date"',
+        ")",
+        "SELECT",
+        '  series."date",',
+        '  COALESCE(order_counts."totalOrders", 0)::int AS "totalOrders"',
+        "FROM series",
+        'LEFT JOIN order_counts ON order_counts."date" = series."date"',
+        'ORDER BY series."date" ASC'
+      ].join("\n");
+  }
 }
 
 function buildOrderFilters(filters: AdminOrdersListFilters): { whereSql: string; params: unknown[] } {
@@ -591,6 +713,51 @@ export async function getOrderDetails(
       totalAmount: Number(totalAmount.toFixed(2)),
       createdAt: mapRequiredDate(order.createdAt, "createdAt")
     }
+  };
+}
+
+export async function getOrderStats(
+  period: string | undefined,
+  dependencies: AdminOrdersServiceDependencies = {}
+): Promise<AdminOrdersStatsResponse> {
+  const normalizedPeriod = normalizeStatsPeriod(period);
+  const queryFn = getQueryFn(dependencies);
+  const now = getNowFactory(dependencies)();
+
+  const statsResult = await queryFn<AdminOrdersStatsRow>(
+    [
+      "SELECT",
+      "  COUNT(*)::int AS \"totalOrders\",",
+      "  COUNT(*) FILTER (WHERE o.status = 8)::int AS completed,",
+      "  COUNT(*) FILTER (WHERE o.status IN (6, 7))::int AS cancelled,",
+      "  COUNT(*) FILTER (WHERE o.status = 1)::int AS pending",
+      "FROM public.order_tb o"
+    ].join("\n")
+  );
+
+  const trendResult = await queryFn<AdminOrdersTrendRow>(
+    buildOrderTrendQuery(normalizedPeriod),
+    [now]
+  );
+
+  const totals = statsResult.rows[0];
+  const totalOrders = mapCountValue(totals?.totalOrders);
+  const completed = mapCountValue(totals?.completed);
+  const cancelled = mapCountValue(totals?.cancelled);
+  const pending = mapCountValue(totals?.pending);
+  const completionRate =
+    totalOrders === 0 ? 0 : Number(((completed / totalOrders) * 100).toFixed(2));
+
+  return {
+    totalOrders,
+    completed,
+    cancelled,
+    pending,
+    completionRate,
+    trend: trendResult.rows.map((point) => ({
+      date: point.date.toISOString().slice(0, 10),
+      totalOrders: mapCountValue(point.totalOrders)
+    }))
   };
 }
 

@@ -5,15 +5,18 @@ export const ADMIN_ORDER_STATUS_FILTERS = [
   "delivered",
   "cancelled"
 ] as const;
+export const ADMIN_ORDER_STATS_PERIODS = ["daily", "weekly", "monthly"] as const;
 
 export const DEFAULT_ADMIN_ORDERS_PAGE = 1;
 export const DEFAULT_ADMIN_ORDERS_LIMIT = 20;
 export const MAX_ADMIN_ORDERS_LIMIT = 100;
+export const DEFAULT_ADMIN_ORDERS_STATS_PERIOD = "monthly";
 
 export type AdminOrderStatusFilter = (typeof ADMIN_ORDER_STATUS_FILTERS)[number];
 export type AdminOrderStatus =
   | AdminOrderStatusFilter
   | "unknown";
+export type AdminOrdersStatsPeriod = (typeof ADMIN_ORDER_STATS_PERIODS)[number];
 
 export interface AdminOrdersListFilters {
   status?: AdminOrderStatusFilter;
@@ -95,4 +98,18 @@ export interface CancelAdminOrdersInput extends CancelAdminOrdersRequestBody {
 
 export interface CancelAdminOrdersResponse {
   message: string;
+}
+
+export interface AdminOrderVolumeTrendPoint {
+  date: string;
+  totalOrders: number;
+}
+
+export interface AdminOrdersStatsResponse {
+  totalOrders: number;
+  completed: number;
+  cancelled: number;
+  pending: number;
+  completionRate: number;
+  trend: AdminOrderVolumeTrendPoint[];
 }

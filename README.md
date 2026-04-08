@@ -68,6 +68,7 @@ This is a TypeScript Node.js and Express starter for the BrickPine admin API wit
 - `PUT /admin/product/:productId/flag`: Flags a product or soft-removes it for policy violations for a super admin.
 - `GET /admin/products`: Lists products across sellers with optional username, category, and status filters for a super admin.
 - `GET /admin/orders`: Lists platform orders with optional status, seller, buyer, and date filters for a super admin.
+- `GET /admin/orders/stats`: Returns aggregate order counts, completion rate, and order-volume trend buckets for a super admin.
 - `GET /admin/orders/:orderNumber`: Returns the full details for a single platform order, including parties, line items, and total amount for a super admin.
 - `PUT /admin/orders/:orderNumber/cancel`: Force-cancels selected order rows for an order number, optionally records a reason, and updates linked delivery state for a super admin.
 - `GET /admin/kyc/pending`: Lists the latest real pending KYC submissions for sellers and logistics users for a super admin.

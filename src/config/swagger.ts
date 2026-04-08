@@ -757,6 +757,50 @@ export const swaggerSpec = {
           }
         }
       },
+      AdminOrderVolumeTrendPoint: {
+        type: "object",
+        properties: {
+          date: {
+            type: "string",
+            example: "2026-04-08"
+          },
+          totalOrders: {
+            type: "integer",
+            example: 56
+          }
+        }
+      },
+      AdminOrdersStatsResponse: {
+        type: "object",
+        properties: {
+          totalOrders: {
+            type: "integer",
+            example: 223
+          },
+          completed: {
+            type: "integer",
+            example: 140
+          },
+          cancelled: {
+            type: "integer",
+            example: 18
+          },
+          pending: {
+            type: "integer",
+            example: 22
+          },
+          completionRate: {
+            type: "number",
+            example: 62.78
+          },
+          trend: {
+            type: "array",
+            items: {
+              $ref: "#/components/schemas/AdminOrderVolumeTrendPoint"
+            }
+          }
+        }
+      },
       PlatformUserSummary: {
         type: "object",
         properties: {
@@ -2030,6 +2074,74 @@ export const swaggerSpec = {
           },
           "403": {
             description: "Authenticated admin is not allowed to list orders",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/orders/stats": {
+      get: {
+        tags: ["Order Management"],
+        summary: "Order volume and completion rates",
+        description:
+          "Returns aggregate order counts, completion rate, and a date-labelled order volume trend for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "query",
+            name: "period",
+            required: false,
+            schema: {
+              type: "string",
+              enum: ["daily", "weekly", "monthly"],
+              default: "monthly"
+            },
+            description: "Trend period bucket"
+          }
+        ],
+        responses: {
+          "200": {
+            description: "Order stats retrieved successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/AdminOrdersStatsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid order-stats query parameters",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to view order stats",
             content: {
               "application/json": {
                 schema: {

@@ -10,13 +10,16 @@ import { createAdminOrdersRouter } from "../../src/modules/admin-orders/routes";
 import {
   AdminOrderConflictError,
   AdminOrderNotFoundError,
+  AdminOrderStatsValidationError,
   AdminOrdersValidationError,
   cancelOrdersByAdmin,
+  getOrderStats,
   getOrderDetails,
   listOrders
 } from "../../src/modules/admin-orders/service";
 import {
   AdminOrderDetailsResponse,
+  AdminOrdersStatsResponse,
   CancelAdminOrdersResponse,
   AdminOrdersListResponse
 } from "../../src/modules/admin-orders/types";
@@ -836,6 +839,106 @@ test("cancelOrdersByAdmin validates required fields and rejects mismatched, deli
   ).rejects.toThrow("Orders with completed deliveries cannot be cancelled");
 });
 
+test("getOrderStats returns aggregate counts, rounded completionRate, and period trend points", async () => {
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+  const now = new Date("2026-04-08T12:00:00.000Z");
+
+  const response = await getOrderStats("weekly", {
+    nowFactory: () => now,
+    queryFn: async <T extends QueryResultRow = QueryResultRow>(
+      text: string,
+      params?: unknown[]
+    ): Promise<QueryResult<T>> => {
+      executedQueries.push({ text, params });
+
+      if (text.includes('COUNT(*)::int AS "totalOrders"') && !text.includes("WITH series AS")) {
+        return createQueryResult([
+          {
+            totalOrders: 13,
+            completed: 5,
+            cancelled: 3,
+            pending: 2
+          }
+        ]) as unknown as QueryResult<T>;
+      }
+
+      return createQueryResult([
+        {
+          date: new Date("2026-03-16T00:00:00.000Z"),
+          totalOrders: 2
+        },
+        {
+          date: new Date("2026-03-23T00:00:00.000Z"),
+          totalOrders: 4
+        },
+        {
+          date: new Date("2026-03-30T00:00:00.000Z"),
+          totalOrders: 7
+        }
+      ]) as unknown as QueryResult<T>;
+    }
+  });
+
+  expect(executedQueries).toHaveLength(2);
+  expect(executedQueries[0]?.text).toContain("FROM public.order_tb o");
+  expect(executedQueries[1]?.text).toContain("date_trunc('week'");
+  expect(executedQueries[1]?.params).toEqual([now]);
+  expect(response).toEqual({
+    totalOrders: 13,
+    completed: 5,
+    cancelled: 3,
+    pending: 2,
+    completionRate: 38.46,
+    trend: [
+      {
+        date: "2026-03-16",
+        totalOrders: 2
+      },
+      {
+        date: "2026-03-23",
+        totalOrders: 4
+      },
+      {
+        date: "2026-03-30",
+        totalOrders: 7
+      }
+    ]
+  });
+});
+
+test("getOrderStats handles zero totals and invalid periods safely", async () => {
+  const response = await getOrderStats(undefined, {
+    nowFactory: () => new Date("2026-04-08T12:00:00.000Z"),
+    queryFn: async <T extends QueryResultRow = QueryResultRow>(
+      text: string
+    ): Promise<QueryResult<T>> => {
+      if (text.includes('COUNT(*)::int AS "totalOrders"') && !text.includes("WITH series AS")) {
+        return createQueryResult([
+          {
+            totalOrders: 0,
+            completed: 0,
+            cancelled: 0,
+            pending: 0
+          }
+        ]) as unknown as QueryResult<T>;
+      }
+
+      return createQueryResult([]) as unknown as QueryResult<T>;
+    }
+  });
+
+  expect(response).toEqual({
+    totalOrders: 0,
+    completed: 0,
+    cancelled: 0,
+    pending: 0,
+    completionRate: 0,
+    trend: []
+  });
+
+  await expect(getOrderStats("yearly")).rejects.toThrow(AdminOrderStatsValidationError);
+});
+
 test("GET /admin/orders returns 401 when the admin token is missing", async () => {
   const application = express();
 
@@ -1091,6 +1194,188 @@ test("GET /admin/orders returns the filtered orders payload", async () => {
         }
       ],
       total: 1
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/orders/stats returns 401 when the admin token is missing", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/orders",
+    createAdminOrdersRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/orders/stats`);
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/orders/stats returns 403 for non-super-admins", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/orders",
+    createAdminOrdersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "finance"
+        })
+      ),
+      getOrderStatsHandler: async () => {
+        throw new Error("This handler should not be called when access is forbidden");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/orders/stats`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/orders/stats validates period and maps stats validation errors to 400", async () => {
+  let server;
+  const validationApplication = express();
+
+  validationApplication.use(
+    "/admin/orders",
+    createAdminOrdersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getOrderStatsHandler: async () => {
+        throw new Error("This handler should not be called when query validation fails");
+      }
+    })
+  );
+
+  server = await startTestServer(validationApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/orders/stats?period=yearly`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as Record<string, unknown>).message).toBe(
+      "period must be one of daily, weekly, monthly"
+    );
+  } finally {
+    await server.close();
+  }
+
+  const badRequestApplication = express();
+
+  badRequestApplication.use(
+    "/admin/orders",
+    createAdminOrdersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getOrderStatsHandler: async () => {
+        throw new AdminOrderStatsValidationError("period must be one of daily, weekly, monthly");
+      }
+    })
+  );
+
+  server = await startTestServer(badRequestApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/orders/stats`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as Record<string, unknown>).message).toBe(
+      "period must be one of daily, weekly, monthly"
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/orders/stats returns the stats payload and resolves before the dynamic orderNumber route", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/orders",
+    createAdminOrdersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getOrderStatsHandler: async (period): Promise<AdminOrdersStatsResponse> => {
+        expect(period).toBe("daily");
+
+        return {
+          totalOrders: 100,
+          completed: 55,
+          cancelled: 12,
+          pending: 18,
+          completionRate: 55,
+          trend: [
+            {
+              date: "2026-04-07",
+              totalOrders: 44
+            },
+            {
+              date: "2026-04-08",
+              totalOrders: 56
+            }
+          ]
+        };
+      },
+      getOrderDetailsHandler: async () => {
+        throw new Error("The dynamic orderNumber route should not capture /stats");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/orders/stats?period=daily`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      totalOrders: 100,
+      completed: 55,
+      cancelled: 12,
+      pending: 18,
+      completionRate: 55,
+      trend: [
+        {
+          date: "2026-04-07",
+          totalOrders: 44
+        },
+        {
+          date: "2026-04-08",
+          totalOrders: 56
+        }
+      ]
     });
   } finally {
     await server.close();
