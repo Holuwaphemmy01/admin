@@ -9,6 +9,7 @@ import { AuthenticatedAdmin } from "../../src/modules/admin-auth/types";
 import { createAdminProductsRouter } from "../../src/modules/admin-products/routes";
 import {
   createProductCategory,
+  deleteProductCategory,
   ProductCategoryConflictError,
   ProductCategoryNotFoundError,
   ProductCategoryValidationError,
@@ -16,6 +17,7 @@ import {
 } from "../../src/modules/admin-products/service";
 import {
   CreateProductCategoryResponse,
+  DeleteProductCategoryResponse,
   UpdateProductCategoryResponse
 } from "../../src/modules/admin-products/types";
 
@@ -654,6 +656,184 @@ test("updateProductCategory converts DB unique violations and empty update retur
       }
     )
   ).rejects.toThrow("Product category update did not return an updated row");
+});
+
+test("deleteProductCategory deletes a product category when no linked products or category commissions exist", async () => {
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await deleteProductCategory(
+    {
+      id: 7
+    },
+    {
+      runInTransaction: async (operation) =>
+        operation(
+          createTransactionClient(async (text, params) => {
+            executedQueries.push({ text, params });
+
+            if (text.includes("WHERE pc.id = $1") && text.includes("FOR UPDATE")) {
+              return createQueryResult([
+                {
+                  id: 7
+                }
+              ]);
+            }
+
+            if (text.includes('FROM public.product p WHERE p."productCategoryId" = $1')) {
+              return createQueryResult([
+                {
+                  productCount: "0",
+                  productCategoryCommissionCount: "0"
+                }
+              ]);
+            }
+
+            return createQueryResult([
+              {
+                id: 7
+              }
+            ]);
+          })
+        )
+    }
+  );
+
+  expect(executedQueries).toHaveLength(3);
+  expect(executedQueries[0]?.text).toContain("FOR UPDATE");
+  expect(executedQueries[0]?.params).toEqual([7]);
+  expect(executedQueries[1]?.text).toContain('FROM public.product p WHERE p."productCategoryId" = $1');
+  expect(executedQueries[1]?.text).toContain(
+    'FROM public.product_category_commission pcc WHERE pcc."productCategoryId" = $1'
+  );
+  expect(executedQueries[1]?.params).toEqual([7]);
+  expect(executedQueries[2]?.text).toContain("DELETE FROM public.product_category");
+  expect(executedQueries[2]?.params).toEqual([7]);
+  expect(response).toEqual({
+    message: "Category deleted successfully"
+  });
+});
+
+test("deleteProductCategory rejects invalid ids, missing categories, linked rows, and empty delete returns", async () => {
+  await expect(
+    deleteProductCategory({
+      id: 0
+    })
+  ).rejects.toThrow(ProductCategoryValidationError);
+
+  await expect(
+    deleteProductCategory(
+      {
+        id: 999
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation(createTransactionClient(async () => createQueryResult([])))
+      }
+    )
+  ).rejects.toThrow(ProductCategoryNotFoundError);
+
+  await expect(
+    deleteProductCategory(
+      {
+        id: 7
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation(
+            createTransactionClient(async (text) => {
+              if (text.includes("WHERE pc.id = $1") && text.includes("FOR UPDATE")) {
+                return createQueryResult([
+                  {
+                    id: 7
+                  }
+                ]);
+              }
+
+              if (text.includes('FROM public.product p WHERE p."productCategoryId" = $1')) {
+                return createQueryResult([
+                  {
+                    productCount: "2",
+                    productCategoryCommissionCount: "0"
+                  }
+                ]);
+              }
+
+              return createQueryResult([]);
+            })
+          )
+      }
+    )
+  ).rejects.toThrow(
+    "Product category cannot be deleted while linked products or category commissions exist"
+  );
+
+  await expect(
+    deleteProductCategory(
+      {
+        id: 7
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation(
+            createTransactionClient(async (text) => {
+              if (text.includes("WHERE pc.id = $1") && text.includes("FOR UPDATE")) {
+                return createQueryResult([
+                  {
+                    id: 7
+                  }
+                ]);
+              }
+
+              if (text.includes('FROM public.product p WHERE p."productCategoryId" = $1')) {
+                return createQueryResult([
+                  {
+                    productCount: "0",
+                    productCategoryCommissionCount: "3"
+                  }
+                ]);
+              }
+
+              return createQueryResult([]);
+            })
+          )
+      }
+    )
+  ).rejects.toThrow(
+    "Product category cannot be deleted while linked products or category commissions exist"
+  );
+
+  await expect(
+    deleteProductCategory(
+      {
+        id: 7
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation(
+            createTransactionClient(async (text) => {
+              if (text.includes("WHERE pc.id = $1") && text.includes("FOR UPDATE")) {
+                return createQueryResult([
+                  {
+                    id: 7
+                  }
+                ]);
+              }
+
+              if (text.includes('FROM public.product p WHERE p."productCategoryId" = $1')) {
+                return createQueryResult([
+                  {
+                    productCount: "0",
+                    productCategoryCommissionCount: "0"
+                  }
+                ]);
+              }
+
+              return createQueryResult([]);
+            })
+          )
+      }
+    )
+  ).rejects.toThrow("Product category delete did not return a deleted row");
 });
 
 test("POST /admin/product/categories returns 401 when the admin token is missing", async () => {
@@ -1339,6 +1519,202 @@ test("PUT /admin/product/categories/:id returns the updated category payload for
         standardCommissionVat: 13.5,
         premiumCommissionVat: 13
       }
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("DELETE /admin/product/categories/:id returns 401 when the admin token is missing", async () => {
+  const application = express();
+
+  application.use(express.json());
+  application.use(
+    "/admin/product",
+    createAdminProductsRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/product/categories/7`, {
+      method: "DELETE"
+    });
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("DELETE /admin/product/categories/:id returns 403 for non-super-admins", async () => {
+  const application = express();
+
+  application.use(express.json());
+  application.use(
+    "/admin/product",
+    createAdminProductsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "support"
+        })
+      ),
+      deleteProductCategoryHandler: async () => ({
+        message: "Category deleted successfully"
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/product/categories/7`, {
+      method: "DELETE",
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("DELETE /admin/product/categories/:id validates the category id", async () => {
+  const application = express();
+
+  application.use(express.json());
+  application.use(
+    "/admin/product",
+    createAdminProductsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      deleteProductCategoryHandler: async () => {
+        throw new Error("This handler should not be called when validation fails");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/product/categories/not-a-number`, {
+      method: "DELETE",
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as Record<string, unknown>).message).toBe(
+      "id must be a positive integer"
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("DELETE /admin/product/categories/:id maps not-found and conflict errors", async () => {
+  let server;
+  const notFoundApplication = express();
+
+  notFoundApplication.use(express.json());
+  notFoundApplication.use(
+    "/admin/product",
+    createAdminProductsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      deleteProductCategoryHandler: async () => {
+        throw new ProductCategoryNotFoundError("Product category not found");
+      }
+    })
+  );
+
+  server = await startTestServer(notFoundApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/product/categories/999`, {
+      method: "DELETE",
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(404);
+  } finally {
+    await server.close();
+  }
+
+  const conflictApplication = express();
+
+  conflictApplication.use(express.json());
+  conflictApplication.use(
+    "/admin/product",
+    createAdminProductsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      deleteProductCategoryHandler: async () => {
+        throw new ProductCategoryConflictError(
+          "Product category cannot be deleted while linked products or category commissions exist"
+        );
+      }
+    })
+  );
+
+  server = await startTestServer(conflictApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/product/categories/7`, {
+      method: "DELETE",
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(409);
+  } finally {
+    await server.close();
+  }
+});
+
+test("DELETE /admin/product/categories/:id returns the success payload for a valid delete", async () => {
+  const application = express();
+
+  application.use(express.json());
+  application.use(
+    "/admin/product",
+    createAdminProductsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      deleteProductCategoryHandler: async (input): Promise<DeleteProductCategoryResponse> => {
+        expect(input).toEqual({
+          id: 7
+        });
+
+        return {
+          message: "Category deleted successfully"
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/product/categories/7`, {
+      method: "DELETE",
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(200);
+
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    expect(payload).toEqual({
+      message: "Category deleted successfully"
     });
   } finally {
     await server.close();

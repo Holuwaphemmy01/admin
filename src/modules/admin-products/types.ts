@@ -40,3 +40,7 @@ export interface UpdateProductCategoryResponse {
   message: string;
   productCategory: ProductCategoryDetails;
 }
+
+export interface DeleteProductCategoryResponse {
+  message: string;
+}

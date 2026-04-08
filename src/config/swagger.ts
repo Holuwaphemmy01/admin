@@ -1383,6 +1383,91 @@ export const swaggerSpec = {
             }
           }
         }
+      },
+      delete: {
+        tags: ["Product Management"],
+        summary: "Delete a product category",
+        description:
+          "Deletes an existing product category for authenticated super admin access and blocks the deletion when linked products or category commission rows still reference that category.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "path",
+            name: "id",
+            required: true,
+            schema: {
+              type: "integer",
+              minimum: 1
+            },
+            description: "Positive integer product category id"
+          }
+        ],
+        responses: {
+          "200": {
+            description: "Product category deleted successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid product category id",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to delete product categories",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "Product category was not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            description: "Product category cannot be deleted because linked products or category commissions still exist",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ConflictErrorResponse"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/admin/kyc/pending": {

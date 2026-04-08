@@ -3,6 +3,7 @@ import { Request, RequestHandler, Response, Router } from "express";
 import { authenticateAdmin, requireAdminRole } from "../admin-auth/middleware";
 import {
   createProductCategory,
+  deleteProductCategory,
   ProductCategoryConflictError,
   ProductCategoryNotFoundError,
   ProductCategoryValidationError,
@@ -11,6 +12,7 @@ import {
 
 interface AdminProductsRouterDependencies {
   createProductCategoryHandler?: typeof createProductCategory;
+  deleteProductCategoryHandler?: typeof deleteProductCategory;
   updateProductCategoryHandler?: typeof updateProductCategory;
   authenticateAdminMiddleware?: RequestHandler;
   requireSuperAdminMiddleware?: RequestHandler;
@@ -34,6 +36,8 @@ export function createAdminProductsRouter(
   const adminProductsRouter = Router();
   const createProductCategoryHandler =
     dependencies.createProductCategoryHandler ?? createProductCategory;
+  const deleteProductCategoryHandler =
+    dependencies.deleteProductCategoryHandler ?? deleteProductCategory;
   const updateProductCategoryHandler =
     dependencies.updateProductCategoryHandler ?? updateProductCategory;
   const authenticateAdminMiddleware =
@@ -240,6 +244,62 @@ export function createAdminProductsRouter(
 
         if (error instanceof ProductCategoryConflictError) {
           console.warn(`Product category update conflict for "${id}".`);
+
+          response.status(409).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
+
+  adminProductsRouter.delete(
+    "/categories/:id",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      const rawId = request.params.id;
+      const id = Array.isArray(rawId) ? rawId[0] ?? "" : rawId ?? "";
+
+      if (!isValidPositiveInteger(id)) {
+        response.status(400).json({
+          message: "id must be a positive integer"
+        });
+
+        return;
+      }
+
+      try {
+        const deleteResponse = await deleteProductCategoryHandler({
+          id: Number(id)
+        });
+
+        console.info(`Product category deleted: "${id}".`);
+
+        response.json(deleteResponse);
+      } catch (error) {
+        if (error instanceof ProductCategoryValidationError) {
+          response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof ProductCategoryNotFoundError) {
+          response.status(404).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof ProductCategoryConflictError) {
+          console.warn(`Product category delete conflict for "${id}".`);
 
           response.status(409).json({
             message: error.message

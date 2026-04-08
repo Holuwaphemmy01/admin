@@ -5,6 +5,7 @@ import { normalizeCredentialValue } from "../admin-auth/utils";
 import {
   CreateProductCategoryRequestBody,
   CreateProductCategoryResponse,
+  DeleteProductCategoryResponse,
   UpdateProductCategoryRequestBody,
   UpdateProductCategoryResponse
 } from "./types";
@@ -31,6 +32,11 @@ interface AdminProductsServiceDependencies {
 
 interface ExistingProductCategoryRow extends QueryResultRow {
   id: number;
+}
+
+interface ProductCategoryDeleteUsageRow extends QueryResultRow {
+  productCount: string | number;
+  productCategoryCommissionCount: string | number;
 }
 
 interface CreatedProductCategoryRow extends QueryResultRow {
@@ -182,6 +188,16 @@ function mapNullableNumericValue(value: string | number | null): number | null {
 
   if (!Number.isFinite(numericValue)) {
     throw new Error("Updated product category returned an invalid numeric commission VAT value");
+  }
+
+  return numericValue;
+}
+
+function mapCountValue(value: string | number | null, fieldName: string): number {
+  const numericValue = typeof value === "number" ? value : Number(value);
+
+  if (!Number.isInteger(numericValue) || numericValue < 0) {
+    throw new Error(`Product category delete returned an invalid ${fieldName} count`);
   }
 
   return numericValue;
@@ -479,5 +495,82 @@ export async function updateProductCategory(
 
       throw error;
     }
+  });
+}
+
+interface DeleteProductCategoryInput {
+  id: number;
+}
+
+export async function deleteProductCategory(
+  input: DeleteProductCategoryInput,
+  dependencies: AdminProductsServiceDependencies = {}
+): Promise<DeleteProductCategoryResponse> {
+  const categoryId = normalizeCategoryId(input.id, ProductCategoryValidationError);
+  const runInTransaction = getRunInTransaction(dependencies);
+
+  return runInTransaction(async (client) => {
+    const currentCategoryResult = await client.query<ExistingProductCategoryRow>(
+      [
+        "SELECT",
+        "  pc.id",
+        "FROM public.product_category pc",
+        "WHERE pc.id = $1",
+        "FOR UPDATE"
+      ].join("\n"),
+      [categoryId]
+    );
+
+    const currentCategory = currentCategoryResult.rows[0];
+
+    if (!currentCategory) {
+      throw new ProductCategoryNotFoundError("Product category not found");
+    }
+
+    const usageResult = await client.query<ProductCategoryDeleteUsageRow>(
+      [
+        "SELECT",
+        '  (SELECT COUNT(*) FROM public.product p WHERE p."productCategoryId" = $1) AS "productCount",',
+        '  (SELECT COUNT(*) FROM public.product_category_commission pcc WHERE pcc."productCategoryId" = $1) AS "productCategoryCommissionCount"'
+      ].join("\n"),
+      [categoryId]
+    );
+
+    const usageRow = usageResult.rows[0];
+
+    if (!usageRow) {
+      throw new Error("Product category delete usage check did not return a row");
+    }
+
+    const productCount = mapCountValue(usageRow.productCount, "product");
+    const productCategoryCommissionCount = mapCountValue(
+      usageRow.productCategoryCommissionCount,
+      "productCategoryCommission"
+    );
+
+    if (productCount > 0 || productCategoryCommissionCount > 0) {
+      throw new ProductCategoryConflictError(
+        "Product category cannot be deleted while linked products or category commissions exist"
+      );
+    }
+
+    const deletedCategoryResult = await client.query<ExistingProductCategoryRow>(
+      [
+        "DELETE FROM public.product_category",
+        "WHERE id = $1",
+        "RETURNING id"
+      ].join("\n"),
+      [categoryId]
+    );
+
+    const deletedCategory = deletedCategoryResult.rows[0];
+
+    if (!deletedCategory) {
+      throw new Error("Product category delete did not return a deleted row");
+    }
+
+    return {
+      message: "Category deleted successfully"
+    };
   });
 }
