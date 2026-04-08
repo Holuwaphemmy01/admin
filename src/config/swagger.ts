@@ -26,6 +26,10 @@ export const swaggerSpec = {
       description: "Administrative product and product-category management endpoints"
     },
     {
+      name: "Order Management",
+      description: "Administrative order-management endpoints across the platform"
+    },
+    {
       name: "User Management",
       description: "Administrative customer-user management endpoints"
     },
@@ -505,6 +509,75 @@ export const swaggerSpec = {
           total: {
             type: "integer",
             example: 65
+          }
+        }
+      },
+      AdminOrderSummary: {
+        type: "object",
+        properties: {
+          id: {
+            type: "integer",
+            example: 233
+          },
+          orderNumber: {
+            type: "string",
+            example: "X0i2sZMEkPwkh45t"
+          },
+          status: {
+            type: "string",
+            enum: ["pending", "picked_up", "in_transit", "delivered", "cancelled", "unknown"],
+            example: "picked_up"
+          },
+          buyerUsername: {
+            type: "string",
+            nullable: true,
+            example: "buyer-1"
+          },
+          sellerUsername: {
+            type: "string",
+            nullable: true,
+            example: "hinocag"
+          },
+          logisticUsername: {
+            type: "string",
+            nullable: true,
+            example: "rider"
+          },
+          vehicleType: {
+            type: "string",
+            nullable: true,
+            example: "bike"
+          },
+          deliveryDate: {
+            type: "string",
+            format: "date-time",
+            nullable: true,
+            example: null
+          },
+          createdAt: {
+            type: "string",
+            format: "date-time",
+            example: "2026-03-24T20:47:54.000Z"
+          },
+          updatedAt: {
+            type: "string",
+            format: "date-time",
+            example: "2026-03-24T20:47:55.000Z"
+          }
+        }
+      },
+      AdminOrdersListResponse: {
+        type: "object",
+        properties: {
+          orderDetails: {
+            type: "array",
+            items: {
+              $ref: "#/components/schemas/AdminOrderSummary"
+            }
+          },
+          total: {
+            type: "integer",
+            example: 223
           }
         }
       },
@@ -1657,6 +1730,134 @@ export const swaggerSpec = {
               "application/json": {
                 schema: {
                   $ref: "#/components/schemas/ConflictErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/orders": {
+      get: {
+        tags: ["Order Management"],
+        summary: "List all platform orders with filters",
+        description:
+          "Returns paginated platform orders with optional status, seller, buyer, and created-date filters for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "query",
+            name: "status",
+            required: false,
+            schema: {
+              type: "string",
+              enum: ["pending", "picked_up", "in_transit", "delivered", "cancelled"]
+            },
+            description: "Filter by order lifecycle status"
+          },
+          {
+            in: "query",
+            name: "sellerUsername",
+            required: false,
+            schema: {
+              type: "string"
+            },
+            description: "Filter by seller username"
+          },
+          {
+            in: "query",
+            name: "buyerUsername",
+            required: false,
+            schema: {
+              type: "string"
+            },
+            description: "Filter by buyer username"
+          },
+          {
+            in: "query",
+            name: "from",
+            required: false,
+            schema: {
+              type: "string",
+              format: "date-time"
+            },
+            description: "Inclusive created-at start date filter"
+          },
+          {
+            in: "query",
+            name: "to",
+            required: false,
+            schema: {
+              type: "string",
+              format: "date-time"
+            },
+            description: "Inclusive created-at end date filter"
+          },
+          {
+            in: "query",
+            name: "page",
+            required: false,
+            schema: {
+              type: "integer",
+              minimum: 1,
+              default: 1
+            },
+            description: "Pagination page number"
+          },
+          {
+            in: "query",
+            name: "limit",
+            required: false,
+            schema: {
+              type: "integer",
+              minimum: 1,
+              maximum: 100,
+              default: 20
+            },
+            description: "Results per page"
+          }
+        ],
+        responses: {
+          "200": {
+            description: "Orders retrieved successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/AdminOrdersListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid order-list query parameters",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to list orders",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
                 }
               }
             }

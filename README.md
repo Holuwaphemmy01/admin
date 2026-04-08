@@ -67,6 +67,7 @@ This is a TypeScript Node.js and Express starter for the BrickPine admin API wit
 - `DELETE /admin/product/categories/:id`: Deletes a product category for a super admin when no linked products or category commissions still reference it.
 - `PUT /admin/product/:productId/flag`: Flags a product or soft-removes it for policy violations for a super admin.
 - `GET /admin/products`: Lists products across sellers with optional username, category, and status filters for a super admin.
+- `GET /admin/orders`: Lists platform orders with optional status, seller, buyer, and date filters for a super admin.
 - `GET /admin/kyc/pending`: Lists the latest real pending KYC submissions for sellers and logistics users for a super admin.
 - `GET /admin/kyc/stats`: Returns aggregate pending, approved, rejected, and approval-rate KYC stats for the latest real seller and logistics submissions for a super admin.
 - `GET /admin/kyc/:username`: Returns the latest full KYC submission for a seller or logistics user for a super admin.
