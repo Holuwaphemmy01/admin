@@ -8,8 +8,11 @@ import { normalizeCredentialValue } from "../admin-auth/utils";
 import {
   ACTIVE_PLATFORM_USER_STATUS_CODE,
   ActivatePlatformUserResponse,
+  AdminUsersStatsPeriod,
+  AdminUsersStatsResponse,
   AdminUsersListFilters,
   AdminUsersListResponse,
+  DEFAULT_ADMIN_USERS_STATS_PERIOD,
   DeletePlatformUserResponse,
   PlatformUserProfileResponse,
   SuspendPlatformUserResponse,
@@ -50,6 +53,20 @@ interface PlatformUserRow extends QueryResultRow {
 
 interface TotalCountRow extends QueryResultRow {
   total: number;
+}
+
+interface PlatformUserStatsRow extends QueryResultRow {
+  totalUsers: number;
+  buyers: number;
+  sellers: number;
+  logistics: number;
+  suspended: number;
+  newUsersToday: number;
+}
+
+interface PlatformUserGrowthTrendRow extends QueryResultRow {
+  date: Date;
+  newUsers: number;
 }
 
 interface PlatformUserProfileRow extends QueryResultRow {
@@ -164,6 +181,13 @@ export class PlatformUserProfileValidationError extends Error {
   }
 }
 
+export class PlatformUserStatsValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PlatformUserStatsValidationError";
+  }
+}
+
 export class PlatformUserProfileNotFoundError extends Error {
   constructor(message: string) {
     super(message);
@@ -269,6 +293,10 @@ function mapNullableTextValue(value: string | null): string | null {
   return typeof value === "string" ? value : null;
 }
 
+function mapCountValue(value: number | null | undefined): number {
+  return typeof value === "number" ? value : Number(value ?? 0);
+}
+
 function normalizeRequiredUsername(
   username: string,
   ErrorType: MessageErrorConstructor
@@ -300,6 +328,27 @@ function normalizeRequiredReason(reason: string, ErrorType: MessageErrorConstruc
   }
 
   return normalizedReason;
+}
+
+function normalizeStatsPeriod(
+  period: string | undefined,
+  ErrorType: MessageErrorConstructor
+): AdminUsersStatsPeriod {
+  if (period === undefined) {
+    return DEFAULT_ADMIN_USERS_STATS_PERIOD;
+  }
+
+  const normalizedPeriod = normalizeCredentialValue(period).toLowerCase();
+
+  if (
+    normalizedPeriod !== "daily" &&
+    normalizedPeriod !== "weekly" &&
+    normalizedPeriod !== "monthly"
+  ) {
+    throw new ErrorType("period must be one of daily, weekly, monthly");
+  }
+
+  return normalizedPeriod;
 }
 
 function normalizeOptionalComment(
@@ -384,6 +433,87 @@ function buildUserFilters(filters: AdminUsersListFilters): { whereSql: string; p
   };
 }
 
+function buildGrowthTrendQuery(period: AdminUsersStatsPeriod): string {
+  switch (period) {
+    case "daily":
+      return [
+        "WITH series AS (",
+        "  SELECT generate_series(",
+        "    date_trunc('day', $1::timestamptz) - INTERVAL '6 days',",
+        "    date_trunc('day', $1::timestamptz),",
+        "    INTERVAL '1 day'",
+        '  ) AS "date"',
+        "), user_counts AS (",
+        "  SELECT",
+        '    date_trunc(\'day\', u."createdAt") AS "date",',
+        '    COUNT(*)::int AS "newUsers"',
+        '  FROM public."user" u',
+        '  WHERE u."userTypeId" IN (1, 2, 3)',
+        "    AND u.\"createdAt\" >= date_trunc('day', $1::timestamptz) - INTERVAL '6 days'",
+        "    AND u.\"createdAt\" < date_trunc('day', $1::timestamptz) + INTERVAL '1 day'",
+        '  GROUP BY "date"',
+        ")",
+        "SELECT",
+        '  series."date",',
+        '  COALESCE(user_counts."newUsers", 0)::int AS "newUsers"',
+        "FROM series",
+        'LEFT JOIN user_counts ON user_counts."date" = series."date"',
+        'ORDER BY series."date" ASC'
+      ].join("\n");
+    case "weekly":
+      return [
+        "WITH series AS (",
+        "  SELECT generate_series(",
+        "    date_trunc('week', $1::timestamptz) - INTERVAL '7 weeks',",
+        "    date_trunc('week', $1::timestamptz),",
+        "    INTERVAL '1 week'",
+        '  ) AS "date"',
+        "), user_counts AS (",
+        "  SELECT",
+        '    date_trunc(\'week\', u."createdAt") AS "date",',
+        '    COUNT(*)::int AS "newUsers"',
+        '  FROM public."user" u',
+        '  WHERE u."userTypeId" IN (1, 2, 3)',
+        "    AND u.\"createdAt\" >= date_trunc('week', $1::timestamptz) - INTERVAL '7 weeks'",
+        "    AND u.\"createdAt\" < date_trunc('week', $1::timestamptz) + INTERVAL '1 week'",
+        '  GROUP BY "date"',
+        ")",
+        "SELECT",
+        '  series."date",',
+        '  COALESCE(user_counts."newUsers", 0)::int AS "newUsers"',
+        "FROM series",
+        'LEFT JOIN user_counts ON user_counts."date" = series."date"',
+        'ORDER BY series."date" ASC'
+      ].join("\n");
+    case "monthly":
+    default:
+      return [
+        "WITH series AS (",
+        "  SELECT generate_series(",
+        "    date_trunc('month', $1::timestamptz) - INTERVAL '11 months',",
+        "    date_trunc('month', $1::timestamptz),",
+        "    INTERVAL '1 month'",
+        '  ) AS "date"',
+        "), user_counts AS (",
+        "  SELECT",
+        '    date_trunc(\'month\', u."createdAt") AS "date",',
+        '    COUNT(*)::int AS "newUsers"',
+        '  FROM public."user" u',
+        '  WHERE u."userTypeId" IN (1, 2, 3)',
+        "    AND u.\"createdAt\" >= date_trunc('month', $1::timestamptz) - INTERVAL '11 months'",
+        "    AND u.\"createdAt\" < date_trunc('month', $1::timestamptz) + INTERVAL '1 month'",
+        '  GROUP BY "date"',
+        ")",
+        "SELECT",
+        '  series."date",',
+        '  COALESCE(user_counts."newUsers", 0)::int AS "newUsers"',
+        "FROM series",
+        'LEFT JOIN user_counts ON user_counts."date" = series."date"',
+        'ORDER BY series."date" ASC'
+      ].join("\n");
+  }
+}
+
 export async function listPlatformUsers(
   filters: AdminUsersListFilters,
   dependencies: AdminUsersServiceDependencies = {}
@@ -428,6 +558,53 @@ export async function listPlatformUsers(
       createdAt: user.createdAt.toISOString()
     })),
     total: Number(totalResult.rows[0]?.total ?? 0)
+  };
+}
+
+export async function getPlatformUserStats(
+  period: string | undefined,
+  dependencies: AdminUsersServiceDependencies = {}
+): Promise<AdminUsersStatsResponse> {
+  const normalizedPeriod = normalizeStatsPeriod(period, PlatformUserStatsValidationError);
+  const queryFn = getQueryFn(dependencies);
+  const now = getNowFactory(dependencies)();
+
+  const statsResult = await queryFn<PlatformUserStatsRow>(
+    [
+      "SELECT",
+      '  COUNT(*)::int AS "totalUsers",',
+      '  COUNT(*) FILTER (WHERE u."userTypeId" = 1)::int AS buyers,',
+      '  COUNT(*) FILTER (WHERE u."userTypeId" = 2)::int AS sellers,',
+      '  COUNT(*) FILTER (WHERE u."userTypeId" = 3)::int AS logistics,',
+      "  COUNT(*) FILTER (WHERE u.status = 2)::int AS suspended,",
+      '  COUNT(*) FILTER (',
+      "    WHERE u.\"createdAt\" >= date_trunc('day', $1::timestamptz)",
+      "      AND u.\"createdAt\" < date_trunc('day', $1::timestamptz) + INTERVAL '1 day'",
+      '  )::int AS "newUsersToday"',
+      'FROM public."user" u',
+      'WHERE u."userTypeId" IN (1, 2, 3)'
+    ].join("\n"),
+    [now]
+  );
+
+  const growthTrendResult = await queryFn<PlatformUserGrowthTrendRow>(
+    buildGrowthTrendQuery(normalizedPeriod),
+    [now]
+  );
+
+  const stats = statsResult.rows[0];
+
+  return {
+    totalUsers: mapCountValue(stats?.totalUsers),
+    buyers: mapCountValue(stats?.buyers),
+    sellers: mapCountValue(stats?.sellers),
+    logistics: mapCountValue(stats?.logistics),
+    suspended: mapCountValue(stats?.suspended),
+    newUsersToday: mapCountValue(stats?.newUsersToday),
+    growthTrend: growthTrendResult.rows.map((point) => ({
+      date: point.date.toISOString().slice(0, 10),
+      newUsers: mapCountValue(point.newUsers)
+    }))
   };
 }
 

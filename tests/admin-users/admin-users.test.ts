@@ -10,6 +10,7 @@ import { createAdminUsersRouter } from "../../src/modules/admin-users/routes";
 import {
   activatePlatformUser,
   deletePlatformUser,
+  getPlatformUserStats,
   getPlatformUserProfile,
   listPlatformUsers,
   PlatformUserActivationConflictError,
@@ -21,6 +22,7 @@ import {
   PlatformUserProfileConflictError,
   PlatformUserProfileNotFoundError,
   PlatformUserProfileValidationError,
+  PlatformUserStatsValidationError,
   PlatformUserSuspensionConflictError,
   PlatformUserSuspensionNotFoundError,
   PlatformUserSuspensionValidationError,
@@ -214,6 +216,105 @@ test("listPlatformUsers applies role, status, date, and pagination filters consi
   expect(executedQueries[0]?.text).toContain('u."createdAt" <= $4');
   expect(executedQueries[0]?.params).toEqual([2, 1, from, to, 10, 10]);
   expect(executedQueries[1]?.params).toEqual([2, 1, from, to]);
+});
+
+test("getPlatformUserStats returns user totals and monthly growth trend data by default", async () => {
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+  const now = new Date("2026-04-08T12:00:00.000Z");
+
+  const response = await getPlatformUserStats(undefined, {
+    nowFactory: () => now,
+    queryFn: async <T extends QueryResultRow>(text: string, params?: unknown[]) => {
+      executedQueries.push({ text, params });
+
+      if (text.includes('COUNT(*)::int AS "totalUsers"')) {
+        return createQueryResult([
+          {
+            totalUsers: 125,
+            buyers: 70,
+            sellers: 35,
+            logistics: 20,
+            suspended: 8,
+            newUsersToday: 4
+          }
+        ]) as unknown as QueryResult<T>;
+      }
+
+      return createQueryResult([
+        {
+          date: new Date("2026-03-01T00:00:00.000Z"),
+          newUsers: 11
+        },
+        {
+          date: new Date("2026-04-01T00:00:00.000Z"),
+          newUsers: 15
+        }
+      ]) as unknown as QueryResult<T>;
+    }
+  });
+
+  expect(executedQueries).toHaveLength(2);
+  expect(executedQueries[0]?.text).toContain('FROM public."user" u');
+  expect(executedQueries[0]?.text).toContain('WHERE u."userTypeId" IN (1, 2, 3)');
+  expect(executedQueries[0]?.text).toContain('COUNT(*) FILTER (WHERE u."userTypeId" = 1)::int AS buyers');
+  expect(executedQueries[0]?.text).toContain('COUNT(*) FILTER (WHERE u.status = 2)::int AS suspended');
+  expect(executedQueries[0]?.params).toEqual([now]);
+  expect(executedQueries[1]?.text).toContain("date_trunc('month', $1::timestamptz)");
+  expect(executedQueries[1]?.text).toContain("INTERVAL '1 month'");
+  expect(executedQueries[1]?.params).toEqual([now]);
+  expect(response).toEqual({
+    totalUsers: 125,
+    buyers: 70,
+    sellers: 35,
+    logistics: 20,
+    suspended: 8,
+    newUsersToday: 4,
+    growthTrend: [
+      {
+        date: "2026-03-01",
+        newUsers: 11
+      },
+      {
+        date: "2026-04-01",
+        newUsers: 15
+      }
+    ]
+  });
+});
+
+test("getPlatformUserStats validates the requested period and builds the correct growth bucket", async () => {
+  await expect(
+    getPlatformUserStats("yearly", {
+      queryFn: async <T extends QueryResultRow>() => createQueryResult([]) as unknown as QueryResult<T>
+    })
+  ).rejects.toThrow(PlatformUserStatsValidationError);
+
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  await getPlatformUserStats("weekly", {
+    nowFactory: () => new Date("2026-04-08T12:00:00.000Z"),
+    queryFn: async <T extends QueryResultRow>(text: string, params?: unknown[]) => {
+      executedQueries.push({ text, params });
+
+      if (text.includes('COUNT(*)::int AS "totalUsers"')) {
+        return createQueryResult([
+          {
+            totalUsers: 0,
+            buyers: 0,
+            sellers: 0,
+            logistics: 0,
+            suspended: 0,
+            newUsersToday: 0
+          }
+        ]) as unknown as QueryResult<T>;
+      }
+
+      return createQueryResult([]) as unknown as QueryResult<T>;
+    }
+  });
+
+  expect(executedQueries[1]?.text).toContain("date_trunc('week', $1::timestamptz)");
+  expect(executedQueries[1]?.text).toContain("INTERVAL '1 week'");
 });
 
 test("getPlatformUserProfile returns the full profile payload with bio and placeholder summaries", async () => {
@@ -856,6 +957,29 @@ test("GET /admin/users returns 401 when the admin token is missing", async () =>
   }
 });
 
+test("GET /admin/users/stats returns 401 when the admin token is missing", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/users",
+    createAdminUsersRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/users/stats`);
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
 test("GET /admin/users/:username returns 401 when the admin token is missing", async () => {
   const application = express();
 
@@ -874,6 +998,44 @@ test("GET /admin/users/:username returns 401 when the admin token is missing", a
     const response = await fetch(`${server.baseUrl}/admin/users/buyer-1`);
 
     expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/users/stats returns 403 for non-super-admins", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/users",
+    createAdminUsersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "support"
+        })
+      ),
+      getPlatformUserStatsHandler: async () => ({
+        totalUsers: 0,
+        buyers: 0,
+        sellers: 0,
+        logistics: 0,
+        suspended: 0,
+        newUsersToday: 0,
+        growthTrend: []
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/users/stats`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(403);
   } finally {
     await server.close();
   }
@@ -907,6 +1069,114 @@ test("GET /admin/users returns 403 for non-super-admins", async () => {
     });
 
     expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/users/stats validates the optional period query parameter", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/users",
+    createAdminUsersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getPlatformUserStatsHandler: async () => ({
+        totalUsers: 0,
+        buyers: 0,
+        sellers: 0,
+        logistics: 0,
+        suspended: 0,
+        newUsersToday: 0,
+        growthTrend: []
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    let response = await fetch(`${server.baseUrl}/admin/users/stats?period=yearly`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(400);
+
+    response = await fetch(`${server.baseUrl}/admin/users/stats?period=%20%20`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(400);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/users/stats parses the period query and returns the user stats payload", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/users",
+    createAdminUsersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getPlatformUserStatsHandler: async (period) => {
+        expect(period).toBe("weekly");
+
+        return {
+          totalUsers: 125,
+          buyers: 70,
+          sellers: 35,
+          logistics: 20,
+          suspended: 8,
+          newUsersToday: 4,
+          growthTrend: [
+            {
+              date: "2026-03-30",
+              newUsers: 10
+            },
+            {
+              date: "2026-04-06",
+              newUsers: 14
+            }
+          ]
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/users/stats?period=weekly`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(200);
+
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    expect(payload.totalUsers).toBe(125);
+    expect(payload.buyers).toBe(70);
+    expect(payload.sellers).toBe(35);
+    expect(payload.logistics).toBe(20);
+    expect(payload.suspended).toBe(8);
+    expect(payload.newUsersToday).toBe(4);
+    expect(payload.growthTrend).toEqual([
+      {
+        date: "2026-03-30",
+        newUsers: 10
+      },
+      {
+        date: "2026-04-06",
+        newUsers: 14
+      }
+    ]);
   } finally {
     await server.close();
   }

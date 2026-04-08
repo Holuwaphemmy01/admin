@@ -4,6 +4,8 @@ import { authenticateAdmin, requireAdminRole } from "../admin-auth/middleware";
 import {
   activatePlatformUser,
   deletePlatformUser,
+  getPlatformUserStats,
+  PlatformUserStatsValidationError,
   PlatformUserDeletionConflictError,
   PlatformUserDeletionNotFoundError,
   PlatformUserDeletionValidationError,
@@ -22,6 +24,8 @@ import {
 } from "./service";
 import {
   ACTIVE_PLATFORM_USER_STATUS_CODE,
+  ADMIN_USERS_STATS_PERIODS,
+  AdminUsersStatsPeriod,
   AdminUsersListFilters,
   DEFAULT_ADMIN_USERS_LIMIT,
   DEFAULT_ADMIN_USERS_PAGE,
@@ -35,6 +39,7 @@ import {
 
 interface AdminUsersRouterDependencies {
   listPlatformUsersHandler?: typeof listPlatformUsers;
+  getPlatformUserStatsHandler?: typeof getPlatformUserStats;
   getPlatformUserProfileHandler?: typeof getPlatformUserProfile;
   suspendPlatformUserHandler?: typeof suspendPlatformUser;
   activatePlatformUserHandler?: typeof activatePlatformUser;
@@ -100,6 +105,16 @@ function parseStatusCode(value: string): PlatformUserStatusCode {
   return parsedValue as PlatformUserStatusCode;
 }
 
+function parseStatsPeriod(value: string): AdminUsersStatsPeriod {
+  const normalizedValue = value.trim().toLowerCase();
+
+  if (!ADMIN_USERS_STATS_PERIODS.includes(normalizedValue as AdminUsersStatsPeriod)) {
+    throw new AdminUsersQueryValidationError("period must be one of daily, weekly, monthly");
+  }
+
+  return normalizedValue as AdminUsersStatsPeriod;
+}
+
 function parseIsoDate(value: string, fieldName: string): Date {
   const parsedDate = new Date(value);
 
@@ -115,6 +130,8 @@ export function createAdminUsersRouter(
 ): Router {
   const adminUsersRouter = Router();
   const listPlatformUsersHandler = dependencies.listPlatformUsersHandler ?? listPlatformUsers;
+  const getPlatformUserStatsHandler =
+    dependencies.getPlatformUserStatsHandler ?? getPlatformUserStats;
   const getPlatformUserProfileHandler =
     dependencies.getPlatformUserProfileHandler ?? getPlatformUserProfile;
   const suspendPlatformUserHandler =
@@ -192,6 +209,41 @@ export function createAdminUsersRouter(
         response.json(usersResponse);
       } catch (error) {
         if (error instanceof AdminUsersQueryValidationError) {
+          response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
+
+  adminUsersRouter.get(
+    "/stats",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      try {
+        const periodQuery = readSingleQueryValue(request.query.period);
+        let period: AdminUsersStatsPeriod | undefined;
+
+        if (typeof periodQuery === "string" && periodQuery !== "") {
+          period = parseStatsPeriod(periodQuery);
+        } else if (periodQuery === "") {
+          throw new AdminUsersQueryValidationError("period must be one of daily, weekly, monthly");
+        }
+
+        const statsResponse = await getPlatformUserStatsHandler(period);
+
+        response.json(statsResponse);
+      } catch (error) {
+        if (
+          error instanceof AdminUsersQueryValidationError ||
+          error instanceof PlatformUserStatsValidationError
+        ) {
           response.status(400).json({
             message: error.message
           });

@@ -5,9 +5,12 @@ export const PLATFORM_USER_STATUS_CODES = [1, 2] as const;
 export const DEFAULT_ADMIN_USERS_PAGE = 1;
 export const DEFAULT_ADMIN_USERS_LIMIT = 20;
 export const MAX_ADMIN_USERS_LIMIT = 100;
+export const ADMIN_USERS_STATS_PERIODS = ["daily", "weekly", "monthly"] as const;
+export const DEFAULT_ADMIN_USERS_STATS_PERIOD = "monthly";
 
 export type PlatformUserTypeId = (typeof PLATFORM_USER_TYPE_IDS)[number];
 export type PlatformUserStatusCode = (typeof PLATFORM_USER_STATUS_CODES)[number];
+export type AdminUsersStatsPeriod = (typeof ADMIN_USERS_STATS_PERIODS)[number];
 
 export interface PlatformUserSummary {
   username: string;
@@ -32,6 +35,21 @@ export interface AdminUsersListFilters {
 export interface AdminUsersListResponse {
   users: PlatformUserSummary[];
   total: number;
+}
+
+export interface PlatformUserGrowthTrendPoint {
+  date: string;
+  newUsers: number;
+}
+
+export interface AdminUsersStatsResponse {
+  totalUsers: number;
+  buyers: number;
+  sellers: number;
+  logistics: number;
+  suspended: number;
+  newUsersToday: number;
+  growthTrend: PlatformUserGrowthTrendPoint[];
 }
 
 export interface PlatformUserBioSummary {

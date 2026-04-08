@@ -320,6 +320,54 @@ export const swaggerSpec = {
           }
         }
       },
+      PlatformUserGrowthTrendPoint: {
+        type: "object",
+        properties: {
+          date: {
+            type: "string",
+            example: "2026-04-01"
+          },
+          newUsers: {
+            type: "integer",
+            example: 12
+          }
+        }
+      },
+      AdminUsersStatsResponse: {
+        type: "object",
+        properties: {
+          totalUsers: {
+            type: "integer",
+            example: 1245
+          },
+          buyers: {
+            type: "integer",
+            example: 720
+          },
+          sellers: {
+            type: "integer",
+            example: 380
+          },
+          logistics: {
+            type: "integer",
+            example: 145
+          },
+          suspended: {
+            type: "integer",
+            example: 18
+          },
+          newUsersToday: {
+            type: "integer",
+            example: 7
+          },
+          growthTrend: {
+            type: "array",
+            items: {
+              $ref: "#/components/schemas/PlatformUserGrowthTrendPoint"
+            }
+          }
+        }
+      },
       PlatformUserBioSummary: {
         type: "object",
         properties: {
@@ -969,6 +1017,74 @@ export const swaggerSpec = {
           },
           "403": {
             description: "Authenticated admin is not allowed to list users",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/users/stats": {
+      get: {
+        tags: ["User Management"],
+        summary: "User growth stats & counts by type",
+        description:
+          "Returns user totals, status counts, and period-based growth trend data for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "query",
+            name: "period",
+            required: false,
+            schema: {
+              type: "string",
+              enum: ["daily", "weekly", "monthly"],
+              default: "monthly"
+            },
+            description: "Growth trend bucket period"
+          }
+        ],
+        responses: {
+          "200": {
+            description: "User stats retrieved successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/AdminUsersStatsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid stats query parameters",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to view user stats",
             content: {
               "application/json": {
                 schema: {
