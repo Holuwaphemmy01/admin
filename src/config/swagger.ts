@@ -401,6 +401,37 @@ export const swaggerSpec = {
           }
         }
       },
+      ManualCreditWalletRequest: {
+        type: "object",
+        required: ["username", "amount", "description"],
+        properties: {
+          username: {
+            type: "string",
+            example: "buyer-one"
+          },
+          amount: {
+            type: "number",
+            example: 2500
+          },
+          description: {
+            type: "string",
+            example: "Manual adjustment for failed promotional payout"
+          }
+        }
+      },
+      ManualCreditWalletResponse: {
+        type: "object",
+        properties: {
+          message: {
+            type: "string",
+            example: "Wallet credited successfully"
+          },
+          newBalance: {
+            type: "number",
+            example: 4500
+          }
+        }
+      },
       AdminTransactionItem: {
         type: "object",
         properties: {
@@ -1577,6 +1608,91 @@ export const swaggerSpec = {
               "application/json": {
                 schema: {
                   $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/wallet/manual_credit": {
+      post: {
+        tags: ["Wallet & Transactions"],
+        summary: "Manually credit a user's wallet",
+        description:
+          "Credits a customer user's wallet balance, records a wallet transaction, and writes an admin audit log for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/ManualCreditWalletRequest"
+              }
+            }
+          }
+        },
+        responses: {
+          "200": {
+            description: "Wallet credited successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ManualCreditWalletResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid manual wallet credit request payload",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to credit user wallets",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "Target user wallet not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            description: "Username lookup is ambiguous",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ConflictErrorResponse"
                 }
               }
             }

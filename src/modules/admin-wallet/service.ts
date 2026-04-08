@@ -1,8 +1,12 @@
+import { randomUUID } from "node:crypto";
+
 import { QueryResult, QueryResultRow } from "pg";
 
-import { query } from "../../config/db";
+import { query, withTransaction } from "../../config/db";
 import { normalizeCredentialValue } from "../admin-auth/utils";
 import {
+  ManualCreditWalletRequestBody,
+  ManualCreditWalletResponse,
   PLATFORM_WALLET_OWNER_USERNAME,
   PLATFORM_WALLET_RECENT_TRANSACTIONS_LIMIT,
   PlatformWalletOverviewResponse,
@@ -14,8 +18,20 @@ type QueryFunction = <T extends QueryResultRow = QueryResultRow>(
   params?: unknown[]
 ) => Promise<QueryResult<T>>;
 
+interface TransactionClient {
+  query<T extends QueryResultRow = QueryResultRow>(
+    text: string,
+    params?: unknown[]
+  ): Promise<QueryResult<T>>;
+}
+
+type RunInTransaction = <T>(operation: (client: TransactionClient) => Promise<T>) => Promise<T>;
+
 interface AdminWalletServiceDependencies {
   queryFn?: QueryFunction;
+  runInTransaction?: RunInTransaction;
+  nowFactory?: () => Date;
+  uuidFactory?: () => string;
 }
 
 interface PlatformUserRow extends QueryResultRow {
@@ -39,6 +55,13 @@ interface PlatformCommissionRow extends QueryResultRow {
   logisticsCommissionTotal: string | number | null;
 }
 
+interface WalletForUpdateRow extends QueryResultRow {
+  id: string | number;
+  currency?: string | null;
+  availableBalance: string | number | null;
+  ledgerBalance: string | number | null;
+}
+
 interface PlatformWalletTransactionRow extends QueryResultRow {
   id: string | number;
   amount: string | number | null;
@@ -47,6 +70,17 @@ interface PlatformWalletTransactionRow extends QueryResultRow {
   transactionType: string | number | null;
   description: string | null;
   createdAt: Date;
+}
+
+interface CreatedWalletRow extends QueryResultRow {
+  id: string | number;
+  currency?: string | null;
+  availableBalance: string | number | null;
+  ledgerBalance: string | number | null;
+}
+
+interface CreatedWalletTransactionRow extends QueryResultRow {
+  id: string | number;
 }
 
 export class PlatformWalletNotFoundError extends Error {
@@ -77,8 +111,56 @@ export class UserWalletConflictError extends Error {
   }
 }
 
+export class ManualCreditWalletValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ManualCreditWalletValidationError";
+  }
+}
+
+export class ManualCreditWalletNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ManualCreditWalletNotFoundError";
+  }
+}
+
+export class ManualCreditWalletConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ManualCreditWalletConflictError";
+  }
+}
+
 function getQueryFn(dependencies: AdminWalletServiceDependencies = {}): QueryFunction {
   return dependencies.queryFn ?? query;
+}
+
+function getRunInTransaction(
+  dependencies: AdminWalletServiceDependencies = {}
+): RunInTransaction {
+  if (dependencies.runInTransaction) {
+    return dependencies.runInTransaction;
+  }
+
+  const queryFn = getQueryFn(dependencies);
+
+  if (queryFn !== query) {
+    return async <T>(operation: (client: TransactionClient) => Promise<T>) =>
+      operation({
+        query: queryFn
+      });
+  }
+
+  return withTransaction;
+}
+
+function getNowFactory(dependencies: AdminWalletServiceDependencies = {}): () => Date {
+  return dependencies.nowFactory ?? (() => new Date());
+}
+
+function getUuidFactory(dependencies: AdminWalletServiceDependencies = {}): () => string {
+  return dependencies.uuidFactory ?? randomUUID;
 }
 
 function mapRequiredInteger(value: string | number, fieldName: string): number {
@@ -100,6 +182,16 @@ function mapNumberOrZero(value: string | number | null | undefined): number {
 
   if (!Number.isFinite(numericValue)) {
     return 0;
+  }
+
+  return numericValue;
+}
+
+function mapRequiredNumber(value: string | number | null, fieldName: string): number {
+  const numericValue = typeof value === "number" ? value : Number(value);
+
+  if (!Number.isFinite(numericValue)) {
+    throw new Error(`Platform wallet query returned an invalid ${fieldName} value`);
   }
 
   return numericValue;
@@ -146,6 +238,46 @@ function normalizeRequiredUsername(value: string): string {
 
   if (normalizedValue === "") {
     throw new UserWalletValidationError("username must be a non-empty string");
+  }
+
+  return normalizedValue;
+}
+
+function normalizeRequiredDescription(value: string): string {
+  const normalizedValue = normalizeCredentialValue(value);
+
+  if (normalizedValue === "") {
+    throw new ManualCreditWalletValidationError(
+      "description is required and must be a non-empty string"
+    );
+  }
+
+  return normalizedValue;
+}
+
+function normalizeCreditAmount(value: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw new ManualCreditWalletValidationError(
+      "amount is required and must be a positive finite number"
+    );
+  }
+
+  const roundedAmount = Number(value.toFixed(2));
+
+  if (Math.abs(value - roundedAmount) > Number.EPSILON) {
+    throw new ManualCreditWalletValidationError("amount must have at most 2 decimal places");
+  }
+
+  return roundedAmount;
+}
+
+function normalizeManualCreditUsername(value: string): string {
+  const normalizedValue = normalizeCredentialValue(value);
+
+  if (normalizedValue === "") {
+    throw new ManualCreditWalletValidationError(
+      "username is required and must be a non-empty string"
+    );
   }
 
   return normalizedValue;
@@ -300,4 +432,186 @@ export async function getUserWallet(
     ledgerBalance: mapNumberOrZero(walletRow?.ledgerBalance),
     currency: mapWalletCurrency(walletRow?.currency)
   };
+}
+
+export async function manualCreditUserWallet(
+  payload: ManualCreditWalletRequestBody & {
+    actedByAdminUserId: string;
+  },
+  dependencies: AdminWalletServiceDependencies = {}
+): Promise<ManualCreditWalletResponse> {
+  const runInTransaction = getRunInTransaction(dependencies);
+  const nowFactory = getNowFactory(dependencies);
+  const uuidFactory = getUuidFactory(dependencies);
+  const username = normalizeManualCreditUsername(payload.username);
+  const amount = normalizeCreditAmount(payload.amount);
+  const description = normalizeRequiredDescription(payload.description);
+  const actedByAdminUserId = normalizeCredentialValue(payload.actedByAdminUserId);
+
+  if (actedByAdminUserId === "") {
+    throw new ManualCreditWalletValidationError("actedByAdminUserId is required");
+  }
+
+  return runInTransaction(async (client) => {
+    const userResult = await client.query<WalletLookupUserRow>(
+      [
+        "SELECT",
+        '  u.id, u.username',
+        'FROM public."user" u',
+        'WHERE u."userTypeId" IN (1, 2, 3)',
+        "  AND u.username IS NOT NULL",
+        "  AND BTRIM(u.username) <> ''",
+        "  AND LOWER(u.username) = LOWER($1)",
+        'ORDER BY u."createdAt" DESC',
+        "LIMIT 2",
+        "FOR UPDATE"
+      ].join("\n"),
+      [username]
+    );
+
+    if ((userResult.rowCount ?? 0) === 0) {
+      throw new ManualCreditWalletNotFoundError("User wallet target not found");
+    }
+
+    if ((userResult.rowCount ?? 0) > 1) {
+      throw new ManualCreditWalletConflictError("Multiple users match the provided username");
+    }
+
+    const user = userResult.rows[0];
+
+    if (!user || typeof user.username !== "string" || user.username.trim() === "") {
+      throw new ManualCreditWalletNotFoundError("User wallet target not found");
+    }
+
+    const targetUserId = mapRequiredInteger(user.id, "user.id");
+    const walletResult = await client.query<WalletForUpdateRow>(
+      [
+        "SELECT",
+        '  w.id, w.currency, w."availableBalance", w."ledgerBalance"',
+        "FROM public.wallet w",
+        'WHERE w."userId" = $1',
+        'ORDER BY w."createdAt" DESC NULLS LAST, w.id DESC',
+        "LIMIT 1",
+        "FOR UPDATE"
+      ].join("\n"),
+      [targetUserId]
+    );
+
+    const now = nowFactory();
+    let wallet = walletResult.rows[0];
+    let walletId: number;
+    let walletCurrency = "NGN";
+    let previousAvailableBalance = 0;
+    let previousLedgerBalance = 0;
+
+    if (!wallet) {
+      const createdWalletResult = await client.query<CreatedWalletRow>(
+        [
+          "INSERT INTO public.wallet (",
+          '  "userId", amount, currency, "ledgerBalance", "availableBalance", status, "createdAt", "updatedAt"',
+          ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+          'RETURNING id, currency, "availableBalance", "ledgerBalance"'
+        ].join("\n"),
+        [targetUserId, null, "NGN", 0, 0, 1, now, now]
+      );
+
+      wallet = createdWalletResult.rows[0];
+    }
+
+    if (!wallet) {
+      throw new Error("Wallet credit creation did not return a wallet row");
+    }
+
+    walletId = mapRequiredInteger(wallet.id, "wallet.id");
+    walletCurrency = mapWalletCurrency(wallet.currency);
+    previousAvailableBalance = mapNumberOrZero(wallet.availableBalance);
+    previousLedgerBalance = mapNumberOrZero(wallet.ledgerBalance);
+
+    const newAvailableBalance = Number((previousAvailableBalance + amount).toFixed(2));
+    const newLedgerBalance = Number((previousLedgerBalance + amount).toFixed(2));
+
+    await client.query(
+      [
+        "UPDATE public.wallet",
+        'SET "availableBalance" = $1,',
+        '    "ledgerBalance" = $2,',
+        '    "updatedAt" = $3',
+        "WHERE id = $4"
+      ].join("\n"),
+      [newAvailableBalance, newLedgerBalance, now, walletId]
+    );
+
+    const transactionReference = [
+      "MANUAL_CREDIT",
+      targetUserId,
+      now.getTime(),
+      actedByAdminUserId
+    ].join(":");
+
+    const walletTransactionResult = await client.query<CreatedWalletTransactionRow>(
+      [
+        "INSERT INTO public.wallet_transaction (",
+        '  "userId", amount, currency, "transactionId", "settlementId", "refundId",',
+        '  "transactionType", "ledgerBalance", "availableBalance", description, status, "createdAt", "updatedAt"',
+        ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+        "RETURNING id"
+      ].join("\n"),
+      [
+        targetUserId,
+        amount,
+        walletCurrency,
+        transactionReference,
+        null,
+        null,
+        1,
+        newLedgerBalance,
+        newAvailableBalance,
+        description,
+        1,
+        now,
+        now
+      ]
+    );
+
+    const walletTransaction = walletTransactionResult.rows[0];
+
+    if (!walletTransaction) {
+      throw new Error("Wallet credit transaction insert did not return a row");
+    }
+
+    const walletTransactionId = mapRequiredInteger(
+      walletTransaction.id,
+      "walletTransaction.id"
+    );
+
+    await client.query(
+      [
+        "INSERT INTO public.admin_wallet_action_audit_logs (",
+        '  id, "targetUserId", "targetWalletId", "walletTransactionId", "actedByAdminUserId",',
+        '  action, amount, description, "previousAvailableBalance", "newAvailableBalance",',
+        '  "previousLedgerBalance", "newLedgerBalance", "createdAt"',
+        ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)"
+      ].join("\n"),
+      [
+        uuidFactory(),
+        targetUserId,
+        walletId,
+        walletTransactionId,
+        actedByAdminUserId,
+        "manual_credit",
+        amount,
+        description,
+        previousAvailableBalance,
+        newAvailableBalance,
+        previousLedgerBalance,
+        newLedgerBalance,
+        now
+      ]
+    );
+
+    return {
+      message: "Wallet credited successfully",
+      newBalance: newAvailableBalance
+    };
+  });
 }

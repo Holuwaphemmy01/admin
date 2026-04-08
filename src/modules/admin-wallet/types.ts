@@ -40,3 +40,14 @@ export interface UserWalletResponse {
   ledgerBalance: number;
   currency: string;
 }
+
+export interface ManualCreditWalletRequestBody {
+  username: string;
+  amount: number;
+  description: string;
+}
+
+export interface ManualCreditWalletResponse {
+  message: string;
+  newBalance: number;
+}
