@@ -445,6 +445,16 @@ export const swaggerSpec = {
           }
         }
       },
+      DeletePlatformUserRequest: {
+        type: "object",
+        required: ["reason"],
+        properties: {
+          reason: {
+            type: "string",
+            example: "Fraud confirmed after investigation"
+          }
+        }
+      },
       MessageResponse: {
         type: "object",
         properties: {
@@ -1045,6 +1055,100 @@ export const swaggerSpec = {
           },
           "409": {
             description: "Multiple users match the provided username",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ConflictErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      delete: {
+        tags: ["User Management"],
+        summary: "Hard delete a user",
+        description:
+          "Permanently deletes a buyer, seller, or logistics user by username, cleans up related user-linked records, and records the required deletion reason for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "path",
+            name: "username",
+            required: true,
+            schema: {
+              type: "string"
+            },
+            description: "Case-insensitive username lookup for the user account to permanently delete"
+          }
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/DeletePlatformUserRequest"
+              }
+            }
+          }
+        },
+        responses: {
+          "200": {
+            description: "User account deleted successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid username path parameter or request body",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to permanently delete users",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "User account was not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            description: "User deletion conflict such as duplicate username match",
             content: {
               "application/json": {
                 schema: {

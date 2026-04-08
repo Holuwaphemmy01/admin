@@ -3,6 +3,10 @@ import { Request, RequestHandler, Response, Router } from "express";
 import { authenticateAdmin, requireAdminRole } from "../admin-auth/middleware";
 import {
   activatePlatformUser,
+  deletePlatformUser,
+  PlatformUserDeletionConflictError,
+  PlatformUserDeletionNotFoundError,
+  PlatformUserDeletionValidationError,
   getPlatformUserProfile,
   listPlatformUsers,
   PlatformUserActivationConflictError,
@@ -34,6 +38,7 @@ interface AdminUsersRouterDependencies {
   getPlatformUserProfileHandler?: typeof getPlatformUserProfile;
   suspendPlatformUserHandler?: typeof suspendPlatformUser;
   activatePlatformUserHandler?: typeof activatePlatformUser;
+  deletePlatformUserHandler?: typeof deletePlatformUser;
   authenticateAdminMiddleware?: RequestHandler;
   requireSuperAdminMiddleware?: RequestHandler;
 }
@@ -116,6 +121,8 @@ export function createAdminUsersRouter(
     dependencies.suspendPlatformUserHandler ?? suspendPlatformUser;
   const activatePlatformUserHandler =
     dependencies.activatePlatformUserHandler ?? activatePlatformUser;
+  const deletePlatformUserHandler =
+    dependencies.deletePlatformUserHandler ?? deletePlatformUser;
   const authenticateAdminMiddleware =
     dependencies.authenticateAdminMiddleware ?? authenticateAdmin;
   const requireSuperAdminMiddleware =
@@ -356,6 +363,81 @@ export function createAdminUsersRouter(
 
         if (error instanceof PlatformUserActivationConflictError) {
           console.warn(`User activation conflict for "${username.trim()}".`);
+
+          response.status(409).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
+
+  adminUsersRouter.delete(
+    "/:username",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      const rawUsername = request.params.username;
+      const username = Array.isArray(rawUsername) ? rawUsername[0] ?? "" : rawUsername ?? "";
+      const { reason } = request.body ?? {};
+
+      if (username.trim() === "") {
+        response.status(400).json({
+          message: "username must be a non-empty string"
+        });
+
+        return;
+      }
+
+      if (!isValidCredentialField(reason)) {
+        response.status(400).json({
+          message: "reason is required and must be a non-empty string"
+        });
+
+        return;
+      }
+
+      if (!request.admin) {
+        response.status(401).json({
+          message: "Unauthorized admin access"
+        });
+
+        return;
+      }
+
+      try {
+        const deletionResponse = await deletePlatformUserHandler({
+          username,
+          reason,
+          deletedByAdmin: request.admin
+        });
+
+        console.info(`User account permanently deleted for "${username.trim()}".`);
+
+        response.json(deletionResponse);
+      } catch (error) {
+        if (error instanceof PlatformUserDeletionValidationError) {
+          response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof PlatformUserDeletionNotFoundError) {
+          response.status(404).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof PlatformUserDeletionConflictError) {
+          console.warn(`User deletion conflict for "${username.trim()}".`);
 
           response.status(409).json({
             message: error.message

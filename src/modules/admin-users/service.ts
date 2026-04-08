@@ -10,6 +10,7 @@ import {
   ActivatePlatformUserResponse,
   AdminUsersListFilters,
   AdminUsersListResponse,
+  DeletePlatformUserResponse,
   PlatformUserProfileResponse,
   SuspendPlatformUserResponse,
   SUSPENDED_PLATFORM_USER_STATUS_CODE
@@ -66,8 +67,95 @@ interface PlatformUserProfileRow extends QueryResultRow {
 
 interface PlatformUserForUpdateRow extends QueryResultRow {
   id: number;
+  username: string | null;
+  emailAddress: string | null;
+  userTypeId: 1 | 2 | 3;
   status: 1 | 2;
 }
+
+interface UserDeleteTarget {
+  tableName: string;
+  columnName: string;
+}
+
+const PLATFORM_USER_DELETE_BY_ID_TARGETS: readonly UserDeleteTarget[] = [
+  { tableName: "billing_address", columnName: "userId" },
+  { tableName: "business_detail", columnName: "userId" },
+  { tableName: "cart", columnName: "userId" },
+  { tableName: "comment_product_post", columnName: "userId" },
+  { tableName: "comment_product_post_reply", columnName: "userId" },
+  { tableName: "comment_social_post", columnName: "userId" },
+  { tableName: "comment_social_post_reply", columnName: "userId" },
+  { tableName: "customer_feedback", columnName: "userId" },
+  { tableName: "delivery", columnName: "buyerUserId" },
+  { tableName: "delivery_bid", columnName: "userId" },
+  { tableName: "discount", columnName: "userId" },
+  { tableName: "earnings", columnName: "userId" },
+  { tableName: "feed_interaction", columnName: "userId" },
+  { tableName: "follow", columnName: "userId" },
+  { tableName: "kyc", columnName: "userId" },
+  { tableName: "logistic", columnName: "userId" },
+  { tableName: "order_tb", columnName: "userId" },
+  { tableName: "otp", columnName: "userId" },
+  { tableName: "pay_for_me_link", columnName: "userId" },
+  { tableName: "pay_for_me_transaction", columnName: "userId" },
+  { tableName: "product", columnName: "userId" },
+  { tableName: "product_inventory", columnName: "userId" },
+  { tableName: "product_post", columnName: "userId" },
+  { tableName: "promote_post_campaign", columnName: "userId" },
+  { tableName: "promote_post_campaign_stats", columnName: "userId" },
+  { tableName: "promote_post_click", columnName: "userId" },
+  { tableName: "promote_post_engagement", columnName: "userId" },
+  { tableName: "promote_post_impression", columnName: "userId" },
+  { tableName: "promote_post_transaction", columnName: "userId" },
+  { tableName: "rating_review_buyer", columnName: "userId" },
+  { tableName: "rating_review_logistics", columnName: "userId" },
+  { tableName: "rating_review_product", columnName: "userId" },
+  { tableName: "rating_review_seller", columnName: "userId" },
+  { tableName: "referral_code", columnName: "userId" },
+  { tableName: "referral_earning", columnName: "referrerUserId" },
+  { tableName: "referral_earning", columnName: "referredUserId" },
+  { tableName: "referral_relation", columnName: "referrerUserId" },
+  { tableName: "referral_relation", columnName: "referredUserId" },
+  { tableName: "rewards", columnName: "userId" },
+  { tableName: "rewards_transaction", columnName: "userId" },
+  { tableName: "settlement", columnName: "userId" },
+  { tableName: "settlement_account", columnName: "userId" },
+  { tableName: "social_post", columnName: "userId" },
+  { tableName: "support_ticket", columnName: "userId" },
+  { tableName: "transaction_pin", columnName: "userId" },
+  { tableName: "user_auth", columnName: "userId" },
+  { tableName: "user_bio", columnName: "userId" },
+  { tableName: "user_interest", columnName: "userId" },
+  { tableName: "user_login_tracker", columnName: "userId" },
+  { tableName: "user_notification", columnName: "userId" },
+  { tableName: "user_profile_cover_img", columnName: "userId" },
+  { tableName: "user_profile_img", columnName: "userId" },
+  { tableName: "user_reward", columnName: "userId" },
+  { tableName: "user_subscription", columnName: "userId" },
+  { tableName: "wallet", columnName: "userId" },
+  { tableName: "wallet_transaction", columnName: "userId" },
+  { tableName: "wishlist", columnName: "userId" }
+] as const;
+
+const PLATFORM_USER_DELETE_BY_STRING_ID_TARGETS: readonly UserDeleteTarget[] = [
+  { tableName: "searchHistory", columnName: "user_id" }
+] as const;
+
+const PLATFORM_USER_DELETE_BY_USERNAME_TARGETS: readonly UserDeleteTarget[] = [
+  { tableName: "chat_conversation_list", columnName: "username" },
+  { tableName: "chat_user_socket_id", columnName: "username" },
+  { tableName: "customer_management", columnName: "username" },
+  { tableName: "customer_management", columnName: "customerUsername" },
+  { tableName: "delivery_bid", columnName: "logisticUsername" },
+  { tableName: "feed_interaction", columnName: "username" },
+  { tableName: "notification_general", columnName: "username" },
+  { tableName: "order_tb", columnName: "sellerUsername" },
+  { tableName: "order_tb", columnName: "logisticUsername" },
+  { tableName: "rating_review_to_send", columnName: "buyerUsername" },
+  { tableName: "rating_review_to_send", columnName: "sellerUsername" },
+  { tableName: "rating_review_to_send", columnName: "logisticUsername" }
+] as const;
 
 export class PlatformUserProfileValidationError extends Error {
   constructor(message: string) {
@@ -132,6 +220,27 @@ export class PlatformUserActivationConflictError extends Error {
   }
 }
 
+export class PlatformUserDeletionValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PlatformUserDeletionValidationError";
+  }
+}
+
+export class PlatformUserDeletionNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PlatformUserDeletionNotFoundError";
+  }
+}
+
+export class PlatformUserDeletionConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PlatformUserDeletionConflictError";
+  }
+}
+
 type MessageErrorConstructor = new (message: string) => Error;
 
 function getQueryFn(dependencies: AdminUsersServiceDependencies = {}): QueryFunction {
@@ -183,6 +292,16 @@ function normalizeRequiredComment(comment: string, ErrorType: MessageErrorConstr
   return normalizedComment;
 }
 
+function normalizeRequiredReason(reason: string, ErrorType: MessageErrorConstructor): string {
+  const normalizedReason = normalizeCredentialValue(reason);
+
+  if (normalizedReason === "") {
+    throw new ErrorType("reason is required and must be a non-empty string");
+  }
+
+  return normalizedReason;
+}
+
 function normalizeOptionalComment(
   comment: string | undefined,
   ErrorType: MessageErrorConstructor
@@ -198,6 +317,41 @@ function normalizeOptionalComment(
   }
 
   return normalizedComment;
+}
+
+function quoteIdentifier(identifier: string): string {
+  return `"${identifier.replace(/"/g, "\"\"")}"`;
+}
+
+async function deleteUserLinkedRowsById(
+  client: TransactionClient,
+  userId: number
+): Promise<void> {
+  for (const target of PLATFORM_USER_DELETE_BY_ID_TARGETS) {
+    await client.query(
+      `DELETE FROM public.${quoteIdentifier(target.tableName)} WHERE ${quoteIdentifier(target.columnName)} = $1`,
+      [userId]
+    );
+  }
+
+  for (const target of PLATFORM_USER_DELETE_BY_STRING_ID_TARGETS) {
+    await client.query(
+      `DELETE FROM public.${quoteIdentifier(target.tableName)} WHERE ${quoteIdentifier(target.columnName)} = $1`,
+      [String(userId)]
+    );
+  }
+}
+
+async function deleteUserLinkedRowsByUsername(
+  client: TransactionClient,
+  username: string
+): Promise<void> {
+  for (const target of PLATFORM_USER_DELETE_BY_USERNAME_TARGETS) {
+    await client.query(
+      `DELETE FROM public.${quoteIdentifier(target.tableName)} WHERE LOWER(${quoteIdentifier(target.columnName)}) = LOWER($1)`,
+      [username]
+    );
+  }
 }
 
 function buildUserFilters(filters: AdminUsersListFilters): { whereSql: string; params: unknown[] } {
@@ -531,5 +685,92 @@ export async function activatePlatformUser(
 
   return {
     message: "Account successfully reactivated"
+  };
+}
+
+interface DeletePlatformUserInput {
+  username: string;
+  reason: string;
+  deletedByAdmin: AuthenticatedAdmin;
+}
+
+export async function deletePlatformUser(
+  input: DeletePlatformUserInput,
+  dependencies: AdminUsersServiceDependencies = {}
+): Promise<DeletePlatformUserResponse> {
+  const normalizedUsername = normalizeRequiredUsername(
+    input.username,
+    PlatformUserDeletionValidationError
+  );
+  const normalizedReason = normalizeRequiredReason(
+    input.reason,
+    PlatformUserDeletionValidationError
+  );
+
+  const runInTransaction = getRunInTransaction(dependencies);
+  const nowFactory = getNowFactory(dependencies);
+  const uuidFactory = getUuidFactory(dependencies);
+
+  await runInTransaction(async (client) => {
+    const targetUserResult = await client.query<PlatformUserForUpdateRow>(
+      [
+        "SELECT",
+        '  u.id, u.username, u."emailAddress", u."userTypeId", u.status',
+        'FROM public."user" u',
+        'WHERE u."userTypeId" IN (1, 2, 3) AND LOWER(u.username) = LOWER($1)',
+        'ORDER BY u."createdAt" DESC',
+        "LIMIT 2",
+        "FOR UPDATE"
+      ].join("\n"),
+      [normalizedUsername]
+    );
+
+    if ((targetUserResult.rowCount ?? 0) === 0) {
+      throw new PlatformUserDeletionNotFoundError("User account not found");
+    }
+
+    if ((targetUserResult.rowCount ?? 0) > 1) {
+      throw new PlatformUserDeletionConflictError(
+        "Multiple users match the provided username"
+      );
+    }
+
+    const targetUser = targetUserResult.rows[0];
+    const timestamp = nowFactory();
+    const canonicalUsername =
+      typeof targetUser.username === "string" && targetUser.username.trim() !== ""
+        ? targetUser.username
+        : normalizedUsername;
+    const emailAddress =
+      typeof targetUser.emailAddress === "string" ? targetUser.emailAddress : null;
+
+    await deleteUserLinkedRowsByUsername(client, canonicalUsername);
+    await deleteUserLinkedRowsById(client, targetUser.id);
+
+    await client.query('DELETE FROM public."user" WHERE id = $1', [targetUser.id]);
+
+    await client.query(
+      [
+        "INSERT INTO public.user_deletion_audit_logs (",
+        '  id, "deletedUserId", "deletedUsername", "deletedEmailAddress", "deletedUserTypeId", "actedByAdminUserId", reason, "createdAt"',
+        ") VALUES (",
+        "  $1, $2, $3, $4, $5, $6, $7, $8",
+        ")"
+      ].join("\n"),
+      [
+        uuidFactory(),
+        targetUser.id,
+        canonicalUsername,
+        emailAddress,
+        targetUser.userTypeId,
+        input.deletedByAdmin.sub,
+        normalizedReason,
+        timestamp
+      ]
+    );
+  });
+
+  return {
+    message: "User permanently deleted"
   };
 }

@@ -80,3 +80,11 @@ export interface ActivatePlatformUserRequestBody {
 export interface ActivatePlatformUserResponse {
   message: string;
 }
+
+export interface DeletePlatformUserRequestBody {
+  reason: string;
+}
+
+export interface DeletePlatformUserResponse {
+  message: string;
+}

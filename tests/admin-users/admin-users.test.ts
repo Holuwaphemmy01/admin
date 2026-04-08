@@ -9,11 +9,15 @@ import { AuthenticatedAdmin } from "../../src/modules/admin-auth/types";
 import { createAdminUsersRouter } from "../../src/modules/admin-users/routes";
 import {
   activatePlatformUser,
+  deletePlatformUser,
   getPlatformUserProfile,
   listPlatformUsers,
   PlatformUserActivationConflictError,
   PlatformUserActivationNotFoundError,
   PlatformUserActivationValidationError,
+  PlatformUserDeletionConflictError,
+  PlatformUserDeletionNotFoundError,
+  PlatformUserDeletionValidationError,
   PlatformUserProfileConflictError,
   PlatformUserProfileNotFoundError,
   PlatformUserProfileValidationError,
@@ -670,6 +674,163 @@ test("activatePlatformUser rejects invalid requests and conflicting user states"
       }
     )
   ).rejects.toThrow("User account is already active");
+});
+
+test("deletePlatformUser removes user-linked records, deletes the user, and writes a deletion audit log", async () => {
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+  const deletedByAdmin = createAuthenticatedAdmin();
+
+  const response = await deletePlatformUser(
+    {
+      username: " Buyer-1 ",
+      reason: "  Fraud confirmed after investigation  ",
+      deletedByAdmin
+    },
+    {
+      uuidFactory: () => "deletion-audit-id",
+      nowFactory: () => new Date("2026-04-08T12:00:00.000Z"),
+      runInTransaction: async (operation) =>
+        operation(
+          createTransactionClient(async (text, params) => {
+            executedQueries.push({ text, params });
+
+            if (text.includes('SELECT') && text.includes('FROM public."user" u')) {
+              return createQueryResult([
+                {
+                  id: 42,
+                  username: "Buyer-1",
+                  emailAddress: "buyer-1@example.com",
+                  userTypeId: 1,
+                  status: 2
+                }
+              ]);
+            }
+
+            return createQueryResult([]);
+          })
+        )
+    }
+  );
+
+  expect(response).toEqual({
+    message: "User permanently deleted"
+  });
+  expect(executedQueries[0]?.params).toEqual(["Buyer-1"]);
+  expect(
+    executedQueries.some(
+      (query) =>
+        query.text.includes('DELETE FROM public."delivery"') &&
+        query.text.includes('"buyerUserId" = $1') &&
+        JSON.stringify(query.params) === JSON.stringify([42])
+    )
+  ).toBe(true);
+  expect(
+    executedQueries.some(
+      (query) =>
+        query.text.includes('DELETE FROM public."searchHistory"') &&
+        query.text.includes('"user_id" = $1') &&
+        JSON.stringify(query.params) === JSON.stringify(["42"])
+    )
+  ).toBe(true);
+  expect(
+    executedQueries.some(
+      (query) =>
+        query.text.includes('DELETE FROM public."customer_management"') &&
+        query.text.includes('LOWER("customerUsername") = LOWER($1)') &&
+        JSON.stringify(query.params) === JSON.stringify(["Buyer-1"])
+    )
+  ).toBe(true);
+  expect(
+    executedQueries.some(
+      (query) =>
+        query.text.includes('DELETE FROM public."user" WHERE id = $1') &&
+        JSON.stringify(query.params) === JSON.stringify([42])
+    )
+  ).toBe(true);
+  expect(
+    executedQueries.some(
+      (query) =>
+        query.text.includes("INSERT INTO public.user_deletion_audit_logs") &&
+        JSON.stringify(query.params) ===
+          JSON.stringify([
+            "deletion-audit-id",
+            42,
+            "Buyer-1",
+            "buyer-1@example.com",
+            1,
+            deletedByAdmin.sub,
+            "Fraud confirmed after investigation",
+            new Date("2026-04-08T12:00:00.000Z")
+          ])
+    )
+  ).toBe(true);
+});
+
+test("deletePlatformUser rejects invalid requests and conflicting user states", async () => {
+  const deletedByAdmin = createAuthenticatedAdmin();
+
+  await expect(
+    deletePlatformUser({
+      username: "   ",
+      reason: "Reason",
+      deletedByAdmin
+    })
+  ).rejects.toThrow(PlatformUserDeletionValidationError);
+
+  await expect(
+    deletePlatformUser({
+      username: "buyer-1",
+      reason: "   ",
+      deletedByAdmin
+    })
+  ).rejects.toThrow("reason is required and must be a non-empty string");
+
+  await expect(
+    deletePlatformUser(
+      {
+        username: "missing-user",
+        reason: "Reason",
+        deletedByAdmin
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation(createTransactionClient(async () => createQueryResult([])))
+      }
+    )
+  ).rejects.toThrow(PlatformUserDeletionNotFoundError);
+
+  await expect(
+    deletePlatformUser(
+      {
+        username: "duplicate-user",
+        reason: "Reason",
+        deletedByAdmin
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation(
+            createTransactionClient(async () =>
+              createQueryResult([
+                {
+                  id: 1,
+                  username: "Duplicate-User",
+                  emailAddress: "duplicate-1@example.com",
+                  userTypeId: 1,
+                  status: 1
+                },
+                {
+                  id: 2,
+                  username: "duplicate-user",
+                  emailAddress: "duplicate-2@example.com",
+                  userTypeId: 2,
+                  status: 2
+                }
+              ])
+            )
+          )
+      }
+    )
+  ).rejects.toThrow(PlatformUserDeletionConflictError);
 });
 
 test("GET /admin/users returns 401 when the admin token is missing", async () => {
@@ -1595,6 +1756,233 @@ test("PUT /admin/users/:username/activate returns success for a valid super-admi
     const payload = (await response.json()) as Record<string, unknown>;
 
     expect(payload.message).toBe("Account successfully reactivated");
+  } finally {
+    await server.close();
+  }
+});
+
+test("DELETE /admin/users/:username returns 401 when the admin token is missing", async () => {
+  const application = express();
+
+  application.use(express.json());
+  application.use(
+    "/admin/users",
+    createAdminUsersRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/users/buyer-1`, {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        reason: "Fraud confirmed after investigation"
+      })
+    });
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("DELETE /admin/users/:username returns 403 for non-super-admins", async () => {
+  const application = express();
+
+  application.use(express.json());
+  application.use(
+    "/admin/users",
+    createAdminUsersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "support"
+        })
+      ),
+      deletePlatformUserHandler: async () => ({
+        message: "User permanently deleted"
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/users/buyer-1`, {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        reason: "Fraud confirmed after investigation"
+      })
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("DELETE /admin/users/:username validates the request body and path parameter", async () => {
+  const application = express();
+
+  application.use(express.json());
+  application.use(
+    "/admin/users",
+    createAdminUsersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      deletePlatformUserHandler: async () => ({
+        message: "User permanently deleted"
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    let response = await fetch(`${server.baseUrl}/admin/users/%20%20`, {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        reason: "Fraud confirmed after investigation"
+      })
+    });
+
+    expect(response.status).toBe(400);
+
+    response = await fetch(`${server.baseUrl}/admin/users/buyer-1`, {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        reason: "   "
+      })
+    });
+
+    expect(response.status).toBe(400);
+  } finally {
+    await server.close();
+  }
+});
+
+test("DELETE /admin/users/:username maps service not-found and conflict responses", async () => {
+  const notFoundApplication = express();
+
+  notFoundApplication.use(express.json());
+  notFoundApplication.use(
+    "/admin/users",
+    createAdminUsersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      deletePlatformUserHandler: async () => {
+        throw new PlatformUserDeletionNotFoundError("User account not found");
+      }
+    })
+  );
+
+  let server = await startTestServer(notFoundApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/users/missing-user`, {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        reason: "Fraud confirmed after investigation"
+      })
+    });
+
+    expect(response.status).toBe(404);
+  } finally {
+    await server.close();
+  }
+
+  const conflictApplication = express();
+
+  conflictApplication.use(express.json());
+  conflictApplication.use(
+    "/admin/users",
+    createAdminUsersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      deletePlatformUserHandler: async () => {
+        throw new PlatformUserDeletionConflictError("Multiple users match the provided username");
+      }
+    })
+  );
+
+  server = await startTestServer(conflictApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/users/duplicate-user`, {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        reason: "Fraud confirmed after investigation"
+      })
+    });
+
+    expect(response.status).toBe(409);
+  } finally {
+    await server.close();
+  }
+});
+
+test("DELETE /admin/users/:username returns success for a valid super-admin request", async () => {
+  const application = express();
+
+  application.use(express.json());
+  application.use(
+    "/admin/users",
+    createAdminUsersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      deletePlatformUserHandler: async (input) => {
+        expect(input.username).toBe("Buyer-1");
+        expect(input.reason).toBe("Fraud confirmed after investigation");
+        expect(input.deletedByAdmin.username).toBe("brickpine-admin");
+
+        return {
+          message: "User permanently deleted"
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/users/Buyer-1`, {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        reason: "Fraud confirmed after investigation"
+      })
+    });
+
+    expect(response.status).toBe(200);
+
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    expect(payload.message).toBe("User permanently deleted");
   } finally {
     await server.close();
   }

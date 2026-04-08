@@ -64,6 +64,7 @@ This is a TypeScript Node.js and Express starter for the BrickPine admin API wit
 - `PUT /admin/auth/change_password`: Lets an authenticated admin change their own password.
 - `GET /admin/users`: Lists customer users with admin filters and pagination for a super admin.
 - `GET /admin/users/:username`: Returns the full customer user profile, curated bio data, and placeholder social/follow summaries for a super admin.
+- `DELETE /admin/users/:username`: Permanently deletes a customer user account and records the required deletion reason for a super admin.
 - `PUT /admin/users/:username/suspend`: Suspends a customer user account and records the suspension comment for a super admin.
 - `PUT /admin/users/:username/activate`: Reactivates a suspended customer user account and records an optional note for a super admin.
 - `GET /docs`: Swagger UI for the API documentation.
@@ -71,7 +72,7 @@ This is a TypeScript Node.js and Express starter for the BrickPine admin API wit
 
 ## Database migration
 
-Run the SQL migrations in `migrations/001_create_admin_invites.sql`, `migrations/002_create_admin_auth_tables.sql`, `migrations/003_create_admin_access_audit_logs.sql`, `migrations/004_create_user_access_audit_logs.sql`, and `migrations/005_update_user_access_audit_logs_for_reactivation.sql` against your PostgreSQL database before using the admin and user-management endpoints.
+Run the SQL migrations in `migrations/001_create_admin_invites.sql`, `migrations/002_create_admin_auth_tables.sql`, `migrations/003_create_admin_access_audit_logs.sql`, `migrations/004_create_user_access_audit_logs.sql`, `migrations/005_update_user_access_audit_logs_for_reactivation.sql`, and `migrations/006_create_user_deletion_audit_logs.sql` against your PostgreSQL database before using the admin and user-management endpoints.
 
 ## Testing
 
