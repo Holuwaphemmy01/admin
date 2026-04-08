@@ -728,6 +728,35 @@ export const swaggerSpec = {
           }
         }
       },
+      AdminOrderCancelRequest: {
+        type: "object",
+        required: ["orderIds"],
+        properties: {
+          orderIds: {
+            type: "array",
+            minItems: 1,
+            items: {
+              type: "integer",
+              minimum: 1
+            },
+            example: [1, 6]
+          },
+          reason: {
+            type: "string",
+            nullable: true,
+            example: "Fraud review"
+          }
+        }
+      },
+      AdminOrderCancelResponse: {
+        type: "object",
+        properties: {
+          message: {
+            type: "string",
+            example: "Order cancelled"
+          }
+        }
+      },
       PlatformUserSummary: {
         type: "object",
         properties: {
@@ -2077,6 +2106,102 @@ export const swaggerSpec = {
           },
           "404": {
             description: "Order not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/orders/{orderNumber}/cancel": {
+      put: {
+        tags: ["Order Management"],
+        summary: "Admin-force cancel an order",
+        description:
+          "Cancels one or more selected order rows for the provided order number, optionally records a cancellation reason, updates linked deliveries when present, and records an admin audit log for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "path",
+            name: "orderNumber",
+            required: true,
+            schema: {
+              type: "string"
+            },
+            description: "The order number whose selected order IDs should be cancelled"
+          }
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/AdminOrderCancelRequest"
+              }
+            }
+          }
+        },
+        responses: {
+          "200": {
+            description: "Order cancelled successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/AdminOrderCancelResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid cancellation payload",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to cancel orders",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "Order not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            description: "Selected order state does not allow cancellation",
             content: {
               "application/json": {
                 schema: {

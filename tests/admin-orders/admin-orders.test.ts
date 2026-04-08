@@ -8,13 +8,16 @@ import { createAuthenticateAdminMiddleware } from "../../src/modules/admin-auth/
 import { AuthenticatedAdmin } from "../../src/modules/admin-auth/types";
 import { createAdminOrdersRouter } from "../../src/modules/admin-orders/routes";
 import {
+  AdminOrderConflictError,
   AdminOrderNotFoundError,
   AdminOrdersValidationError,
+  cancelOrdersByAdmin,
   getOrderDetails,
   listOrders
 } from "../../src/modules/admin-orders/service";
 import {
   AdminOrderDetailsResponse,
+  CancelAdminOrdersResponse,
   AdminOrdersListResponse
 } from "../../src/modules/admin-orders/types";
 
@@ -51,6 +54,21 @@ function createQueryResult<T extends QueryResultRow>(rows: T[]): QueryResult<T> 
     fields: [],
     rowCount: rows.length,
     rows
+  };
+}
+
+function createTransactionClient(
+  queryImplementation: (text: string, params?: unknown[]) => Promise<QueryResult<QueryResultRow>>
+) {
+  return {
+    query: async <T extends QueryResultRow>(
+      text: string,
+      params?: unknown[]
+    ): Promise<QueryResult<T>> => {
+      const result = await queryImplementation(text, params);
+
+      return result as unknown as QueryResult<T>;
+    }
   };
 }
 
@@ -576,6 +594,248 @@ test("getOrderDetails rejects blank order numbers and returns not found when no 
   ).rejects.toThrow(AdminOrderNotFoundError);
 });
 
+test("cancelOrdersByAdmin updates selected orders, cancels linked deliveries, and writes audit logs", async () => {
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+  const timestamp = new Date("2026-04-08T12:00:00.000Z");
+
+  const response = await cancelOrdersByAdmin(
+    {
+      orderNumber: "QfRkbH41t27wDHVj",
+      orderIds: [1, 6],
+      reason: "  Fraud review  ",
+      actedByAdminUserId: "admin-user-id"
+    },
+    {
+      nowFactory: () => timestamp,
+      uuidFactory: (() => {
+        const values = ["audit-1", "audit-2"];
+        let index = 0;
+        return () => values[index++] ?? `audit-${index}`;
+      })(),
+      runInTransaction: async (operation) =>
+        operation(
+          createTransactionClient(async (text, params) => {
+            executedQueries.push({ text, params });
+
+            if (text.includes('WHERE BTRIM(o."orderNumber") = BTRIM($1)')) {
+              return createQueryResult([
+                {
+                  id: 1,
+                  orderNumber: "QfRkbH41t27wDHVj",
+                  status: 1,
+                  deliveryId: null,
+                  deliveryStatus: null
+                },
+                {
+                  id: 2,
+                  orderNumber: "QfRkbH41t27wDHVj",
+                  status: 1,
+                  deliveryId: 55,
+                  deliveryStatus: "assigned"
+                },
+                {
+                  id: 6,
+                  orderNumber: "QfRkbH41t27wDHVj",
+                  status: 3,
+                  deliveryId: 2,
+                  deliveryStatus: "assigned"
+                }
+              ]);
+            }
+
+            return createQueryResult([]);
+          })
+        )
+    }
+  );
+
+  expect(response).toEqual({
+    message: "Order cancelled"
+  });
+  expect(executedQueries[0]?.text).toContain("FOR UPDATE");
+  expect(executedQueries[0]?.params).toEqual(["QfRkbH41t27wDHVj"]);
+  expect(executedQueries[1]?.text).toContain("UPDATE public.order_tb");
+  expect(executedQueries[1]?.params).toEqual([6, timestamp, [1, 6]]);
+  expect(executedQueries[2]?.text).toContain("UPDATE public.delivery");
+  expect(executedQueries[2]?.params).toEqual(["Fraud review", timestamp, [2]]);
+  expect(executedQueries[3]?.text).toContain("INSERT INTO public.admin_order_action_audit_logs");
+  expect(executedQueries[3]?.params).toEqual([
+    "audit-1",
+    1,
+    "admin-user-id",
+    "force_cancel",
+    1,
+    6,
+    "QfRkbH41t27wDHVj",
+    "Fraud review",
+    timestamp
+  ]);
+  expect(executedQueries[4]?.params).toEqual([
+    "audit-2",
+    6,
+    "admin-user-id",
+    "force_cancel",
+    3,
+    6,
+    "QfRkbH41t27wDHVj",
+    "Fraud review",
+    timestamp
+  ]);
+});
+
+test("cancelOrdersByAdmin validates required fields and rejects mismatched, delivered, completed, and already-cancelled orders", async () => {
+  await expect(
+    cancelOrdersByAdmin({
+      orderNumber: "   ",
+      orderIds: [1],
+      actedByAdminUserId: "admin-user-id"
+    })
+  ).rejects.toThrow(AdminOrdersValidationError);
+
+  await expect(
+    cancelOrdersByAdmin({
+      orderNumber: "QfRkbH41t27wDHVj",
+      orderIds: [],
+      actedByAdminUserId: "admin-user-id"
+    })
+  ).rejects.toThrow("orderIds must be a non-empty array of positive integers");
+
+  await expect(
+    cancelOrdersByAdmin({
+      orderNumber: "QfRkbH41t27wDHVj",
+      orderIds: [1, 1],
+      actedByAdminUserId: "admin-user-id"
+    })
+  ).rejects.toThrow("orderIds must not contain duplicate values");
+
+  await expect(
+    cancelOrdersByAdmin({
+      orderNumber: "QfRkbH41t27wDHVj",
+      orderIds: [1],
+      reason: "   ",
+      actedByAdminUserId: "admin-user-id"
+    })
+  ).rejects.toThrow("reason must be a non-empty string when provided");
+
+  await expect(
+    cancelOrdersByAdmin(
+      {
+        orderNumber: "missing-order",
+        orderIds: [1],
+        actedByAdminUserId: "admin-user-id"
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation(createTransactionClient(async () => createQueryResult([])))
+      }
+    )
+  ).rejects.toThrow(AdminOrderNotFoundError);
+
+  await expect(
+    cancelOrdersByAdmin(
+      {
+        orderNumber: "QfRkbH41t27wDHVj",
+        orderIds: [1, 999],
+        actedByAdminUserId: "admin-user-id"
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation(
+            createTransactionClient(async () =>
+              createQueryResult([
+                {
+                  id: 1,
+                  orderNumber: "QfRkbH41t27wDHVj",
+                  status: 1,
+                  deliveryId: null,
+                  deliveryStatus: null
+                }
+              ])
+            )
+          )
+      }
+    )
+  ).rejects.toThrow("orderIds must reference existing orders for this orderNumber");
+
+  await expect(
+    cancelOrdersByAdmin(
+      {
+        orderNumber: "delivered-order",
+        orderIds: [8],
+        actedByAdminUserId: "admin-user-id"
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation(
+            createTransactionClient(async () =>
+              createQueryResult([
+                {
+                  id: 8,
+                  orderNumber: "delivered-order",
+                  status: 8,
+                  deliveryId: 11,
+                  deliveryStatus: "completed"
+                }
+              ])
+            )
+          )
+      }
+    )
+  ).rejects.toThrow(AdminOrderConflictError);
+
+  await expect(
+    cancelOrdersByAdmin(
+      {
+        orderNumber: "cancelled-order",
+        orderIds: [6],
+        actedByAdminUserId: "admin-user-id"
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation(
+            createTransactionClient(async () =>
+              createQueryResult([
+                {
+                  id: 6,
+                  orderNumber: "cancelled-order",
+                  status: 6,
+                  deliveryId: null,
+                  deliveryStatus: null
+                }
+              ])
+            )
+          )
+      }
+    )
+  ).rejects.toThrow("One or more selected orders are already cancelled");
+
+  await expect(
+    cancelOrdersByAdmin(
+      {
+        orderNumber: "completed-delivery-order",
+        orderIds: [12],
+        actedByAdminUserId: "admin-user-id"
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation(
+            createTransactionClient(async () =>
+              createQueryResult([
+                {
+                  id: 12,
+                  orderNumber: "completed-delivery-order",
+                  status: 3,
+                  deliveryId: 22,
+                  deliveryStatus: "completed"
+                }
+              ])
+            )
+          )
+      }
+    )
+  ).rejects.toThrow("Orders with completed deliveries cannot be cancelled");
+});
+
 test("GET /admin/orders returns 401 when the admin token is missing", async () => {
   const application = express();
 
@@ -1091,6 +1351,292 @@ test("GET /admin/orders/:orderNumber returns the full order details payload", as
         totalAmount: 1000,
         createdAt: "2026-03-24T20:47:54.000Z"
       }
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/orders/:orderNumber/cancel returns 401 when the admin token is missing", async () => {
+  const application = express();
+
+  application.use(express.json());
+  application.use(
+    "/admin/orders",
+    createAdminOrdersRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/orders/QfRkbH41t27wDHVj/cancel`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        orderIds: [1]
+      })
+    });
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/orders/:orderNumber/cancel returns 403 for non-super-admins", async () => {
+  const application = express();
+
+  application.use(express.json());
+  application.use(
+    "/admin/orders",
+    createAdminOrdersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "support"
+        })
+      ),
+      cancelOrdersByAdminHandler: async () => ({
+        message: "Order cancelled"
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/orders/QfRkbH41t27wDHVj/cancel`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        orderIds: [1]
+      })
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/orders/:orderNumber/cancel validates the path and request body", async () => {
+  const application = express();
+
+  application.use(express.json());
+  application.use(
+    "/admin/orders",
+    createAdminOrdersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      cancelOrdersByAdminHandler: async () => {
+        throw new Error("This handler should not be called when validation fails");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    let response = await fetch(`${server.baseUrl}/admin/orders/%20%20/cancel`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        orderIds: [1]
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as Record<string, unknown>).message).toBe(
+      "orderNumber must be a non-empty string"
+    );
+
+    response = await fetch(`${server.baseUrl}/admin/orders/QfRkbH41t27wDHVj/cancel`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        orderIds: []
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as Record<string, unknown>).message).toBe(
+      "orderIds must be a non-empty array of positive integers"
+    );
+
+    response = await fetch(`${server.baseUrl}/admin/orders/QfRkbH41t27wDHVj/cancel`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        orderIds: [1, 1]
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as Record<string, unknown>).message).toBe(
+      "orderIds must not contain duplicate values"
+    );
+
+    response = await fetch(`${server.baseUrl}/admin/orders/QfRkbH41t27wDHVj/cancel`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        orderIds: ["1"]
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as Record<string, unknown>).message).toBe(
+      "orderIds must be a non-empty array of positive integers"
+    );
+
+    response = await fetch(`${server.baseUrl}/admin/orders/QfRkbH41t27wDHVj/cancel`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        orderIds: [1],
+        reason: "   "
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as Record<string, unknown>).message).toBe(
+      "reason must be a non-empty string when provided"
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/orders/:orderNumber/cancel maps not-found and conflict errors", async () => {
+  let server;
+  const notFoundApplication = express();
+
+  notFoundApplication.use(express.json());
+  notFoundApplication.use(
+    "/admin/orders",
+    createAdminOrdersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      cancelOrdersByAdminHandler: async () => {
+        throw new AdminOrderNotFoundError("Order not found");
+      }
+    })
+  );
+
+  server = await startTestServer(notFoundApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/orders/missing/cancel`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        orderIds: [999]
+      })
+    });
+
+    expect(response.status).toBe(404);
+  } finally {
+    await server.close();
+  }
+
+  const conflictApplication = express();
+
+  conflictApplication.use(express.json());
+  conflictApplication.use(
+    "/admin/orders",
+    createAdminOrdersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      cancelOrdersByAdminHandler: async () => {
+        throw new AdminOrderConflictError("Delivered orders cannot be cancelled");
+      }
+    })
+  );
+
+  server = await startTestServer(conflictApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/orders/delivered/cancel`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        orderIds: [8]
+      })
+    });
+
+    expect(response.status).toBe(409);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/orders/:orderNumber/cancel returns the success payload and passes the admin actor", async () => {
+  const application = express();
+
+  application.use(express.json());
+  application.use(
+    "/admin/orders",
+    createAdminOrdersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      cancelOrdersByAdminHandler: async (input): Promise<CancelAdminOrdersResponse> => {
+        expect(input).toEqual({
+          orderNumber: "QfRkbH41t27wDHVj",
+          orderIds: [1, 6],
+          reason: "Fraud review",
+          actedByAdminUserId: "admin-user-id"
+        });
+
+        return {
+          message: "Order cancelled"
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/orders/%20QfRkbH41t27wDHVj%20/cancel`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        orderIds: [1, 6],
+        reason: "  Fraud review  "
+      })
+    });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Order cancelled"
     });
   } finally {
     await server.close();

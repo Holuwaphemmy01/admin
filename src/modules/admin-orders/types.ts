@@ -82,3 +82,17 @@ export interface AdminOrderDetails {
 export interface AdminOrderDetailsResponse {
   orderStatus: AdminOrderDetails;
 }
+
+export interface CancelAdminOrdersRequestBody {
+  orderIds: number[];
+  reason?: string;
+}
+
+export interface CancelAdminOrdersInput extends CancelAdminOrdersRequestBody {
+  orderNumber: string;
+  actedByAdminUserId: string;
+}
+
+export interface CancelAdminOrdersResponse {
+  message: string;
+}

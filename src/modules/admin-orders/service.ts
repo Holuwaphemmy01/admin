@@ -1,8 +1,12 @@
+import { randomUUID } from "node:crypto";
+
 import { QueryResult, QueryResultRow } from "pg";
 
-import { query } from "../../config/db";
+import { query, withTransaction } from "../../config/db";
 import { normalizeCredentialValue } from "../admin-auth/utils";
 import {
+  CancelAdminOrdersInput,
+  CancelAdminOrdersResponse,
   AdminOrderDetailsResponse,
   AdminOrderItemDetails,
   AdminOrderLogisticsDetails,
@@ -18,8 +22,20 @@ type QueryFunction = <T extends QueryResultRow = QueryResultRow>(
   params?: unknown[]
 ) => Promise<QueryResult<T>>;
 
+interface TransactionClient {
+  query<T extends QueryResultRow = QueryResultRow>(
+    text: string,
+    params?: unknown[]
+  ): Promise<QueryResult<T>>;
+}
+
+type RunInTransaction = <T>(operation: (client: TransactionClient) => Promise<T>) => Promise<T>;
+
 interface AdminOrdersServiceDependencies {
   queryFn?: QueryFunction;
+  runInTransaction?: RunInTransaction;
+  nowFactory?: () => Date;
+  uuidFactory?: () => string;
 }
 
 type NumericLike = number | string | null;
@@ -81,6 +97,14 @@ interface AdminOrderItemRow extends QueryResultRow {
   sku: string | null;
 }
 
+interface AdminOrderCancellationRow extends QueryResultRow {
+  id: number;
+  orderNumber: string | null;
+  status: number | null;
+  deliveryId: NumericLike;
+  deliveryStatus: string | null;
+}
+
 const ORDER_STATUS_CODE_MAP: Record<AdminOrderStatusFilter, readonly number[]> = {
   pending: [1],
   picked_up: [2],
@@ -88,6 +112,8 @@ const ORDER_STATUS_CODE_MAP: Record<AdminOrderStatusFilter, readonly number[]> =
   delivered: [8],
   cancelled: [6, 7]
 } as const;
+
+const ADMIN_FORCE_CANCELLED_ORDER_STATUS = 6;
 
 export class AdminOrdersValidationError extends Error {
   constructor(message: string) {
@@ -103,8 +129,29 @@ export class AdminOrderNotFoundError extends Error {
   }
 }
 
+export class AdminOrderConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AdminOrderConflictError";
+  }
+}
+
 function getQueryFn(dependencies: AdminOrdersServiceDependencies = {}): QueryFunction {
   return dependencies.queryFn ?? query;
+}
+
+function getRunInTransaction(
+  dependencies: AdminOrdersServiceDependencies = {}
+): RunInTransaction {
+  return dependencies.runInTransaction ?? withTransaction;
+}
+
+function getNowFactory(dependencies: AdminOrdersServiceDependencies = {}): () => Date {
+  return dependencies.nowFactory ?? (() => new Date());
+}
+
+function getUuidFactory(dependencies: AdminOrdersServiceDependencies = {}): () => string {
+  return dependencies.uuidFactory ?? randomUUID;
 }
 
 function normalizePositiveInteger(value: number, fieldName: string): number {
@@ -149,6 +196,52 @@ function normalizeOptionalStatus(value: string | undefined): AdminOrderStatusFil
   }
 
   return normalizedValue as AdminOrderStatusFilter;
+}
+
+function normalizeRequiredString(value: string, fieldName: string): string {
+  const normalizedValue = normalizeCredentialValue(value);
+
+  if (normalizedValue === "") {
+    throw new AdminOrdersValidationError(`${fieldName} must be a non-empty string`);
+  }
+
+  return normalizedValue;
+}
+
+function normalizeRequiredOrderIds(value: number[]): number[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new AdminOrdersValidationError("orderIds must be a non-empty array of positive integers");
+  }
+
+  const normalizedIds = value.map((orderId) => {
+    if (!Number.isInteger(orderId) || orderId <= 0) {
+      throw new AdminOrdersValidationError(
+        "orderIds must be a non-empty array of positive integers"
+      );
+    }
+
+    return orderId;
+  });
+
+  if (new Set(normalizedIds).size !== normalizedIds.length) {
+    throw new AdminOrdersValidationError("orderIds must not contain duplicate values");
+  }
+
+  return normalizedIds;
+}
+
+function normalizeOptionalReason(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const normalizedValue = normalizeCredentialValue(value);
+
+  if (normalizedValue === "") {
+    throw new AdminOrdersValidationError("reason must be a non-empty string when provided");
+  }
+
+  return normalizedValue;
 }
 
 function mapOrderStatus(code: number | null): AdminOrderStatus {
@@ -376,11 +469,7 @@ export async function getOrderDetails(
   dependencies: AdminOrdersServiceDependencies = {}
 ): Promise<AdminOrderDetailsResponse> {
   const queryFn = getQueryFn(dependencies);
-  const normalizedOrderNumber = normalizeCredentialValue(orderNumber);
-
-  if (normalizedOrderNumber === "") {
-    throw new AdminOrdersValidationError("orderNumber must be a non-empty string");
-  }
+  const normalizedOrderNumber = normalizeRequiredString(orderNumber, "orderNumber");
 
   const orderResult = await queryFn<AdminOrderDetailsRow>(
     [
@@ -503,4 +592,120 @@ export async function getOrderDetails(
       createdAt: mapRequiredDate(order.createdAt, "createdAt")
     }
   };
+}
+
+export async function cancelOrdersByAdmin(
+  input: CancelAdminOrdersInput,
+  dependencies: AdminOrdersServiceDependencies = {}
+): Promise<CancelAdminOrdersResponse> {
+  const normalizedOrderNumber = normalizeRequiredString(input.orderNumber, "orderNumber");
+  const normalizedOrderIds = normalizeRequiredOrderIds(input.orderIds);
+  const normalizedReason = normalizeOptionalReason(input.reason);
+  const normalizedAdminUserId = normalizeRequiredString(input.actedByAdminUserId, "actedByAdminUserId");
+  const runInTransaction = getRunInTransaction(dependencies);
+  const nowFactory = getNowFactory(dependencies);
+  const uuidFactory = getUuidFactory(dependencies);
+
+  return runInTransaction(async (client) => {
+    const existingOrderNumberResult = await client.query<AdminOrderCancellationRow>(
+      [
+        "SELECT",
+        '  o.id, o."orderNumber", o.status, o."deliveryId", d.status::text AS "deliveryStatus"',
+        "FROM public.order_tb o",
+        'LEFT JOIN public.delivery d ON d.id = o."deliveryId"',
+        'WHERE BTRIM(o."orderNumber") = BTRIM($1)',
+        "FOR UPDATE"
+      ].join("\n"),
+      [normalizedOrderNumber]
+    );
+
+    if ((existingOrderNumberResult.rowCount ?? 0) === 0) {
+      throw new AdminOrderNotFoundError("Order not found");
+    }
+
+    const matchedOrders = existingOrderNumberResult.rows.filter((order) =>
+      normalizedOrderIds.includes(mapRequiredInteger(order.id, "id"))
+    );
+
+    if (matchedOrders.length !== normalizedOrderIds.length) {
+      throw new AdminOrdersValidationError(
+        "orderIds must reference existing orders for this orderNumber"
+      );
+    }
+
+    if (
+      matchedOrders.some(
+        (order) => order.status === 6 || order.status === 7
+      )
+    ) {
+      throw new AdminOrderConflictError("One or more selected orders are already cancelled");
+    }
+
+    if (matchedOrders.some((order) => order.status === 8)) {
+      throw new AdminOrderConflictError("Delivered orders cannot be cancelled");
+    }
+
+    if (matchedOrders.some((order) => mapOptionalText(order.deliveryStatus) === "completed")) {
+      throw new AdminOrderConflictError("Orders with completed deliveries cannot be cancelled");
+    }
+
+    const timestamp = nowFactory();
+    const deliveryIds = matchedOrders
+      .map((order) => mapNullableNumber(order.deliveryId))
+      .filter((deliveryId): deliveryId is number => Number.isInteger(deliveryId));
+
+    await client.query(
+      [
+        "UPDATE public.order_tb",
+        "SET",
+        "  status = $1,",
+        '  "updatedAt" = $2',
+        "WHERE id = ANY($3::int[])"
+      ].join("\n"),
+      [ADMIN_FORCE_CANCELLED_ORDER_STATUS, timestamp, normalizedOrderIds]
+    );
+
+    if (deliveryIds.length > 0) {
+      await client.query(
+        [
+          "UPDATE public.delivery",
+          "SET",
+          "  status = 'cancelled',",
+          '  "failureReason" = COALESCE($1, "failureReason"),',
+          '  "cancelledAt" = COALESCE("cancelledAt", $2),',
+          '  "updatedAt" = $2',
+          "WHERE id = ANY($3::int[])"
+        ].join("\n"),
+        [normalizedReason ?? null, timestamp, deliveryIds]
+      );
+    }
+
+    for (const order of matchedOrders) {
+      await client.query(
+        [
+          "INSERT INTO public.admin_order_action_audit_logs (",
+          '  id, "targetOrderId", "actedByAdminUserId", action,',
+          '  "previousStatus", "nextStatus", "orderNumber", reason, "createdAt"',
+          ") VALUES (",
+          "  $1, $2, $3, $4, $5, $6, $7, $8, $9",
+          ")"
+        ].join("\n"),
+        [
+          uuidFactory(),
+          mapRequiredInteger(order.id, "id"),
+          normalizedAdminUserId,
+          "force_cancel",
+          mapRequiredInteger(order.status, "status"),
+          ADMIN_FORCE_CANCELLED_ORDER_STATUS,
+          mapRequiredText(order.orderNumber, "orderNumber"),
+          normalizedReason ?? null,
+          timestamp
+        ]
+      );
+    }
+
+    return {
+      message: "Order cancelled"
+    };
+  });
 }
