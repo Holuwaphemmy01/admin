@@ -5,7 +5,8 @@ import { normalizeCredentialValue } from "../admin-auth/utils";
 import {
   PLATFORM_WALLET_OWNER_USERNAME,
   PLATFORM_WALLET_RECENT_TRANSACTIONS_LIMIT,
-  PlatformWalletOverviewResponse
+  PlatformWalletOverviewResponse,
+  UserWalletResponse
 } from "./types";
 
 type QueryFunction = <T extends QueryResultRow = QueryResultRow>(
@@ -22,7 +23,13 @@ interface PlatformUserRow extends QueryResultRow {
   username: string | null;
 }
 
+interface WalletLookupUserRow extends QueryResultRow {
+  id: string | number;
+  username: string | null;
+}
+
 interface PlatformWalletRow extends QueryResultRow {
+  currency?: string | null;
   availableBalance: string | number | null;
   ledgerBalance: string | number | null;
 }
@@ -46,6 +53,27 @@ export class PlatformWalletNotFoundError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "PlatformWalletNotFoundError";
+  }
+}
+
+export class UserWalletValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UserWalletValidationError";
+  }
+}
+
+export class UserWalletNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UserWalletNotFoundError";
+  }
+}
+
+export class UserWalletConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UserWalletConflictError";
   }
 }
 
@@ -107,6 +135,20 @@ function mapOptionalText(value: string | null | undefined): string | null {
   const trimmedValue = value.trim();
 
   return trimmedValue === "" ? null : trimmedValue;
+}
+
+function mapWalletCurrency(value: string | null | undefined): string {
+  return mapOptionalText(value) ?? "NGN";
+}
+
+function normalizeRequiredUsername(value: string): string {
+  const normalizedValue = normalizeCredentialValue(value);
+
+  if (normalizedValue === "") {
+    throw new UserWalletValidationError("username must be a non-empty string");
+  }
+
+  return normalizedValue;
 }
 
 export async function getPlatformWalletOverview(
@@ -192,11 +234,70 @@ export async function getPlatformWalletOverview(
     transactions: transactionsResult.rows.map((transaction) => ({
       id: mapRequiredInteger(transaction.id, "transaction.id"),
       amount: mapNumberOrZero(transaction.amount),
-      currency: mapOptionalText(transaction.currency) ?? "NGN",
+      currency: mapWalletCurrency(transaction.currency),
       transactionId: mapOptionalText(transaction.transactionId),
       transactionType: mapOptionalInteger(transaction.transactionType),
       description: mapOptionalText(transaction.description),
       createdAt: mapRequiredDate(transaction.createdAt, "transaction.createdAt")
     }))
+  };
+}
+
+export async function getUserWallet(
+  username: string,
+  dependencies: AdminWalletServiceDependencies = {}
+): Promise<UserWalletResponse> {
+  const queryFn = getQueryFn(dependencies);
+  const normalizedUsername = normalizeRequiredUsername(username);
+
+  const userResult = await queryFn<WalletLookupUserRow>(
+    [
+      "SELECT",
+      '  u.id, u.username',
+      'FROM public."user" u',
+      'WHERE u."userTypeId" IN (1, 2, 3)',
+      "  AND u.username IS NOT NULL",
+      "  AND BTRIM(u.username) <> ''",
+      "  AND LOWER(u.username) = LOWER($1)",
+      'ORDER BY u."createdAt" DESC',
+      "LIMIT 2"
+    ].join("\n"),
+    [normalizedUsername]
+  );
+
+  if ((userResult.rowCount ?? 0) === 0) {
+    throw new UserWalletNotFoundError("User wallet not found");
+  }
+
+  if ((userResult.rowCount ?? 0) > 1) {
+    throw new UserWalletConflictError("Multiple users match the provided username");
+  }
+
+  const user = userResult.rows[0];
+
+  if (!user || typeof user.username !== "string" || user.username.trim() === "") {
+    throw new UserWalletNotFoundError("User wallet not found");
+  }
+
+  const userId = mapRequiredInteger(user.id, "user.id");
+  const walletResult = await queryFn<PlatformWalletRow>(
+    [
+      "SELECT",
+      '  w.currency, w."availableBalance", w."ledgerBalance"',
+      "FROM public.wallet w",
+      'WHERE w."userId" = $1',
+      'ORDER BY w."createdAt" DESC NULLS LAST, w.id DESC',
+      "LIMIT 1"
+    ].join("\n"),
+    [userId]
+  );
+
+  const walletRow = walletResult.rows[0];
+
+  return {
+    username: user.username.trim(),
+    availableBalance: mapNumberOrZero(walletRow?.availableBalance),
+    ledgerBalance: mapNumberOrZero(walletRow?.ledgerBalance),
+    currency: mapWalletCurrency(walletRow?.currency)
   };
 }

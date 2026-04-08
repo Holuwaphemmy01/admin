@@ -380,6 +380,27 @@ export const swaggerSpec = {
           }
         }
       },
+      UserWalletResponse: {
+        type: "object",
+        properties: {
+          username: {
+            type: "string",
+            example: "buyer-one"
+          },
+          availableBalance: {
+            type: "number",
+            example: 2500
+          },
+          ledgerBalance: {
+            type: "number",
+            example: 3200
+          },
+          currency: {
+            type: "string",
+            example: "NGN"
+          }
+        }
+      },
       CreateProductCategoryRequest: {
         type: "object",
         required: [
@@ -1434,6 +1455,92 @@ export const swaggerSpec = {
               "application/json": {
                 schema: {
                   $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/wallet/{username}": {
+      get: {
+        tags: ["Wallet & Transactions"],
+        summary: "View any user's wallet",
+        description:
+          "Returns a customer user's wallet balances and currency for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "path",
+            name: "username",
+            required: true,
+            schema: {
+              type: "string"
+            },
+            description: "Username of the customer wallet owner"
+          }
+        ],
+        responses: {
+          "200": {
+            description: "User wallet retrieved successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/UserWalletResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid username path parameter",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to view user wallets",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "User wallet not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            description: "Username lookup is ambiguous",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ConflictErrorResponse"
                 }
               }
             }

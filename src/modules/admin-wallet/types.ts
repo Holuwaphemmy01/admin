@@ -33,3 +33,10 @@ export interface PlatformWalletOverviewResponse {
   commissionSummary: PlatformCommissionSummary;
   transactions: PlatformWalletTransactionItem[];
 }
+
+export interface UserWalletResponse {
+  username: string;
+  availableBalance: number;
+  ledgerBalance: number;
+  currency: string;
+}

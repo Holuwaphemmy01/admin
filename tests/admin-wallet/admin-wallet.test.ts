@@ -8,10 +8,19 @@ import { createAuthenticateAdminMiddleware } from "../../src/modules/admin-auth/
 import { AuthenticatedAdmin } from "../../src/modules/admin-auth/types";
 import { createAdminWalletRouter } from "../../src/modules/admin-wallet/routes";
 import {
+  getUserWallet,
   getPlatformWalletOverview,
   PlatformWalletNotFoundError
 } from "../../src/modules/admin-wallet/service";
-import { PlatformWalletOverviewResponse } from "../../src/modules/admin-wallet/types";
+import {
+  PlatformWalletOverviewResponse,
+  UserWalletResponse
+} from "../../src/modules/admin-wallet/types";
+import {
+  UserWalletConflictError,
+  UserWalletNotFoundError,
+  UserWalletValidationError
+} from "../../src/modules/admin-wallet/service";
 
 async function startTestServer(application: ReturnType<typeof express>) {
   const server = application.listen(0);
@@ -401,6 +410,296 @@ test("GET /admin/wallet/platform returns the platform wallet overview payload", 
           createdAt: "2026-04-08T09:15:00.000Z"
         }
       ]
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("getUserWallet returns the requested user's wallet payload", async () => {
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await getUserWallet(" Buyer-One ", {
+    queryFn: async <T extends QueryResultRow = QueryResultRow>(
+      text: string,
+      params?: unknown[]
+    ): Promise<QueryResult<T>> => {
+      executedQueries.push({ text, params });
+
+      if (text.includes('FROM public."user" u')) {
+        return createQueryResult([
+          {
+            id: "42",
+            username: " Buyer-One "
+          }
+        ]) as unknown as QueryResult<T>;
+      }
+
+      if (text.includes("FROM public.wallet w")) {
+        return createQueryResult([
+          {
+            currency: null,
+            availableBalance: "200.5",
+            ledgerBalance: "350.75"
+          }
+        ]) as unknown as QueryResult<T>;
+      }
+
+      throw new Error(`Unexpected query: ${text}`);
+    }
+  });
+
+  expect(executedQueries).toHaveLength(2);
+  expect(executedQueries[0]?.text).toContain('WHERE u."userTypeId" IN (1, 2, 3)');
+  expect(executedQueries[0]?.text).toContain("AND LOWER(u.username) = LOWER($1)");
+  expect(executedQueries[0]?.params).toEqual(["Buyer-One"]);
+  expect(executedQueries[1]?.text).toContain('ORDER BY w."createdAt" DESC NULLS LAST, w.id DESC');
+  expect(executedQueries[1]?.params).toEqual([42]);
+  expect(response).toEqual({
+    username: "Buyer-One",
+    availableBalance: 200.5,
+    ledgerBalance: 350.75,
+    currency: "NGN"
+  });
+});
+
+test("getUserWallet returns zero balances and NGN currency when the user has no wallet row", async () => {
+  const response = await getUserWallet("buyer-two", {
+    queryFn: async <T extends QueryResultRow = QueryResultRow>(
+      text: string
+    ): Promise<QueryResult<T>> => {
+      if (text.includes('FROM public."user" u')) {
+        return createQueryResult([
+          {
+            id: 50,
+            username: "buyer-two"
+          }
+        ]) as unknown as QueryResult<T>;
+      }
+
+      if (text.includes("FROM public.wallet w")) {
+        return createQueryResult([]) as unknown as QueryResult<T>;
+      }
+
+      throw new Error(`Unexpected query: ${text}`);
+    }
+  });
+
+  expect(response).toEqual({
+    username: "buyer-two",
+    availableBalance: 0,
+    ledgerBalance: 0,
+    currency: "NGN"
+  });
+});
+
+test("getUserWallet validates username and rejects missing or ambiguous matches", async () => {
+  await expect(getUserWallet("   ")).rejects.toThrow(UserWalletValidationError);
+
+  await expect(
+    getUserWallet("missing-user", {
+      queryFn: async <T extends QueryResultRow = QueryResultRow>() =>
+        createQueryResult([]) as unknown as QueryResult<T>
+    })
+  ).rejects.toThrow(UserWalletNotFoundError);
+
+  await expect(
+    getUserWallet("duplicate-user", {
+      queryFn: async <T extends QueryResultRow = QueryResultRow>() =>
+        createQueryResult([
+          {
+            id: 41,
+            username: "duplicate-user"
+          },
+          {
+            id: 42,
+            username: "Duplicate-User"
+          }
+        ]) as unknown as QueryResult<T>
+    })
+  ).rejects.toThrow(UserWalletConflictError);
+});
+
+test("GET /admin/wallet/:username returns 401 when the admin token is missing", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/wallet",
+    createAdminWalletRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/wallet/buyer-one`);
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/wallet/:username returns 403 for non-super-admins", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/wallet",
+    createAdminWalletRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "support"
+        })
+      ),
+      getUserWalletHandler: async () => {
+        throw new Error("This handler should not be called when access is forbidden");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/wallet/buyer-one`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/wallet/:username validates the username path param and maps 404 and 409 errors", async () => {
+  let server;
+  const validationApplication = express();
+
+  validationApplication.use(
+    "/admin/wallet",
+    createAdminWalletRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getUserWalletHandler: async () => {
+        throw new Error("This handler should not be called when validation fails");
+      }
+    })
+  );
+
+  server = await startTestServer(validationApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/wallet/%20%20`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "username must be a non-empty string"
+    });
+  } finally {
+    await server.close();
+  }
+
+  const notFoundApplication = express();
+
+  notFoundApplication.use(
+    "/admin/wallet",
+    createAdminWalletRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getUserWalletHandler: async () => {
+        throw new UserWalletNotFoundError("User wallet not found");
+      }
+    })
+  );
+
+  server = await startTestServer(notFoundApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/wallet/missing-user`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(404);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "User wallet not found"
+    });
+  } finally {
+    await server.close();
+  }
+
+  const conflictApplication = express();
+
+  conflictApplication.use(
+    "/admin/wallet",
+    createAdminWalletRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getUserWalletHandler: async () => {
+        throw new UserWalletConflictError("Multiple users match the provided username");
+      }
+    })
+  );
+
+  server = await startTestServer(conflictApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/wallet/duplicate-user`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(409);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Multiple users match the provided username"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/wallet/:username returns the requested user wallet payload", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/wallet",
+    createAdminWalletRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getUserWalletHandler: async (username): Promise<UserWalletResponse> => {
+        expect(username).toBe("buyer-one");
+
+        return {
+          username: "buyer-one",
+          availableBalance: 250,
+          ledgerBalance: 300,
+          currency: "NGN"
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/wallet/%20buyer-one%20`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      username: "buyer-one",
+      availableBalance: 250,
+      ledgerBalance: 300,
+      currency: "NGN"
     });
   } finally {
     await server.close();
