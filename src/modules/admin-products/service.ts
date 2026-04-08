@@ -4,7 +4,9 @@ import { query, withTransaction } from "../../config/db";
 import { normalizeCredentialValue } from "../admin-auth/utils";
 import {
   CreateProductCategoryRequestBody,
-  CreateProductCategoryResponse
+  CreateProductCategoryResponse,
+  UpdateProductCategoryRequestBody,
+  UpdateProductCategoryResponse
 } from "./types";
 
 type QueryFunction = <T extends QueryResultRow = QueryResultRow>(
@@ -34,6 +36,16 @@ interface ExistingProductCategoryRow extends QueryResultRow {
 interface CreatedProductCategoryRow extends QueryResultRow {
   id: number;
   name: string | null;
+  description: string | null;
+  basicCommissionVat: string | number | null;
+  standardCommissionVat: string | number | null;
+  premiumCommissionVat: string | number | null;
+}
+
+interface ProductCategoryForUpdateRow extends QueryResultRow {
+  id: number;
+  name: string | null;
+  description: string | null;
   basicCommissionVat: string | number | null;
   standardCommissionVat: string | number | null;
   premiumCommissionVat: string | number | null;
@@ -52,6 +64,13 @@ export class ProductCategoryConflictError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ProductCategoryConflictError";
+  }
+}
+
+export class ProductCategoryNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProductCategoryNotFoundError";
   }
 }
 
@@ -112,11 +131,57 @@ function normalizePercentageValue(
   return value;
 }
 
+function normalizeOptionalTextField(
+  value: string | undefined,
+  fieldName: string,
+  ErrorType: MessageErrorConstructor
+): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  return normalizeRequiredTextField(value, fieldName, ErrorType);
+}
+
+function normalizeOptionalPercentageValue(
+  value: number | undefined,
+  fieldName: string,
+  ErrorType: MessageErrorConstructor
+): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  return normalizePercentageValue(value, fieldName, ErrorType);
+}
+
+function normalizeCategoryId(value: number, ErrorType: MessageErrorConstructor): number {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new ErrorType("id must be a positive integer");
+  }
+
+  return value;
+}
+
 function mapNumericValue(value: string | number | null, fieldName: string): number {
   const numericValue = typeof value === "number" ? value : Number(value);
 
   if (!Number.isFinite(numericValue)) {
     throw new Error(`Inserted product category returned an invalid ${fieldName} value`);
+  }
+
+  return numericValue;
+}
+
+function mapNullableNumericValue(value: string | number | null): number | null {
+  if (value === null) {
+    return null;
+  }
+
+  const numericValue = typeof value === "number" ? value : Number(value);
+
+  if (!Number.isFinite(numericValue)) {
+    throw new Error("Updated product category returned an invalid numeric commission VAT value");
   }
 
   return numericValue;
@@ -130,6 +195,25 @@ function isUniqueViolation(error: unknown): error is { code: string } {
     typeof error.code === "string" &&
     error.code === "23505"
   );
+}
+
+function mapProductCategoryDetails(
+  row: ProductCategoryForUpdateRow,
+  fallbackName?: string
+): UpdateProductCategoryResponse["productCategory"] {
+  const name =
+    typeof row.name === "string" && row.name.trim() !== ""
+      ? row.name
+      : (fallbackName ?? "");
+
+  return {
+    id: Number(row.id),
+    name,
+    description: typeof row.description === "string" ? row.description : null,
+    basicCommissionVat: mapNullableNumericValue(row.basicCommissionVat),
+    standardCommissionVat: mapNullableNumericValue(row.standardCommissionVat),
+    premiumCommissionVat: mapNullableNumericValue(row.premiumCommissionVat)
+  };
 }
 
 export async function createProductCategory(
@@ -195,7 +279,7 @@ export async function createProductCategory(
           "  $1, $2, $3, $4, $5, $6, $7, $8",
           ")",
           "RETURNING",
-          '  id, name, "basicCommissionVat", "standardCommissionVat", "premiumCommissionVat"'
+          '  id, name, description, "basicCommissionVat", "standardCommissionVat", "premiumCommissionVat"'
         ].join("\n"),
         [
           normalizedName,
@@ -236,6 +320,157 @@ export async function createProductCategory(
             "premiumCommissionVat"
           )
         }
+      };
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        throw new ProductCategoryConflictError("A product category with this name already exists");
+      }
+
+      throw error;
+    }
+  });
+}
+
+interface UpdateProductCategoryInput extends UpdateProductCategoryRequestBody {
+  id: number;
+}
+
+export async function updateProductCategory(
+  input: UpdateProductCategoryInput,
+  dependencies: AdminProductsServiceDependencies = {}
+): Promise<UpdateProductCategoryResponse> {
+  const categoryId = normalizeCategoryId(input.id, ProductCategoryValidationError);
+  const normalizedName = normalizeOptionalTextField(
+    input.name,
+    "name",
+    ProductCategoryValidationError
+  );
+  const normalizedDescription = normalizeOptionalTextField(
+    input.description,
+    "description",
+    ProductCategoryValidationError
+  );
+  const basicCommissionVat = normalizeOptionalPercentageValue(
+    input.basicCommissionVat,
+    "basicCommissionVat",
+    ProductCategoryValidationError
+  );
+  const standardCommissionVat = normalizeOptionalPercentageValue(
+    input.standardCommissionVat,
+    "standardCommissionVat",
+    ProductCategoryValidationError
+  );
+  const premiumCommissionVat = normalizeOptionalPercentageValue(
+    input.premiumCommissionVat,
+    "premiumCommissionVat",
+    ProductCategoryValidationError
+  );
+
+  if (
+    normalizedName === undefined &&
+    normalizedDescription === undefined &&
+    basicCommissionVat === undefined &&
+    standardCommissionVat === undefined &&
+    premiumCommissionVat === undefined
+  ) {
+    throw new ProductCategoryValidationError(
+      "At least one category field must be provided for update"
+    );
+  }
+
+  const runInTransaction = getRunInTransaction(dependencies);
+  const nowFactory = getNowFactory(dependencies);
+
+  return runInTransaction(async (client) => {
+    const currentCategoryResult = await client.query<ProductCategoryForUpdateRow>(
+      [
+        "SELECT",
+        '  pc.id, pc.name, pc.description, pc."basicCommissionVat", pc."standardCommissionVat", pc."premiumCommissionVat"',
+        "FROM public.product_category pc",
+        "WHERE pc.id = $1",
+        "FOR UPDATE"
+      ].join("\n"),
+      [categoryId]
+    );
+
+    const currentCategory = currentCategoryResult.rows[0];
+
+    if (!currentCategory) {
+      throw new ProductCategoryNotFoundError("Product category not found");
+    }
+
+    if (normalizedName !== undefined) {
+      const existingCategoryResult = await client.query<ExistingProductCategoryRow>(
+        [
+          "SELECT",
+          "  pc.id",
+          "FROM public.product_category pc",
+          "WHERE pc.name IS NOT NULL",
+          "  AND BTRIM(pc.name) <> ''",
+          "  AND LOWER(BTRIM(pc.name)) = LOWER(BTRIM($1))",
+          "  AND pc.id <> $2",
+          "LIMIT 1"
+        ].join("\n"),
+        [normalizedName, categoryId]
+      );
+
+      if ((existingCategoryResult.rowCount ?? 0) > 0) {
+        throw new ProductCategoryConflictError("A product category with this name already exists");
+      }
+    }
+
+    const nextName =
+      normalizedName ??
+      (typeof currentCategory.name === "string" ? currentCategory.name : "");
+    const nextDescription =
+      normalizedDescription ??
+      (typeof currentCategory.description === "string" ? currentCategory.description : null);
+    const nextBasicCommissionVat =
+      basicCommissionVat !== undefined ? basicCommissionVat : currentCategory.basicCommissionVat;
+    const nextStandardCommissionVat =
+      standardCommissionVat !== undefined
+        ? standardCommissionVat
+        : currentCategory.standardCommissionVat;
+    const nextPremiumCommissionVat =
+      premiumCommissionVat !== undefined
+        ? premiumCommissionVat
+        : currentCategory.premiumCommissionVat;
+    const timestamp = nowFactory();
+
+    try {
+      const updatedCategoryResult = await client.query<ProductCategoryForUpdateRow>(
+        [
+          "UPDATE public.product_category",
+          "SET name = $1,",
+          "    description = $2,",
+          '    "basicCommissionVat" = $3,',
+          '    "standardCommissionVat" = $4,',
+          '    "premiumCommissionVat" = $5,',
+          '    "updatedAt" = $6',
+          "WHERE id = $7",
+          "RETURNING",
+          '  id, name, description, "basicCommissionVat", "standardCommissionVat", "premiumCommissionVat"'
+        ].join("\n"),
+        [
+          nextName,
+          nextDescription,
+          nextBasicCommissionVat,
+          nextStandardCommissionVat,
+          nextPremiumCommissionVat,
+          timestamp,
+          categoryId
+        ]
+      );
+
+      const updatedCategory = updatedCategoryResult.rows[0];
+
+      if (!updatedCategory) {
+        throw new Error("Product category update did not return an updated row");
+      }
+
+      return {
+        message: "Category updated successfully",
+        productCategory: mapProductCategoryDetails(updatedCategory, nextName)
       };
     } catch (error) {
       if (isUniqueViolation(error)) {

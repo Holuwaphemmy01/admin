@@ -10,9 +10,14 @@ import { createAdminProductsRouter } from "../../src/modules/admin-products/rout
 import {
   createProductCategory,
   ProductCategoryConflictError,
-  ProductCategoryValidationError
+  ProductCategoryNotFoundError,
+  ProductCategoryValidationError,
+  updateProductCategory
 } from "../../src/modules/admin-products/service";
-import { CreateProductCategoryResponse } from "../../src/modules/admin-products/types";
+import {
+  CreateProductCategoryResponse,
+  UpdateProductCategoryResponse
+} from "../../src/modules/admin-products/types";
 
 async function startTestServer(application: ReturnType<typeof express>) {
   const server = application.listen(0);
@@ -369,6 +374,286 @@ test("createProductCategory throws a clear error when the insert does not return
       }
     )
   ).rejects.toThrow("Product category insert did not return a created row");
+});
+
+test("updateProductCategory updates only provided fields and preserves existing values", async () => {
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+  const timestamp = new Date("2026-04-08T16:00:00.000Z");
+
+  const response = await updateProductCategory(
+    {
+      id: 7,
+      name: "  Updated Audio & Hifi  ",
+      standardCommissionVat: 13.5
+    },
+    {
+      nowFactory: () => timestamp,
+      runInTransaction: async (operation) =>
+        operation(
+          createTransactionClient(async (text, params) => {
+            executedQueries.push({ text, params });
+
+            if (text.includes("WHERE pc.id = $1") && text.includes("FOR UPDATE")) {
+              return createQueryResult([
+                {
+                  id: 7,
+                  name: "Audio & Hifi",
+                  description: "Audio devices and related products",
+                  basicCommissionVat: "15.5",
+                  standardCommissionVat: "14",
+                  premiumCommissionVat: "13"
+                }
+              ]);
+            }
+
+            if (text.includes("AND pc.id <> $2")) {
+              return createQueryResult([]);
+            }
+
+            return createQueryResult([
+              {
+                id: 7,
+                name: "Updated Audio & Hifi",
+                description: "Audio devices and related products",
+                basicCommissionVat: "15.5",
+                standardCommissionVat: "13.5",
+                premiumCommissionVat: "13"
+              }
+            ]);
+          })
+        )
+    }
+  );
+
+  expect(executedQueries).toHaveLength(3);
+  expect(executedQueries[0]?.text).toContain("FOR UPDATE");
+  expect(executedQueries[0]?.params).toEqual([7]);
+  expect(executedQueries[1]?.text).toContain("AND pc.id <> $2");
+  expect(executedQueries[1]?.params).toEqual(["Updated Audio & Hifi", 7]);
+  expect(executedQueries[2]?.text).toContain("UPDATE public.product_category");
+  expect(executedQueries[2]?.params).toEqual([
+    "Updated Audio & Hifi",
+    "Audio devices and related products",
+    "15.5",
+    13.5,
+    "13",
+    timestamp,
+    7
+  ]);
+  expect(response).toEqual({
+    message: "Category updated successfully",
+    productCategory: {
+      id: 7,
+      name: "Updated Audio & Hifi",
+      description: "Audio devices and related products",
+      basicCommissionVat: 15.5,
+      standardCommissionVat: 13.5,
+      premiumCommissionVat: 13
+    }
+  });
+});
+
+test("updateProductCategory handles legacy null category values and accepts partial description-only updates", async () => {
+  const response = await updateProductCategory(
+    {
+      id: 1,
+      description: "  Fashion and lifestyle products  "
+    },
+    {
+      runInTransaction: async (operation) =>
+        operation(
+          createTransactionClient(async (text) => {
+            if (text.includes("WHERE pc.id = $1") && text.includes("FOR UPDATE")) {
+              return createQueryResult([
+                {
+                  id: 1,
+                  name: "Fashion",
+                  description: null,
+                  basicCommissionVat: null,
+                  standardCommissionVat: null,
+                  premiumCommissionVat: null
+                }
+              ]);
+            }
+
+            return createQueryResult([
+              {
+                id: 1,
+                name: "Fashion",
+                description: "Fashion and lifestyle products",
+                basicCommissionVat: null,
+                standardCommissionVat: null,
+                premiumCommissionVat: null
+              }
+            ]);
+          })
+        )
+    }
+  );
+
+  expect(response).toEqual({
+    message: "Category updated successfully",
+    productCategory: {
+      id: 1,
+      name: "Fashion",
+      description: "Fashion and lifestyle products",
+      basicCommissionVat: null,
+      standardCommissionVat: null,
+      premiumCommissionVat: null
+    }
+  });
+});
+
+test("updateProductCategory rejects invalid ids, empty updates, invalid optional fields, missing categories, and duplicate names", async () => {
+  await expect(
+    updateProductCategory({
+      id: 0,
+      name: "Audio & Hifi"
+    })
+  ).rejects.toThrow(ProductCategoryValidationError);
+
+  await expect(
+    updateProductCategory({
+      id: 7
+    })
+  ).rejects.toThrow("At least one category field must be provided for update");
+
+  await expect(
+    updateProductCategory({
+      id: 7,
+      description: "   "
+    })
+  ).rejects.toThrow("description is required and must be a non-empty string");
+
+  await expect(
+    updateProductCategory({
+      id: 7,
+      premiumCommissionVat: "13" as unknown as number
+    })
+  ).rejects.toThrow("premiumCommissionVat must be a finite number between 0 and 100");
+
+  await expect(
+    updateProductCategory(
+      {
+        id: 999,
+        name: "Audio & Hifi"
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation(createTransactionClient(async () => createQueryResult([])))
+      }
+    )
+  ).rejects.toThrow(ProductCategoryNotFoundError);
+
+  await expect(
+    updateProductCategory(
+      {
+        id: 7,
+        name: "Audio & Hifi"
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation(
+            createTransactionClient(async (text) => {
+              if (text.includes("WHERE pc.id = $1") && text.includes("FOR UPDATE")) {
+                return createQueryResult([
+                  {
+                    id: 7,
+                    name: "Cameras",
+                    description: "Camera products",
+                    basicCommissionVat: "12.5",
+                    standardCommissionVat: "11.5",
+                    premiumCommissionVat: "10"
+                  }
+                ]);
+              }
+
+              if (text.includes("AND pc.id <> $2")) {
+                return createQueryResult([
+                  {
+                    id: 3
+                  }
+                ]);
+              }
+
+              return createQueryResult([]);
+            })
+          )
+      }
+    )
+  ).rejects.toThrow(ProductCategoryConflictError);
+});
+
+test("updateProductCategory converts DB unique violations and empty update returns into clear errors", async () => {
+  await expect(
+    updateProductCategory(
+      {
+        id: 7,
+        name: "Audio & Hifi"
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation(
+            createTransactionClient(async (text) => {
+              if (text.includes("WHERE pc.id = $1") && text.includes("FOR UPDATE")) {
+                return createQueryResult([
+                  {
+                    id: 7,
+                    name: "Old Audio",
+                    description: "Audio devices",
+                    basicCommissionVat: "15.5",
+                    standardCommissionVat: "14",
+                    premiumCommissionVat: "13"
+                  }
+                ]);
+              }
+
+              if (text.includes("AND pc.id <> $2")) {
+                return createQueryResult([]);
+              }
+
+              throw {
+                code: "23505"
+              };
+            })
+          )
+      }
+    )
+  ).rejects.toThrow("A product category with this name already exists");
+
+  await expect(
+    updateProductCategory(
+      {
+        id: 7,
+        name: "Updated Audio"
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation(
+            createTransactionClient(async (text) => {
+              if (text.includes("WHERE pc.id = $1") && text.includes("FOR UPDATE")) {
+                return createQueryResult([
+                  {
+                    id: 7,
+                    name: "Audio & Hifi",
+                    description: "Audio devices",
+                    basicCommissionVat: "15.5",
+                    standardCommissionVat: "14",
+                    premiumCommissionVat: "13"
+                  }
+                ]);
+              }
+
+              if (text.includes("AND pc.id <> $2")) {
+                return createQueryResult([]);
+              }
+
+              return createQueryResult([]);
+            })
+          )
+      }
+    )
+  ).rejects.toThrow("Product category update did not return an updated row");
 });
 
 test("POST /admin/product/categories returns 401 when the admin token is missing", async () => {
@@ -762,6 +1047,297 @@ test("POST /admin/product/categories accepts inclusive 0 and 100 commission VAT 
         basicCommissionVat: 0,
         standardCommissionVat: 50,
         premiumCommissionVat: 100
+      }
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/product/categories/:id returns 401 when the admin token is missing", async () => {
+  const application = express();
+
+  application.use(express.json());
+  application.use(
+    "/admin/product",
+    createAdminProductsRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/product/categories/7`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        name: "Updated Audio & Hifi"
+      })
+    });
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/product/categories/:id returns 403 for non-super-admins", async () => {
+  const application = express();
+
+  application.use(express.json());
+  application.use(
+    "/admin/product",
+    createAdminProductsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "finance"
+        })
+      ),
+      updateProductCategoryHandler: async () => ({
+        message: "Category updated successfully",
+        productCategory: {
+          id: 7,
+          name: "Updated Audio & Hifi",
+          description: "Updated audio devices and related products",
+          basicCommissionVat: 15,
+          standardCommissionVat: 13.5,
+          premiumCommissionVat: 12.5
+        }
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/product/categories/7`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        name: "Updated Audio & Hifi"
+      })
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/product/categories/:id validates the id, request body, and optional fields", async () => {
+  const application = express();
+
+  application.use(express.json());
+  application.use(
+    "/admin/product",
+    createAdminProductsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      updateProductCategoryHandler: async () => {
+        throw new Error("This handler should not be called when validation fails");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    let response = await fetch(`${server.baseUrl}/admin/product/categories/abc`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        name: "Updated Audio & Hifi"
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as Record<string, unknown>).message).toBe(
+      "id must be a positive integer"
+    );
+
+    response = await fetch(`${server.baseUrl}/admin/product/categories/7`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({})
+    });
+
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as Record<string, unknown>).message).toBe(
+      "At least one category field must be provided for update"
+    );
+
+    response = await fetch(`${server.baseUrl}/admin/product/categories/7`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        description: "   "
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as Record<string, unknown>).message).toBe(
+      "description must be a non-empty string when provided"
+    );
+
+    response = await fetch(`${server.baseUrl}/admin/product/categories/7`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        premiumCommissionVat: "12.5"
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as Record<string, unknown>).message).toBe(
+      "premiumCommissionVat must be a finite number between 0 and 100"
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/product/categories/:id maps not-found and conflict errors", async () => {
+  let server;
+  const notFoundApplication = express();
+
+  notFoundApplication.use(express.json());
+  notFoundApplication.use(
+    "/admin/product",
+    createAdminProductsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      updateProductCategoryHandler: async () => {
+        throw new ProductCategoryNotFoundError("Product category not found");
+      }
+    })
+  );
+
+  server = await startTestServer(notFoundApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/product/categories/999`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        name: "Updated Audio & Hifi"
+      })
+    });
+
+    expect(response.status).toBe(404);
+  } finally {
+    await server.close();
+  }
+
+  const conflictApplication = express();
+
+  conflictApplication.use(express.json());
+  conflictApplication.use(
+    "/admin/product",
+    createAdminProductsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      updateProductCategoryHandler: async () => {
+        throw new ProductCategoryConflictError("A product category with this name already exists");
+      }
+    })
+  );
+
+  server = await startTestServer(conflictApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/product/categories/7`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        name: "Updated Audio & Hifi"
+      })
+    });
+
+    expect(response.status).toBe(409);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/product/categories/:id returns the updated category payload for valid partial updates", async () => {
+  const application = express();
+
+  application.use(express.json());
+  application.use(
+    "/admin/product",
+    createAdminProductsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      updateProductCategoryHandler: async (input): Promise<UpdateProductCategoryResponse> => {
+        expect(input).toEqual({
+          id: 7,
+          standardCommissionVat: 13.5
+        });
+
+        return {
+          message: "Category updated successfully",
+          productCategory: {
+            id: 7,
+            name: "Audio & Hifi",
+            description: "Audio devices and related products",
+            basicCommissionVat: 15.5,
+            standardCommissionVat: 13.5,
+            premiumCommissionVat: 13
+          }
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/product/categories/7`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        standardCommissionVat: 13.5
+      })
+    });
+
+    expect(response.status).toBe(200);
+
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    expect(payload).toEqual({
+      message: "Category updated successfully",
+      productCategory: {
+        id: 7,
+        name: "Audio & Hifi",
+        description: "Audio devices and related products",
+        basicCommissionVat: 15.5,
+        standardCommissionVat: 13.5,
+        premiumCommissionVat: 13
       }
     });
   } finally {

@@ -304,6 +304,31 @@ export const swaggerSpec = {
           }
         }
       },
+      UpdateProductCategoryRequest: {
+        type: "object",
+        properties: {
+          name: {
+            type: "string",
+            example: "Updated Audio & Hifi"
+          },
+          description: {
+            type: "string",
+            example: "Updated audio devices and related products"
+          },
+          basicCommissionVat: {
+            type: "number",
+            example: 15
+          },
+          standardCommissionVat: {
+            type: "number",
+            example: 13.5
+          },
+          premiumCommissionVat: {
+            type: "number",
+            example: 12.5
+          }
+        }
+      },
       ProductCategorySummary: {
         type: "object",
         properties: {
@@ -329,6 +354,39 @@ export const swaggerSpec = {
           }
         }
       },
+      ProductCategoryDetails: {
+        type: "object",
+        properties: {
+          id: {
+            type: "integer",
+            example: 7
+          },
+          name: {
+            type: "string",
+            example: "Updated Audio & Hifi"
+          },
+          description: {
+            type: "string",
+            nullable: true,
+            example: "Updated audio devices and related products"
+          },
+          basicCommissionVat: {
+            type: "number",
+            nullable: true,
+            example: 15
+          },
+          standardCommissionVat: {
+            type: "number",
+            nullable: true,
+            example: 13.5
+          },
+          premiumCommissionVat: {
+            type: "number",
+            nullable: true,
+            example: 12.5
+          }
+        }
+      },
       CreateProductCategoryResponse: {
         type: "object",
         properties: {
@@ -338,6 +396,18 @@ export const swaggerSpec = {
           },
           productCategory: {
             $ref: "#/components/schemas/ProductCategorySummary"
+          }
+        }
+      },
+      UpdateProductCategoryResponse: {
+        type: "object",
+        properties: {
+          message: {
+            type: "string",
+            example: "Category updated successfully"
+          },
+          productCategory: {
+            $ref: "#/components/schemas/ProductCategoryDetails"
           }
         }
       },
@@ -1201,6 +1271,103 @@ export const swaggerSpec = {
               "application/json": {
                 schema: {
                   $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            description: "A product category with the same normalized name already exists",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ConflictErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/product/categories/{id}": {
+      put: {
+        tags: ["Product Management"],
+        summary: "Update a product category",
+        description:
+          "Updates one or more fields on an existing product category for authenticated super admin access while preserving unspecified values.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "path",
+            name: "id",
+            required: true,
+            schema: {
+              type: "integer",
+              minimum: 1
+            },
+            description: "Positive integer product category id"
+          }
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/UpdateProductCategoryRequest"
+              }
+            }
+          }
+        },
+        responses: {
+          "200": {
+            description: "Product category updated successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/UpdateProductCategoryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid product category id or request body",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to update product categories",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "Product category was not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
                 }
               }
             }
