@@ -6,11 +6,13 @@ import adminKycRouter from "../admin-kyc/routes";
 import adminOrdersRouter from "../admin-orders/routes";
 import adminProductsRouter, { adminProductsCollectionRouter } from "../admin-products/routes";
 import adminUsersRouter from "../admin-users/routes";
+import adminWalletRouter from "../admin-wallet/routes";
 
 const adminRouter = Router();
 
 adminRouter.use("/auth", adminAuthRouter);
 adminRouter.use("/auth", adminAccountsRouter);
+adminRouter.use("/wallet", adminWalletRouter);
 adminRouter.use("/kyc", adminKycRouter);
 adminRouter.use("/orders", adminOrdersRouter);
 adminRouter.use("/product", adminProductsRouter);

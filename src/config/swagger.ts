@@ -22,6 +22,10 @@ export const swaggerSpec = {
       description: "Admin authentication endpoints separated from customer auth"
     },
     {
+      name: "Wallet & Transactions",
+      description: "Administrative platform wallet overview and recent transaction endpoints"
+    },
+    {
       name: "Product Management",
       description: "Administrative product and product-category management endpoints"
     },
@@ -272,6 +276,106 @@ export const swaggerSpec = {
             type: "array",
             items: {
               $ref: "#/components/schemas/AdminAccountSummary"
+            }
+          }
+        }
+      },
+      PlatformWalletUserSummary: {
+        type: "object",
+        properties: {
+          id: {
+            type: "integer",
+            example: 1
+          },
+          username: {
+            type: "string",
+            example: "brickpine"
+          }
+        }
+      },
+      PlatformWalletBalances: {
+        type: "object",
+        properties: {
+          availableBalance: {
+            type: "number",
+            example: 20279.58
+          },
+          ledgerBalance: {
+            type: "number",
+            example: 4257.07
+          }
+        }
+      },
+      PlatformCommissionSummary: {
+        type: "object",
+        properties: {
+          sellerCommissionTotal: {
+            type: "number",
+            example: 362987.5
+          },
+          logisticsCommissionTotal: {
+            type: "number",
+            example: 14158.38
+          },
+          totalCommission: {
+            type: "number",
+            example: 377145.88
+          }
+        }
+      },
+      PlatformWalletTransactionItem: {
+        type: "object",
+        properties: {
+          id: {
+            type: "integer",
+            example: 91
+          },
+          amount: {
+            type: "number",
+            example: 2500
+          },
+          currency: {
+            type: "string",
+            example: "NGN"
+          },
+          transactionId: {
+            type: "string",
+            nullable: true,
+            example: "HOLD_RELEASE:100:product:PLATFORM"
+          },
+          transactionType: {
+            type: "integer",
+            nullable: true,
+            example: 2
+          },
+          description: {
+            type: "string",
+            nullable: true,
+            example: "Holding release platform commission credit"
+          },
+          createdAt: {
+            type: "string",
+            format: "date-time",
+            example: "2026-04-08T09:15:00.000Z"
+          }
+        }
+      },
+      PlatformWalletOverviewResponse: {
+        type: "object",
+        properties: {
+          platformUser: {
+            $ref: "#/components/schemas/PlatformWalletUserSummary"
+          },
+          wallet: {
+            $ref: "#/components/schemas/PlatformWalletBalances"
+          },
+          commissionSummary: {
+            $ref: "#/components/schemas/PlatformCommissionSummary"
+          },
+          transactions: {
+            type: "array",
+            items: {
+              $ref: "#/components/schemas/PlatformWalletTransactionItem"
             }
           }
         }
@@ -1275,6 +1379,61 @@ export const swaggerSpec = {
               "application/json": {
                 schema: {
                   $ref: "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/wallet/platform": {
+      get: {
+        tags: ["Wallet & Transactions"],
+        summary: "View platform wallet overview",
+        description:
+          "Returns the platform wallet identity, current wallet balances, aggregate commission totals, and recent platform wallet transactions for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        responses: {
+          "200": {
+            description: "Platform wallet overview retrieved successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/PlatformWalletOverviewResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to view the platform wallet",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "Platform wallet user not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
                 }
               }
             }
