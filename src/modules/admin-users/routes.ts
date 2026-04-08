@@ -2,8 +2,12 @@ import { Request, RequestHandler, Response, Router } from "express";
 
 import { authenticateAdmin, requireAdminRole } from "../admin-auth/middleware";
 import {
+  activatePlatformUser,
   getPlatformUserProfile,
   listPlatformUsers,
+  PlatformUserActivationConflictError,
+  PlatformUserActivationNotFoundError,
+  PlatformUserActivationValidationError,
   PlatformUserProfileConflictError,
   PlatformUserProfileNotFoundError,
   PlatformUserProfileValidationError,
@@ -13,6 +17,7 @@ import {
   suspendPlatformUser
 } from "./service";
 import {
+  ACTIVE_PLATFORM_USER_STATUS_CODE,
   AdminUsersListFilters,
   DEFAULT_ADMIN_USERS_LIMIT,
   DEFAULT_ADMIN_USERS_PAGE,
@@ -28,6 +33,7 @@ interface AdminUsersRouterDependencies {
   listPlatformUsersHandler?: typeof listPlatformUsers;
   getPlatformUserProfileHandler?: typeof getPlatformUserProfile;
   suspendPlatformUserHandler?: typeof suspendPlatformUser;
+  activatePlatformUserHandler?: typeof activatePlatformUser;
   authenticateAdminMiddleware?: RequestHandler;
   requireSuperAdminMiddleware?: RequestHandler;
 }
@@ -108,6 +114,8 @@ export function createAdminUsersRouter(
     dependencies.getPlatformUserProfileHandler ?? getPlatformUserProfile;
   const suspendPlatformUserHandler =
     dependencies.suspendPlatformUserHandler ?? suspendPlatformUser;
+  const activatePlatformUserHandler =
+    dependencies.activatePlatformUserHandler ?? activatePlatformUser;
   const authenticateAdminMiddleware =
     dependencies.authenticateAdminMiddleware ?? authenticateAdmin;
   const requireSuperAdminMiddleware =
@@ -262,6 +270,92 @@ export function createAdminUsersRouter(
 
         if (error instanceof PlatformUserSuspensionConflictError) {
           console.warn(`User suspension conflict for "${username.trim()}".`);
+
+          response.status(409).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
+
+  adminUsersRouter.put(
+    "/:username/activate",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      const rawUsername = request.params.username;
+      const username = Array.isArray(rawUsername) ? rawUsername[0] ?? "" : rawUsername ?? "";
+      const { status, comment } = request.body ?? {};
+
+      if (username.trim() === "") {
+        response.status(400).json({
+          message: "username must be a non-empty string"
+        });
+
+        return;
+      }
+
+      if (status !== ACTIVE_PLATFORM_USER_STATUS_CODE) {
+        response.status(400).json({
+          message: "status must be 1"
+        });
+
+        return;
+      }
+
+      if (comment !== undefined && !isValidCredentialField(comment)) {
+        response.status(400).json({
+          message: "comment must be a non-empty string when provided"
+        });
+
+        return;
+      }
+
+      if (!request.admin) {
+        response.status(401).json({
+          message: "Unauthorized admin access"
+        });
+
+        return;
+      }
+
+      try {
+        const activationResponse = await activatePlatformUserHandler({
+          username,
+          status,
+          comment,
+          activatedByAdmin: request.admin
+        });
+
+        console.info(
+          `User account reactivated for "${username.trim()}" by "${request.admin.username}".`
+        );
+
+        response.json(activationResponse);
+      } catch (error) {
+        if (error instanceof PlatformUserActivationValidationError) {
+          response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof PlatformUserActivationNotFoundError) {
+          response.status(404).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof PlatformUserActivationConflictError) {
+          console.warn(`User activation conflict for "${username.trim()}".`);
 
           response.status(409).json({
             message: error.message

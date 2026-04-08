@@ -8,8 +8,12 @@ import { createAuthenticateAdminMiddleware } from "../../src/modules/admin-auth/
 import { AuthenticatedAdmin } from "../../src/modules/admin-auth/types";
 import { createAdminUsersRouter } from "../../src/modules/admin-users/routes";
 import {
+  activatePlatformUser,
   getPlatformUserProfile,
   listPlatformUsers,
+  PlatformUserActivationConflictError,
+  PlatformUserActivationNotFoundError,
+  PlatformUserActivationValidationError,
   PlatformUserProfileConflictError,
   PlatformUserProfileNotFoundError,
   PlatformUserProfileValidationError,
@@ -490,6 +494,182 @@ test("suspendPlatformUser rejects invalid requests and conflicting user states",
       }
     )
   ).rejects.toThrow("User account is already suspended");
+});
+
+test("activatePlatformUser updates the user status and writes a reactivation audit log", async () => {
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+  const activatedByAdmin = createAuthenticatedAdmin();
+
+  const response = await activatePlatformUser(
+    {
+      username: " Buyer-1 ",
+      status: 1,
+      activatedByAdmin
+    },
+    {
+      uuidFactory: () => "reactivation-audit-id",
+      nowFactory: () => new Date("2026-04-08T09:00:00.000Z"),
+      runInTransaction: async (operation) =>
+        operation(
+          createTransactionClient(async (text, params) => {
+            executedQueries.push({ text, params });
+
+            if (text.includes("FOR UPDATE")) {
+              return createQueryResult([
+                {
+                  id: 42,
+                  status: 2
+                }
+              ]);
+            }
+
+            return createQueryResult([]);
+          })
+        )
+    }
+  );
+
+  expect(response).toEqual({
+    message: "Account successfully reactivated"
+  });
+  expect(executedQueries).toHaveLength(3);
+  expect(executedQueries[0]?.params).toEqual(["Buyer-1"]);
+  expect(executedQueries[1]?.text).toContain('UPDATE public."user"');
+  expect(executedQueries[1]?.params).toEqual([1, new Date("2026-04-08T09:00:00.000Z"), 42]);
+  expect(executedQueries[2]?.text).toContain("INSERT INTO public.user_access_audit_logs");
+  expect(executedQueries[2]?.params).toEqual([
+    "reactivation-audit-id",
+    42,
+    activatedByAdmin.sub,
+    "reactivate_account",
+    2,
+    1,
+    null,
+    new Date("2026-04-08T09:00:00.000Z")
+  ]);
+});
+
+test("activatePlatformUser stores a trimmed optional reactivation comment when provided", async () => {
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  await activatePlatformUser(
+    {
+      username: "buyer-2",
+      status: 1,
+      comment: "  Review complete and account restored  ",
+      activatedByAdmin: createAuthenticatedAdmin()
+    },
+    {
+      uuidFactory: () => "reactivation-audit-id",
+      nowFactory: () => new Date("2026-04-08T10:00:00.000Z"),
+      runInTransaction: async (operation) =>
+        operation(
+          createTransactionClient(async (text, params) => {
+            executedQueries.push({ text, params });
+
+            if (text.includes("FOR UPDATE")) {
+              return createQueryResult([
+                {
+                  id: 99,
+                  status: 2
+                }
+              ]);
+            }
+
+            return createQueryResult([]);
+          })
+        )
+    }
+  );
+
+  expect(executedQueries[2]?.params?.[6]).toBe("Review complete and account restored");
+});
+
+test("activatePlatformUser rejects invalid requests and conflicting user states", async () => {
+  const activatedByAdmin = createAuthenticatedAdmin();
+
+  await expect(
+    activatePlatformUser({
+      username: "   ",
+      status: 1,
+      activatedByAdmin
+    })
+  ).rejects.toThrow(PlatformUserActivationValidationError);
+
+  await expect(
+    activatePlatformUser({
+      username: "buyer-1",
+      status: 2,
+      activatedByAdmin
+    })
+  ).rejects.toThrow("status must be 1");
+
+  await expect(
+    activatePlatformUser({
+      username: "buyer-1",
+      status: 1,
+      comment: "   ",
+      activatedByAdmin
+    })
+  ).rejects.toThrow("comment must be a non-empty string when provided");
+
+  await expect(
+    activatePlatformUser(
+      {
+        username: "missing-user",
+        status: 1,
+        activatedByAdmin
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation(createTransactionClient(async () => createQueryResult([])))
+      }
+    )
+  ).rejects.toThrow(PlatformUserActivationNotFoundError);
+
+  await expect(
+    activatePlatformUser(
+      {
+        username: "duplicate-user",
+        status: 1,
+        activatedByAdmin
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation(
+            createTransactionClient(async () =>
+              createQueryResult([
+                { id: 1, status: 2 },
+                { id: 2, status: 2 }
+              ])
+            )
+          )
+      }
+    )
+  ).rejects.toThrow(PlatformUserActivationConflictError);
+
+  await expect(
+    activatePlatformUser(
+      {
+        username: "active-user",
+        status: 1,
+        activatedByAdmin
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation(
+            createTransactionClient(async () =>
+              createQueryResult([
+                {
+                  id: 42,
+                  status: 1
+                }
+              ])
+            )
+          )
+      }
+    )
+  ).rejects.toThrow("User account is already active");
 });
 
 test("GET /admin/users returns 401 when the admin token is missing", async () => {
@@ -1171,6 +1351,250 @@ test("PUT /admin/users/:username/suspend returns success for a valid super-admin
     const payload = (await response.json()) as Record<string, unknown>;
 
     expect(payload.message).toBe("Account successfully deactivated");
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/users/:username/activate returns 401 when the admin token is missing", async () => {
+  const application = express();
+
+  application.use(express.json());
+  application.use(
+    "/admin/users",
+    createAdminUsersRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/users/buyer-1/activate`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        status: 1
+      })
+    });
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/users/:username/activate returns 403 for non-super-admins", async () => {
+  const application = express();
+
+  application.use(express.json());
+  application.use(
+    "/admin/users",
+    createAdminUsersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "support"
+        })
+      ),
+      activatePlatformUserHandler: async () => ({
+        message: "Account successfully reactivated"
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/users/buyer-1/activate`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        status: 1
+      })
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/users/:username/activate validates the request body and path parameter", async () => {
+  const application = express();
+
+  application.use(express.json());
+  application.use(
+    "/admin/users",
+    createAdminUsersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      activatePlatformUserHandler: async () => ({
+        message: "Account successfully reactivated"
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    let response = await fetch(`${server.baseUrl}/admin/users/%20%20/activate`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        status: 1
+      })
+    });
+
+    expect(response.status).toBe(400);
+
+    response = await fetch(`${server.baseUrl}/admin/users/buyer-1/activate`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        status: 2
+      })
+    });
+
+    expect(response.status).toBe(400);
+
+    response = await fetch(`${server.baseUrl}/admin/users/buyer-1/activate`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        status: 1,
+        comment: "   "
+      })
+    });
+
+    expect(response.status).toBe(400);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/users/:username/activate maps service not-found and conflict responses", async () => {
+  const notFoundApplication = express();
+
+  notFoundApplication.use(express.json());
+  notFoundApplication.use(
+    "/admin/users",
+    createAdminUsersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      activatePlatformUserHandler: async () => {
+        throw new PlatformUserActivationNotFoundError("User account not found");
+      }
+    })
+  );
+
+  let server = await startTestServer(notFoundApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/users/missing-user/activate`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        status: 1
+      })
+    });
+
+    expect(response.status).toBe(404);
+  } finally {
+    await server.close();
+  }
+
+  const conflictApplication = express();
+
+  conflictApplication.use(express.json());
+  conflictApplication.use(
+    "/admin/users",
+    createAdminUsersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      activatePlatformUserHandler: async () => {
+        throw new PlatformUserActivationConflictError("User account is already active");
+      }
+    })
+  );
+
+  server = await startTestServer(conflictApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/users/active-user/activate`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        status: 1,
+        comment: "Account restored"
+      })
+    });
+
+    expect(response.status).toBe(409);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/users/:username/activate returns success for a valid super-admin request", async () => {
+  const application = express();
+
+  application.use(express.json());
+  application.use(
+    "/admin/users",
+    createAdminUsersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      activatePlatformUserHandler: async (input) => {
+        expect(input.username).toBe("Buyer-1");
+        expect(input.status).toBe(1);
+        expect(input.comment).toBe("Account restored");
+        expect(input.activatedByAdmin.username).toBe("brickpine-admin");
+
+        return {
+          message: "Account successfully reactivated"
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/users/Buyer-1/activate`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer any-token"
+      },
+      body: JSON.stringify({
+        status: 1,
+        comment: "Account restored"
+      })
+    });
+
+    expect(response.status).toBe(200);
+
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    expect(payload.message).toBe("Account successfully reactivated");
   } finally {
     await server.close();
   }

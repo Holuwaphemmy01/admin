@@ -6,6 +6,8 @@ import { query, withTransaction } from "../../config/db";
 import { AuthenticatedAdmin } from "../admin-auth/types";
 import { normalizeCredentialValue } from "../admin-auth/utils";
 import {
+  ACTIVE_PLATFORM_USER_STATUS_CODE,
+  ActivatePlatformUserResponse,
   AdminUsersListFilters,
   AdminUsersListResponse,
   PlatformUserProfileResponse,
@@ -109,6 +111,29 @@ export class PlatformUserSuspensionConflictError extends Error {
   }
 }
 
+export class PlatformUserActivationValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PlatformUserActivationValidationError";
+  }
+}
+
+export class PlatformUserActivationNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PlatformUserActivationNotFoundError";
+  }
+}
+
+export class PlatformUserActivationConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PlatformUserActivationConflictError";
+  }
+}
+
+type MessageErrorConstructor = new (message: string) => Error;
+
 function getQueryFn(dependencies: AdminUsersServiceDependencies = {}): QueryFunction {
   return dependencies.queryFn ?? query;
 }
@@ -137,7 +162,7 @@ function mapNullableTextValue(value: string | null): string | null {
 
 function normalizeRequiredUsername(
   username: string,
-  ErrorType: typeof PlatformUserProfileValidationError | typeof PlatformUserSuspensionValidationError
+  ErrorType: MessageErrorConstructor
 ): string {
   const normalizedUsername = normalizeCredentialValue(username);
 
@@ -146,6 +171,33 @@ function normalizeRequiredUsername(
   }
 
   return normalizedUsername;
+}
+
+function normalizeRequiredComment(comment: string, ErrorType: MessageErrorConstructor): string {
+  const normalizedComment = normalizeCredentialValue(comment);
+
+  if (normalizedComment === "") {
+    throw new ErrorType("comment is required and must be a non-empty string");
+  }
+
+  return normalizedComment;
+}
+
+function normalizeOptionalComment(
+  comment: string | undefined,
+  ErrorType: MessageErrorConstructor
+): string | null {
+  if (comment === undefined) {
+    return null;
+  }
+
+  const normalizedComment = normalizeCredentialValue(comment);
+
+  if (normalizedComment === "") {
+    throw new ErrorType("comment must be a non-empty string when provided");
+  }
+
+  return normalizedComment;
 }
 
 function buildUserFilters(filters: AdminUsersListFilters): { whereSql: string; params: unknown[] } {
@@ -308,13 +360,10 @@ export async function suspendPlatformUser(
     throw new PlatformUserSuspensionValidationError("status must be 2");
   }
 
-  const normalizedComment = normalizeCredentialValue(input.comment);
-
-  if (normalizedComment === "") {
-    throw new PlatformUserSuspensionValidationError(
-      "comment is required and must be a non-empty string"
-    );
-  }
+  const normalizedComment = normalizeRequiredComment(
+    input.comment,
+    PlatformUserSuspensionValidationError
+  );
 
   const runInTransaction = getRunInTransaction(dependencies);
   const nowFactory = getNowFactory(dependencies);
@@ -385,5 +434,102 @@ export async function suspendPlatformUser(
 
   return {
     message: "Account successfully deactivated"
+  };
+}
+
+interface ActivatePlatformUserInput {
+  username: string;
+  status: number;
+  comment?: string;
+  activatedByAdmin: AuthenticatedAdmin;
+}
+
+export async function activatePlatformUser(
+  input: ActivatePlatformUserInput,
+  dependencies: AdminUsersServiceDependencies = {}
+): Promise<ActivatePlatformUserResponse> {
+  const normalizedUsername = normalizeRequiredUsername(
+    input.username,
+    PlatformUserActivationValidationError
+  );
+
+  if (input.status !== ACTIVE_PLATFORM_USER_STATUS_CODE) {
+    throw new PlatformUserActivationValidationError("status must be 1");
+  }
+
+  const normalizedComment = normalizeOptionalComment(
+    input.comment,
+    PlatformUserActivationValidationError
+  );
+
+  const runInTransaction = getRunInTransaction(dependencies);
+  const nowFactory = getNowFactory(dependencies);
+  const uuidFactory = getUuidFactory(dependencies);
+
+  await runInTransaction(async (client) => {
+    const targetUserResult = await client.query<PlatformUserForUpdateRow>(
+      [
+        "SELECT",
+        "  u.id, u.status",
+        'FROM public."user" u',
+        'WHERE u."userTypeId" IN (1, 2, 3) AND LOWER(u.username) = LOWER($1)',
+        'ORDER BY u."createdAt" DESC',
+        "LIMIT 2",
+        "FOR UPDATE"
+      ].join("\n"),
+      [normalizedUsername]
+    );
+
+    if ((targetUserResult.rowCount ?? 0) === 0) {
+      throw new PlatformUserActivationNotFoundError("User account not found");
+    }
+
+    if ((targetUserResult.rowCount ?? 0) > 1) {
+      throw new PlatformUserActivationConflictError(
+        "Multiple users match the provided username"
+      );
+    }
+
+    const targetUser = targetUserResult.rows[0];
+
+    if (targetUser.status === ACTIVE_PLATFORM_USER_STATUS_CODE) {
+      throw new PlatformUserActivationConflictError("User account is already active");
+    }
+
+    const timestamp = nowFactory();
+
+    await client.query(
+      [
+        'UPDATE public."user"',
+        "SET status = $1,",
+        '    "updatedAt" = $2',
+        "WHERE id = $3"
+      ].join("\n"),
+      [ACTIVE_PLATFORM_USER_STATUS_CODE, timestamp, targetUser.id]
+    );
+
+    await client.query(
+      [
+        "INSERT INTO public.user_access_audit_logs (",
+        '  id, "targetUserId", "actedByAdminUserId", action, "previousStatus", "nextStatus", comment, "createdAt"',
+        ") VALUES (",
+        "  $1, $2, $3, $4, $5, $6, $7, $8",
+        ")"
+      ].join("\n"),
+      [
+        uuidFactory(),
+        targetUser.id,
+        input.activatedByAdmin.sub,
+        "reactivate_account",
+        targetUser.status,
+        ACTIVE_PLATFORM_USER_STATUS_CODE,
+        normalizedComment,
+        timestamp
+      ]
+    );
+  });
+
+  return {
+    message: "Account successfully reactivated"
   };
 }

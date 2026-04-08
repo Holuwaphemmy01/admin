@@ -71,3 +71,12 @@ export interface SuspendPlatformUserRequestBody {
 export interface SuspendPlatformUserResponse {
   message: string;
 }
+
+export interface ActivatePlatformUserRequestBody {
+  status: typeof ACTIVE_PLATFORM_USER_STATUS_CODE;
+  comment?: string;
+}
+
+export interface ActivatePlatformUserResponse {
+  message: string;
+}

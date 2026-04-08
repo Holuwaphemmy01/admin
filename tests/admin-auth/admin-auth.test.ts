@@ -1112,6 +1112,7 @@ test("GET /docs.json exposes the swagger specification for the API", async () =>
     expect(payload.paths?.["/admin/users"]).toBeDefined();
     expect(payload.paths?.["/admin/users/{username}"]).toBeDefined();
     expect(payload.paths?.["/admin/users/{username}/suspend"]).toBeDefined();
+    expect(payload.paths?.["/admin/users/{username}/activate"]).toBeDefined();
     expect(payload.paths?.["/api/health"]).toBeDefined();
   } finally {
     await server.close();

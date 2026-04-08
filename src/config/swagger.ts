@@ -429,6 +429,22 @@ export const swaggerSpec = {
           }
         }
       },
+      ActivatePlatformUserRequest: {
+        type: "object",
+        required: ["status"],
+        properties: {
+          status: {
+            type: "integer",
+            enum: [1],
+            example: 1,
+            description: "1 = active"
+          },
+          comment: {
+            type: "string",
+            example: "Review complete and account restored"
+          }
+        }
+      },
       MessageResponse: {
         type: "object",
         properties: {
@@ -1125,6 +1141,102 @@ export const swaggerSpec = {
           },
           "409": {
             description: "User suspension conflict such as duplicate username match or already suspended",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ConflictErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/users/{username}/activate": {
+      put: {
+        tags: ["User Management"],
+        summary: "Reactivate a suspended account",
+        description:
+          "Reactivates a suspended buyer, seller, or logistics user by username and records an optional reactivation note for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "path",
+            name: "username",
+            required: true,
+            schema: {
+              type: "string"
+            },
+            description: "Case-insensitive username lookup for the suspended user account to reactivate"
+          }
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/ActivatePlatformUserRequest"
+              }
+            }
+          }
+        },
+        responses: {
+          "200": {
+            description: "User account reactivated successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid username path parameter or request body",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to reactivate users",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "User account was not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            description: "User reactivation conflict such as duplicate username match or already active",
             content: {
               "application/json": {
                 schema: {
