@@ -51,3 +51,8 @@ export interface UserKycSubmissionResponse {
   forms: KycFormStep[];
   submittedAt: string;
 }
+
+export interface ApproveUserKycResponse {
+  message: string;
+  username: string;
+}

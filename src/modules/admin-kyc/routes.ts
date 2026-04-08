@@ -2,6 +2,10 @@ import { Request, RequestHandler, Response, Router } from "express";
 
 import { authenticateAdmin, requireAdminRole } from "../admin-auth/middleware";
 import {
+  approveUserKyc,
+  ApproveUserKycConflictError,
+  ApproveUserKycNotFoundError,
+  ApproveUserKycValidationError,
   getUserKycSubmission,
   listPendingKycSubmissions,
   UserKycSubmissionConflictError,
@@ -19,6 +23,7 @@ import {
 
 interface AdminKycRouterDependencies {
   listPendingKycSubmissionsHandler?: typeof listPendingKycSubmissions;
+  approveUserKycHandler?: typeof approveUserKyc;
   getUserKycSubmissionHandler?: typeof getUserKycSubmission;
   authenticateAdminMiddleware?: RequestHandler;
   requireSuperAdminMiddleware?: RequestHandler;
@@ -75,6 +80,7 @@ export function createAdminKycRouter(
   const adminKycRouter = Router();
   const listPendingKycSubmissionsHandler =
     dependencies.listPendingKycSubmissionsHandler ?? listPendingKycSubmissions;
+  const approveUserKycHandler = dependencies.approveUserKycHandler ?? approveUserKyc;
   const getUserKycSubmissionHandler =
     dependencies.getUserKycSubmissionHandler ?? getUserKycSubmission;
   const authenticateAdminMiddleware =
@@ -124,6 +130,54 @@ export function createAdminKycRouter(
       } catch (error) {
         if (error instanceof AdminKycQueryValidationError) {
           response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
+
+  adminKycRouter.put(
+    "/:username/approve",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      const rawUsername = request.params.username;
+      const username = Array.isArray(rawUsername) ? rawUsername[0] ?? "" : rawUsername ?? "";
+
+      try {
+        const approveKycResponse = await approveUserKycHandler({
+          username
+        });
+
+        console.info(`KYC approved for "${username.trim()}".`);
+
+        response.json(approveKycResponse);
+      } catch (error) {
+        if (error instanceof ApproveUserKycValidationError) {
+          response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof ApproveUserKycNotFoundError) {
+          response.status(404).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof ApproveUserKycConflictError) {
+          console.warn(`KYC approval conflict for "${username.trim()}".`);
+
+          response.status(409).json({
             message: error.message
           });
 

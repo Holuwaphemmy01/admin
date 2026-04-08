@@ -64,6 +64,7 @@ This is a TypeScript Node.js and Express starter for the BrickPine admin API wit
 - `PUT /admin/auth/change_password`: Lets an authenticated admin change their own password.
 - `GET /admin/kyc/pending`: Lists the latest real pending KYC submissions for sellers and logistics users for a super admin.
 - `GET /admin/kyc/:username`: Returns the latest full KYC submission for a seller or logistics user for a super admin.
+- `PUT /admin/kyc/:username/approve`: Approves the latest KYC submission for a seller or logistics user for a super admin.
 - `GET /admin/users`: Lists customer users with admin filters and pagination for a super admin.
 - `GET /admin/users/stats`: Returns customer-user totals and growth trend stats for a super admin.
 - `GET /admin/users/:username`: Returns the full customer user profile, curated bio data, and placeholder social/follow summaries for a super admin.

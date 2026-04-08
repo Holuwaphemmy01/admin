@@ -8,6 +8,10 @@ import { createAuthenticateAdminMiddleware } from "../../src/modules/admin-auth/
 import { AuthenticatedAdmin } from "../../src/modules/admin-auth/types";
 import { createAdminKycRouter } from "../../src/modules/admin-kyc/routes";
 import {
+  approveUserKyc,
+  ApproveUserKycConflictError,
+  ApproveUserKycNotFoundError,
+  ApproveUserKycValidationError,
   getUserKycSubmission,
   listPendingKycSubmissions,
   UserKycSubmissionConflictError,
@@ -49,6 +53,21 @@ function createQueryResult<T extends QueryResultRow>(rows: T[]): QueryResult<T> 
     fields: [],
     rowCount: rows.length,
     rows
+  };
+}
+
+function createTransactionClient(
+  queryImplementation: (text: string, params?: unknown[]) => Promise<QueryResult<QueryResultRow>>
+) {
+  return {
+    query: async <T extends QueryResultRow>(
+      text: string,
+      params?: unknown[]
+    ): Promise<QueryResult<T>> => {
+      const result = await queryImplementation(text, params);
+
+      return result as unknown as QueryResult<T>;
+    }
   };
 }
 
@@ -484,6 +503,171 @@ test("getUserKycSubmission derives individual logistics submissions and rejects 
   ).rejects.toThrow(UserKycSubmissionNotFoundError);
 });
 
+test("approveUserKyc updates the user's KYC status to approved and returns the canonical username", async () => {
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await approveUserKyc(
+    {
+      username: " seller_117825241 "
+    },
+    {
+      nowFactory: () => new Date("2026-04-08T12:00:00.000Z"),
+      runInTransaction: async (operation) =>
+        operation(
+          createTransactionClient(async (text, params) => {
+            executedQueries.push({ text, params });
+
+            if (text.includes('FROM public."user" u')) {
+              return createQueryResult([
+                {
+                  id: 175,
+                  username: "seller_117825241",
+                  userTypeId: 2,
+                  kycStatus: 0
+                }
+              ]);
+            }
+
+            if (text.includes("FROM public.kyc k")) {
+              return createQueryResult([
+                {
+                  id: 34
+                }
+              ]);
+            }
+
+            return createQueryResult([]);
+          })
+        )
+    }
+  );
+
+  expect(response).toEqual({
+    message: "KYC status updated to approved",
+    username: "seller_117825241"
+  });
+  expect(executedQueries).toHaveLength(3);
+  expect(executedQueries[0]?.text).toContain("FOR UPDATE");
+  expect(executedQueries[0]?.params).toEqual(["seller_117825241"]);
+  expect(executedQueries[2]?.text).toContain('UPDATE public."user"');
+  expect(executedQueries[2]?.params).toEqual([1, new Date("2026-04-08T12:00:00.000Z"), 175]);
+});
+
+test("approveUserKyc rejects invalid usernames, missing submissions, duplicate users, and already-approved KYC", async () => {
+  await expect(
+    approveUserKyc({
+      username: "   "
+    })
+  ).rejects.toThrow(ApproveUserKycValidationError);
+
+  await expect(
+    approveUserKyc(
+      {
+        username: "missing-user"
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation(createTransactionClient(async () => createQueryResult([])))
+      }
+    )
+  ).rejects.toThrow(ApproveUserKycNotFoundError);
+
+  await expect(
+    approveUserKyc(
+      {
+        username: "duplicate-user"
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation(
+            createTransactionClient(async (text) => {
+              if (text.includes('FROM public."user" u')) {
+                return createQueryResult([
+                  {
+                    id: 1,
+                    username: "Duplicate-User",
+                    userTypeId: 2,
+                    kycStatus: 0
+                  },
+                  {
+                    id: 2,
+                    username: "duplicate-user",
+                    userTypeId: 3,
+                    kycStatus: 0
+                  }
+                ]);
+              }
+
+              return createQueryResult([]);
+            })
+          )
+      }
+    )
+  ).rejects.toThrow(ApproveUserKycConflictError);
+
+  await expect(
+    approveUserKyc(
+      {
+        username: "submission-less-user"
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation(
+            createTransactionClient(async (text) => {
+              if (text.includes('FROM public."user" u')) {
+                return createQueryResult([
+                  {
+                    id: 42,
+                    username: "submission-less-user",
+                    userTypeId: 2,
+                    kycStatus: 0
+                  }
+                ]);
+              }
+
+              return createQueryResult([]);
+            })
+          )
+      }
+    )
+  ).rejects.toThrow(ApproveUserKycNotFoundError);
+
+  await expect(
+    approveUserKyc(
+      {
+        username: "approved-user"
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation(
+            createTransactionClient(async (text) => {
+              if (text.includes('FROM public."user" u')) {
+                return createQueryResult([
+                  {
+                    id: 35,
+                    username: "approved-user",
+                    userTypeId: 2,
+                    kycStatus: 1
+                  }
+                ]);
+              }
+
+              if (text.includes("FROM public.kyc k")) {
+                return createQueryResult([
+                  {
+                    id: 77
+                  }
+                ]);
+              }
+
+              return createQueryResult([]);
+            })
+          )
+      }
+    )
+  ).rejects.toThrow("KYC is already approved");
+});
+
 test("GET /admin/kyc/pending returns 401 when the admin token is missing", async () => {
   const application = express();
 
@@ -500,6 +684,31 @@ test("GET /admin/kyc/pending returns 401 when the admin token is missing", async
 
   try {
     const response = await fetch(`${server.baseUrl}/admin/kyc/pending`);
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/kyc/:username/approve returns 401 when the admin token is missing", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/kyc",
+    createAdminKycRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/kyc/seller_117825241/approve`, {
+      method: "PUT"
+    });
 
     expect(response.status).toBe(401);
   } finally {
@@ -525,6 +734,40 @@ test("GET /admin/kyc/:username returns 401 when the admin token is missing", asy
     const response = await fetch(`${server.baseUrl}/admin/kyc/Hormo2urs`);
 
     expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/kyc/:username/approve returns 403 for non-super-admins", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/kyc",
+    createAdminKycRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "support"
+        })
+      ),
+      approveUserKycHandler: async () => ({
+        message: "KYC status updated to approved",
+        username: "seller_117825241"
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/kyc/seller_117825241/approve`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(403);
   } finally {
     await server.close();
   }
@@ -563,6 +806,85 @@ test("GET /admin/kyc/pending returns 403 for non-super-admins", async () => {
   }
 });
 
+test("PUT /admin/kyc/:username/approve returns 404 and 409 for missing or conflicting approvals", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/kyc",
+    createAdminKycRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      approveUserKycHandler: async ({ username }) => {
+        if (username === "missing-user") {
+          throw new ApproveUserKycNotFoundError("KYC submission not found");
+        }
+
+        throw new ApproveUserKycConflictError("KYC is already approved");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    let response = await fetch(`${server.baseUrl}/admin/kyc/missing-user/approve`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(404);
+
+    response = await fetch(`${server.baseUrl}/admin/kyc/approved-user/approve`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(409);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/kyc/:username/approve validates the username path parameter", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/kyc",
+    createAdminKycRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      approveUserKycHandler: async ({ username }) => {
+        if (username.trim() === "") {
+          throw new ApproveUserKycValidationError("username must be a non-empty string");
+        }
+
+        throw new Error("This handler should not be called for non-blank usernames");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/kyc/%20%20/approve`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(400);
+
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    expect(payload.message).toBe("username must be a non-empty string");
+  } finally {
+    await server.close();
+  }
+});
+
 test("GET /admin/kyc/:username returns 403 for non-super-admins", async () => {
   const application = express();
 
@@ -594,6 +916,47 @@ test("GET /admin/kyc/:username returns 403 for non-super-admins", async () => {
     });
 
     expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/kyc/:username/approve returns the updated approval payload for super admins", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/kyc",
+    createAdminKycRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      approveUserKycHandler: async ({ username }) => {
+        expect(username).toBe("seller_117825241");
+
+        return {
+          message: "KYC status updated to approved",
+          username: "seller_117825241"
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/kyc/seller_117825241/approve`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(200);
+
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    expect(payload).toEqual({
+      message: "KYC status updated to approved",
+      username: "seller_117825241"
+    });
   } finally {
     await server.close();
   }

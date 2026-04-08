@@ -1,8 +1,9 @@
 import { QueryResult, QueryResultRow } from "pg";
 
-import { query } from "../../config/db";
+import { query, withTransaction } from "../../config/db";
 import {
   APPROVED_KYC_STATUS,
+  ApproveUserKycResponse,
   KycFormFieldValue,
   KycFormStep,
   PendingKycListFilters,
@@ -20,8 +21,19 @@ type QueryFunction = <T extends QueryResultRow = QueryResultRow>(
   params?: unknown[]
 ) => Promise<QueryResult<T>>;
 
+interface TransactionClient {
+  query<T extends QueryResultRow = QueryResultRow>(
+    text: string,
+    params?: unknown[]
+  ): Promise<QueryResult<T>>;
+}
+
+type RunInTransaction = <T>(operation: (client: TransactionClient) => Promise<T>) => Promise<T>;
+
 interface AdminKycServiceDependencies {
   queryFn?: QueryFunction;
+  runInTransaction?: RunInTransaction;
+  nowFactory?: () => Date;
 }
 
 interface PendingKycSubmissionRow extends QueryResultRow {
@@ -106,6 +118,16 @@ function getQueryFn(dependencies: AdminKycServiceDependencies = {}): QueryFuncti
   return dependencies.queryFn ?? query;
 }
 
+function getRunInTransaction(
+  dependencies: AdminKycServiceDependencies = {}
+): RunInTransaction {
+  return dependencies.runInTransaction ?? withTransaction;
+}
+
+function getNowFactory(dependencies: AdminKycServiceDependencies = {}): () => Date {
+  return dependencies.nowFactory ?? (() => new Date());
+}
+
 function mapTextValue(value: string | null): string {
   return typeof value === "string" ? value : "";
 }
@@ -114,11 +136,13 @@ function mapNullableTextValue(value: string | null): string | null {
   return typeof value === "string" ? value : null;
 }
 
-function normalizeKycUsername(username: string): string {
+type MessageErrorConstructor = new (message: string) => Error;
+
+function normalizeKycUsername(username: string, ErrorType: MessageErrorConstructor): string {
   const normalizedUsername = username.trim();
 
   if (normalizedUsername === "") {
-    throw new UserKycSubmissionValidationError("username must be a non-empty string");
+    throw new ErrorType("username must be a non-empty string");
   }
 
   return normalizedUsername;
@@ -293,6 +317,27 @@ export class UserKycSubmissionConflictError extends Error {
   }
 }
 
+export class ApproveUserKycValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ApproveUserKycValidationError";
+  }
+}
+
+export class ApproveUserKycNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ApproveUserKycNotFoundError";
+  }
+}
+
+export class ApproveUserKycConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ApproveUserKycConflictError";
+  }
+}
+
 function mapPendingKycSubmission(
   submission: PendingKycSubmissionRow
 ): PendingKycSubmission {
@@ -399,7 +444,7 @@ export async function getUserKycSubmission(
   username: string,
   dependencies: AdminKycServiceDependencies = {}
 ): Promise<UserKycSubmissionResponse> {
-  const normalizedUsername = normalizeKycUsername(username);
+  const normalizedUsername = normalizeKycUsername(username, UserKycSubmissionValidationError);
   const queryFn = getQueryFn(dependencies);
 
   const matchedUserResult = await queryFn<UserKycMatchRow>(
@@ -466,4 +511,79 @@ export async function getUserKycSubmission(
     forms,
     submittedAt: latestForm.createdAt.toISOString()
   };
+}
+
+interface ApproveUserKycInput {
+  username: string;
+}
+
+export async function approveUserKyc(
+  input: ApproveUserKycInput,
+  dependencies: AdminKycServiceDependencies = {}
+): Promise<ApproveUserKycResponse> {
+  const normalizedUsername = normalizeKycUsername(
+    input.username,
+    ApproveUserKycValidationError
+  );
+  const runInTransaction = getRunInTransaction(dependencies);
+  const nowFactory = getNowFactory(dependencies);
+
+  return runInTransaction(async (client) => {
+    const matchedUserResult = await client.query<UserKycMatchRow>(
+      [
+        "SELECT",
+        '  u.id, u.username, u."userTypeId", u."kycStatus"',
+        'FROM public."user" u',
+        'WHERE u."userTypeId" IN (2, 3) AND LOWER(u.username) = LOWER($1)',
+        'ORDER BY u."createdAt" DESC',
+        "LIMIT 2",
+        "FOR UPDATE"
+      ].join("\n"),
+      [normalizedUsername]
+    );
+
+    if ((matchedUserResult.rowCount ?? 0) === 0) {
+      throw new ApproveUserKycNotFoundError("KYC submission not found");
+    }
+
+    if ((matchedUserResult.rowCount ?? 0) > 1) {
+      throw new ApproveUserKycConflictError("Multiple users match the provided username");
+    }
+
+    const matchedUser = matchedUserResult.rows[0];
+    const formsResult = await client.query<UserKycFormRow>(
+      [
+        "SELECT",
+        "  k.id",
+        "FROM public.kyc k",
+        'WHERE k."userId" = $1',
+        'ORDER BY k."createdAt" DESC, k.id DESC',
+        "LIMIT 1"
+      ].join("\n"),
+      [matchedUser.id]
+    );
+
+    if ((formsResult.rowCount ?? 0) === 0) {
+      throw new ApproveUserKycNotFoundError("KYC submission not found");
+    }
+
+    if (matchedUser.kycStatus === 1) {
+      throw new ApproveUserKycConflictError("KYC is already approved");
+    }
+
+    await client.query(
+      [
+        'UPDATE public."user"',
+        'SET "kycStatus" = $1,',
+        '    "updatedAt" = $2',
+        "WHERE id = $3"
+      ].join("\n"),
+      [1, nowFactory(), matchedUser.id]
+    );
+
+    return {
+      message: "KYC status updated to approved",
+      username: mapTextValue(matchedUser.username)
+    };
+  });
 }
