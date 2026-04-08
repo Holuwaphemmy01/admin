@@ -581,6 +581,153 @@ export const swaggerSpec = {
           }
         }
       },
+      AdminOrderPartyDetails: {
+        type: "object",
+        properties: {
+          username: {
+            type: "string",
+            nullable: true,
+            example: "buyer-1"
+          },
+          firstName: {
+            type: "string",
+            nullable: true,
+            example: "Jane"
+          },
+          lastName: {
+            type: "string",
+            nullable: true,
+            example: "Doe"
+          },
+          emailAddress: {
+            type: "string",
+            nullable: true,
+            format: "email",
+            example: "jane.doe@example.com"
+          },
+          phoneNumber: {
+            type: "string",
+            nullable: true,
+            example: "+2348012345678"
+          }
+        }
+      },
+      AdminOrderLogisticsDetails: {
+        allOf: [
+          {
+            $ref: "#/components/schemas/AdminOrderPartyDetails"
+          },
+          {
+            type: "object",
+            properties: {
+              vehicleType: {
+                type: "string",
+                nullable: true,
+                example: "bike"
+              },
+              deliveryStatus: {
+                type: "string",
+                nullable: true,
+                example: "assigned"
+              }
+            }
+          }
+        ]
+      },
+      AdminOrderItemDetails: {
+        type: "object",
+        properties: {
+          cartId: {
+            type: "integer",
+            example: 317
+          },
+          productId: {
+            type: "integer",
+            nullable: true,
+            example: 59
+          },
+          productName: {
+            type: "string",
+            nullable: true,
+            example: "my product"
+          },
+          quantity: {
+            type: "integer",
+            example: 1
+          },
+          unitPrice: {
+            type: "number",
+            nullable: true,
+            example: 1000
+          },
+          amount: {
+            type: "number",
+            nullable: true,
+            example: 1000
+          },
+          currency: {
+            type: "string",
+            nullable: true,
+            example: "NGN"
+          },
+          imageUrl: {
+            type: "string",
+            nullable: true,
+            example: "https://cdn.example.com/product-59.png"
+          },
+          sku: {
+            type: "string",
+            nullable: true,
+            example: "SKU-59"
+          }
+        }
+      },
+      AdminOrderDetails: {
+        type: "object",
+        properties: {
+          orderNumber: {
+            type: "string",
+            example: "X0i2sZMEkPwkh45t"
+          },
+          status: {
+            type: "string",
+            enum: ["pending", "picked_up", "in_transit", "delivered", "cancelled", "unknown"],
+            example: "picked_up"
+          },
+          buyer: {
+            $ref: "#/components/schemas/AdminOrderPartyDetails"
+          },
+          seller: {
+            $ref: "#/components/schemas/AdminOrderPartyDetails"
+          },
+          logistics: {
+            $ref: "#/components/schemas/AdminOrderLogisticsDetails"
+          },
+          items: {
+            type: "array",
+            items: {
+              $ref: "#/components/schemas/AdminOrderItemDetails"
+            }
+          },
+          totalAmount: {
+            type: "number",
+            example: 1000
+          },
+          createdAt: {
+            type: "string",
+            format: "date-time",
+            example: "2026-03-24T20:47:54.000Z"
+          }
+        }
+      },
+      AdminOrderDetailsResponse: {
+        type: "object",
+        properties: {
+          orderStatus: {
+            $ref: "#/components/schemas/AdminOrderDetails"
+          }
+        }
+      },
       PlatformUserSummary: {
         type: "object",
         properties: {
@@ -1858,6 +2005,82 @@ export const swaggerSpec = {
               "application/json": {
                 schema: {
                   $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/orders/{orderNumber}": {
+      get: {
+        tags: ["Order Management"],
+        summary: "View full order details",
+        description:
+          "Returns the full order details for a single platform order, including buyer, seller, assigned logistics, line items, total amount, and creation timestamp for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "path",
+            name: "orderNumber",
+            required: true,
+            schema: {
+              type: "string"
+            },
+            description: "The order number to fetch"
+          }
+        ],
+        responses: {
+          "200": {
+            description: "Full order details returned successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/AdminOrderDetailsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid order number",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to view order details",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "Order not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
                 }
               }
             }

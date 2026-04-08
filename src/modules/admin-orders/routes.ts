@@ -2,9 +2,15 @@ import { Request, RequestHandler, Response, Router } from "express";
 
 import { authenticateAdmin, requireAdminRole } from "../admin-auth/middleware";
 import { AdminOrdersListFilters, DEFAULT_ADMIN_ORDERS_LIMIT, DEFAULT_ADMIN_ORDERS_PAGE, MAX_ADMIN_ORDERS_LIMIT } from "./types";
-import { AdminOrdersValidationError, listOrders } from "./service";
+import {
+  AdminOrderNotFoundError,
+  AdminOrdersValidationError,
+  getOrderDetails,
+  listOrders
+} from "./service";
 
 interface AdminOrdersRouterDependencies {
+  getOrderDetailsHandler?: typeof getOrderDetails;
   listOrdersHandler?: typeof listOrders;
   authenticateAdminMiddleware?: RequestHandler;
   requireSuperAdminMiddleware?: RequestHandler;
@@ -75,6 +81,7 @@ export function createAdminOrdersRouter(
   dependencies: AdminOrdersRouterDependencies = {}
 ): Router {
   const adminOrdersRouter = Router();
+  const getOrderDetailsHandler = dependencies.getOrderDetailsHandler ?? getOrderDetails;
   const listOrdersHandler = dependencies.listOrdersHandler ?? listOrders;
   const authenticateAdminMiddleware =
     dependencies.authenticateAdminMiddleware ?? authenticateAdmin;
@@ -162,6 +169,47 @@ export function createAdminOrdersRouter(
           error instanceof AdminOrdersValidationError
         ) {
           response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
+
+  adminOrdersRouter.get(
+    "/:orderNumber",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      try {
+        const rawOrderNumber =
+          typeof request.params.orderNumber === "string" ? request.params.orderNumber.trim() : "";
+
+        if (rawOrderNumber === "") {
+          throw new AdminOrdersQueryValidationError("orderNumber must be a non-empty string");
+        }
+
+        const orderResponse = await getOrderDetailsHandler(rawOrderNumber);
+
+        response.json(orderResponse);
+      } catch (error) {
+        if (
+          error instanceof AdminOrdersQueryValidationError ||
+          error instanceof AdminOrdersValidationError
+        ) {
+          response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof AdminOrderNotFoundError) {
+          response.status(404).json({
             message: error.message
           });
 

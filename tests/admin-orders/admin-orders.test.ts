@@ -7,8 +7,16 @@ import { QueryResult, QueryResultRow } from "pg";
 import { createAuthenticateAdminMiddleware } from "../../src/modules/admin-auth/middleware";
 import { AuthenticatedAdmin } from "../../src/modules/admin-auth/types";
 import { createAdminOrdersRouter } from "../../src/modules/admin-orders/routes";
-import { AdminOrdersValidationError, listOrders } from "../../src/modules/admin-orders/service";
-import { AdminOrdersListResponse } from "../../src/modules/admin-orders/types";
+import {
+  AdminOrderNotFoundError,
+  AdminOrdersValidationError,
+  getOrderDetails,
+  listOrders
+} from "../../src/modules/admin-orders/service";
+import {
+  AdminOrderDetailsResponse,
+  AdminOrdersListResponse
+} from "../../src/modules/admin-orders/types";
 
 async function startTestServer(application: ReturnType<typeof express>) {
   const server = application.listen(0);
@@ -238,6 +246,234 @@ test("listOrders maps delivery dates and unknown numeric statuses safely", async
   });
 });
 
+test("getOrderDetails returns nested party details, line items, and summed totalAmount", async () => {
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await getOrderDetails("  X0i2sZMEkPwkh45t  ", {
+    queryFn: async <T extends QueryResultRow = QueryResultRow>(
+      text: string,
+      params?: unknown[]
+    ): Promise<QueryResult<T>> => {
+      executedQueries.push({ text, params });
+
+      if (text.includes("FROM public.order_tb o")) {
+        return createQueryResult([
+          {
+            id: 233,
+            orderNumber: "X0i2sZMEkPwkh45t",
+            status: 2,
+            cartId: 317,
+            sellerUsernameRaw: "hinocag",
+            logisticsUsernameRaw: "rider",
+            orderVehicleType: "bike",
+            deliveryStatus: "assigned",
+            buyerUsername: "CustomerB",
+            buyerFirstName: "ohxoux",
+            buyerLastName: "kyxyoz",
+            buyerEmailAddress: "buyer@example.com",
+            buyerPhoneNumber: "0807825986",
+            sellerUsernameResolved: "hinocag",
+            sellerFirstName: "hinocag",
+            sellerLastName: "emaxasp",
+            sellerEmailAddress: "seller@example.com",
+            sellerPhoneNumber: "08030000000",
+            logisticsUsernameResolved: "rider",
+            logisticsFirstName: "Ride",
+            logisticsLastName: "Rider",
+            logisticsEmailAddress: "rider@example.com",
+            logisticsPhoneNumber: "08040000000",
+            logisticsVehicleType: "bike",
+            createdAt: new Date("2026-03-24T20:47:54.000Z")
+          }
+        ]) as unknown as QueryResult<T>;
+      }
+
+      return createQueryResult([
+        {
+          cartId: 317,
+          productId: 59,
+          productName: "my product",
+          quantity: 1,
+          unitPrice: 1000,
+          amount: 1000,
+          currency: "NGN",
+          imageUrl: "https://cdn.example.com/product-59.png",
+          sku: "SKU-59"
+        },
+        {
+          cartId: 318,
+          productId: 60,
+          productName: "second product",
+          quantity: 2,
+          unitPrice: 1250.25,
+          amount: 2500.5,
+          currency: "NGN",
+          imageUrl: null,
+          sku: null
+        }
+      ]) as unknown as QueryResult<T>;
+    }
+  });
+
+  expect(executedQueries).toHaveLength(2);
+  expect(executedQueries[0]?.params).toEqual(["X0i2sZMEkPwkh45t"]);
+  expect(executedQueries[1]?.params).toEqual([317, 233]);
+  expect(response).toEqual({
+    orderStatus: {
+      orderNumber: "X0i2sZMEkPwkh45t",
+      status: "picked_up",
+      buyer: {
+        username: "CustomerB",
+        firstName: "ohxoux",
+        lastName: "kyxyoz",
+        emailAddress: "buyer@example.com",
+        phoneNumber: "0807825986"
+      },
+      seller: {
+        username: "hinocag",
+        firstName: "hinocag",
+        lastName: "emaxasp",
+        emailAddress: "seller@example.com",
+        phoneNumber: "08030000000"
+      },
+      logistics: {
+        username: "rider",
+        firstName: "Ride",
+        lastName: "Rider",
+        emailAddress: "rider@example.com",
+        phoneNumber: "08040000000",
+        vehicleType: "bike",
+        deliveryStatus: "assigned"
+      },
+      items: [
+        {
+          cartId: 317,
+          productId: 59,
+          productName: "my product",
+          quantity: 1,
+          unitPrice: 1000,
+          amount: 1000,
+          currency: "NGN",
+          imageUrl: "https://cdn.example.com/product-59.png",
+          sku: "SKU-59"
+        },
+        {
+          cartId: 318,
+          productId: 60,
+          productName: "second product",
+          quantity: 2,
+          unitPrice: 1250.25,
+          amount: 2500.5,
+          currency: "NGN",
+          imageUrl: null,
+          sku: null
+        }
+      ],
+      totalAmount: 3500.5,
+      createdAt: "2026-03-24T20:47:54.000Z"
+    }
+  });
+});
+
+test("getOrderDetails falls back safely for unresolved seller and logistics users and derives total from unit price when needed", async () => {
+  const response = await getOrderDetails("order-fallback-1", {
+    queryFn: async <T extends QueryResultRow = QueryResultRow>(
+      text: string
+    ): Promise<QueryResult<T>> => {
+      if (text.includes("FROM public.order_tb o")) {
+        return createQueryResult([
+          {
+            id: 401,
+            orderNumber: "order-fallback-1",
+            status: 99,
+            cartId: 889,
+            sellerUsernameRaw: "seller-raw",
+            logisticsUsernameRaw: "rider-raw",
+            orderVehicleType: "van",
+            deliveryStatus: null,
+            buyerUsername: null,
+            buyerFirstName: null,
+            buyerLastName: null,
+            buyerEmailAddress: null,
+            buyerPhoneNumber: null,
+            sellerUsernameResolved: null,
+            sellerFirstName: null,
+            sellerLastName: null,
+            sellerEmailAddress: null,
+            sellerPhoneNumber: null,
+            logisticsUsernameResolved: null,
+            logisticsFirstName: null,
+            logisticsLastName: null,
+            logisticsEmailAddress: null,
+            logisticsPhoneNumber: null,
+            logisticsVehicleType: null,
+            createdAt: new Date("2026-04-01T09:00:00.000Z")
+          }
+        ]) as unknown as QueryResult<T>;
+      }
+
+      return createQueryResult([
+        {
+          cartId: 889,
+          productId: 66,
+          productName: "Fallback Item",
+          quantity: 2,
+          unitPrice: 25,
+          amount: null,
+          currency: "NGN",
+          imageUrl: null,
+          sku: null
+        }
+      ]) as unknown as QueryResult<T>;
+    }
+  });
+
+  expect(response).toEqual({
+    orderStatus: {
+      orderNumber: "order-fallback-1",
+      status: "unknown",
+      buyer: {
+        username: null,
+        firstName: null,
+        lastName: null,
+        emailAddress: null,
+        phoneNumber: null
+      },
+      seller: {
+        username: "seller-raw",
+        firstName: null,
+        lastName: null,
+        emailAddress: null,
+        phoneNumber: null
+      },
+      logistics: {
+        username: "rider-raw",
+        firstName: null,
+        lastName: null,
+        emailAddress: null,
+        phoneNumber: null,
+        vehicleType: "van",
+        deliveryStatus: null
+      },
+      items: [
+        {
+          cartId: 889,
+          productId: 66,
+          productName: "Fallback Item",
+          quantity: 2,
+          unitPrice: 25,
+          amount: null,
+          currency: "NGN",
+          imageUrl: null,
+          sku: null
+        }
+      ],
+      totalAmount: 50,
+      createdAt: "2026-04-01T09:00:00.000Z"
+    }
+  });
+});
+
 test("listOrders applies filters and rejects invalid filter values", async () => {
   const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
 
@@ -327,6 +563,17 @@ test("listOrders applies filters and rejects invalid filter values", async () =>
   ).rejects.toThrow(
     "status must be one of pending, picked_up, in_transit, delivered, cancelled"
   );
+});
+
+test("getOrderDetails rejects blank order numbers and returns not found when no matching order exists", async () => {
+  await expect(getOrderDetails("   ")).rejects.toThrow(AdminOrdersValidationError);
+
+  await expect(
+    getOrderDetails("missing-order", {
+      queryFn: async <T extends QueryResultRow = QueryResultRow>() =>
+        createQueryResult([]) as unknown as QueryResult<T>
+    })
+  ).rejects.toThrow(AdminOrderNotFoundError);
 });
 
 test("GET /admin/orders returns 401 when the admin token is missing", async () => {
@@ -584,6 +831,266 @@ test("GET /admin/orders returns the filtered orders payload", async () => {
         }
       ],
       total: 1
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/orders/:orderNumber returns 401 when the admin token is missing", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/orders",
+    createAdminOrdersRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/orders/X0i2sZMEkPwkh45t`);
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/orders/:orderNumber returns 403 for non-super-admins", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/orders",
+    createAdminOrdersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "finance"
+        })
+      ),
+      getOrderDetailsHandler: async () => {
+        throw new Error("This handler should not be called when access is forbidden");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/orders/X0i2sZMEkPwkh45t`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/orders/:orderNumber validates the path param and maps 404 and 400 errors", async () => {
+  let server;
+  const validationApplication = express();
+
+  validationApplication.use(
+    "/admin/orders",
+    createAdminOrdersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getOrderDetailsHandler: async () => {
+        throw new Error("This handler should not be called when validation fails");
+      }
+    })
+  );
+
+  server = await startTestServer(validationApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/orders/%20%20`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as Record<string, unknown>).message).toBe(
+      "orderNumber must be a non-empty string"
+    );
+  } finally {
+    await server.close();
+  }
+
+  const notFoundApplication = express();
+
+  notFoundApplication.use(
+    "/admin/orders",
+    createAdminOrdersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getOrderDetailsHandler: async () => {
+        throw new AdminOrderNotFoundError("Order not found");
+      }
+    })
+  );
+
+  server = await startTestServer(notFoundApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/orders/missing-order`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(404);
+    expect(((await response.json()) as Record<string, unknown>).message).toBe("Order not found");
+  } finally {
+    await server.close();
+  }
+
+  const badRequestApplication = express();
+
+  badRequestApplication.use(
+    "/admin/orders",
+    createAdminOrdersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getOrderDetailsHandler: async () => {
+        throw new AdminOrdersValidationError("orderNumber must be a non-empty string");
+      }
+    })
+  );
+
+  server = await startTestServer(badRequestApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/orders/X0i2sZMEkPwkh45t`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as Record<string, unknown>).message).toBe(
+      "orderNumber must be a non-empty string"
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/orders/:orderNumber returns the full order details payload", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/orders",
+    createAdminOrdersRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getOrderDetailsHandler: async (orderNumber): Promise<AdminOrderDetailsResponse> => {
+        expect(orderNumber).toBe("X0i2sZMEkPwkh45t");
+
+        return {
+          orderStatus: {
+            orderNumber: "X0i2sZMEkPwkh45t",
+            status: "picked_up",
+            buyer: {
+              username: "CustomerB",
+              firstName: "ohxoux",
+              lastName: "kyxyoz",
+              emailAddress: "buyer@example.com",
+              phoneNumber: "0807825986"
+            },
+            seller: {
+              username: "hinocag",
+              firstName: "hinocag",
+              lastName: "emaxasp",
+              emailAddress: "seller@example.com",
+              phoneNumber: "08030000000"
+            },
+            logistics: {
+              username: "rider",
+              firstName: "Ride",
+              lastName: "Rider",
+              emailAddress: "rider@example.com",
+              phoneNumber: "08040000000",
+              vehicleType: "bike",
+              deliveryStatus: "assigned"
+            },
+            items: [
+              {
+                cartId: 317,
+                productId: 59,
+                productName: "my product",
+                quantity: 1,
+                unitPrice: 1000,
+                amount: 1000,
+                currency: "NGN",
+                imageUrl: "https://cdn.example.com/product-59.png",
+                sku: "SKU-59"
+              }
+            ],
+            totalAmount: 1000,
+            createdAt: "2026-03-24T20:47:54.000Z"
+          }
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/orders/%20X0i2sZMEkPwkh45t%20`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      orderStatus: {
+        orderNumber: "X0i2sZMEkPwkh45t",
+        status: "picked_up",
+        buyer: {
+          username: "CustomerB",
+          firstName: "ohxoux",
+          lastName: "kyxyoz",
+          emailAddress: "buyer@example.com",
+          phoneNumber: "0807825986"
+        },
+        seller: {
+          username: "hinocag",
+          firstName: "hinocag",
+          lastName: "emaxasp",
+          emailAddress: "seller@example.com",
+          phoneNumber: "08030000000"
+        },
+        logistics: {
+          username: "rider",
+          firstName: "Ride",
+          lastName: "Rider",
+          emailAddress: "rider@example.com",
+          phoneNumber: "08040000000",
+          vehicleType: "bike",
+          deliveryStatus: "assigned"
+        },
+        items: [
+          {
+            cartId: 317,
+            productId: 59,
+            productName: "my product",
+            quantity: 1,
+            unitPrice: 1000,
+            amount: 1000,
+            currency: "NGN",
+            imageUrl: "https://cdn.example.com/product-59.png",
+            sku: "SKU-59"
+          }
+        ],
+        totalAmount: 1000,
+        createdAt: "2026-03-24T20:47:54.000Z"
+      }
     });
   } finally {
     await server.close();

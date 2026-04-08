@@ -42,3 +42,43 @@ export interface AdminOrdersListResponse {
   orderDetails: AdminOrderSummary[];
   total: number;
 }
+
+export interface AdminOrderPartyDetails {
+  username: string | null;
+  firstName: string | null;
+  lastName: string | null;
+  emailAddress: string | null;
+  phoneNumber: string | null;
+}
+
+export interface AdminOrderLogisticsDetails extends AdminOrderPartyDetails {
+  vehicleType: string | null;
+  deliveryStatus: string | null;
+}
+
+export interface AdminOrderItemDetails {
+  cartId: number;
+  productId: number | null;
+  productName: string | null;
+  quantity: number;
+  unitPrice: number | null;
+  amount: number | null;
+  currency: string | null;
+  imageUrl: string | null;
+  sku: string | null;
+}
+
+export interface AdminOrderDetails {
+  orderNumber: string;
+  status: AdminOrderStatus;
+  buyer: AdminOrderPartyDetails;
+  seller: AdminOrderPartyDetails;
+  logistics: AdminOrderLogisticsDetails;
+  items: AdminOrderItemDetails[];
+  totalAmount: number;
+  createdAt: string;
+}
+
+export interface AdminOrderDetailsResponse {
+  orderStatus: AdminOrderDetails;
+}
