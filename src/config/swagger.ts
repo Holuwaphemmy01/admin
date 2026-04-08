@@ -401,6 +401,63 @@ export const swaggerSpec = {
           }
         }
       },
+      KycFormStep: {
+        type: "object",
+        properties: {
+          step: {
+            type: "integer",
+            example: 1
+          },
+          section: {
+            type: "string",
+            example: "identity"
+          },
+          fields: {
+            type: "object",
+            additionalProperties: true,
+            example: {
+              firstName: "Ato",
+              lastName: "ade",
+              emailAddress: "ato@gmail.com"
+            }
+          }
+        }
+      },
+      UserKycSubmissionResponse: {
+        type: "object",
+        properties: {
+          username: {
+            type: "string",
+            example: "Hormo2urs"
+          },
+          kycType: {
+            type: "string",
+            enum: [
+              "individual_seller",
+              "registered_company",
+              "individual_logistic",
+              "registered_logistic"
+            ],
+            example: "registered_company"
+          },
+          status: {
+            type: "string",
+            enum: ["pending", "approved", "rejected"],
+            example: "pending"
+          },
+          forms: {
+            type: "array",
+            items: {
+              $ref: "#/components/schemas/KycFormStep"
+            }
+          },
+          submittedAt: {
+            type: "string",
+            format: "date-time",
+            example: "2025-11-25T15:03:01.000Z"
+          }
+        }
+      },
       PendingKycListResponse: {
         type: "object",
         properties: {
@@ -1045,6 +1102,92 @@ export const swaggerSpec = {
               "application/json": {
                 schema: {
                   $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/kyc/{username}": {
+      get: {
+        tags: ["KYC Verification"],
+        summary: "View a user's full KYC submission",
+        description:
+          "Returns the latest full KYC submission for a seller or logistics user, including the grouped form sections, for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "path",
+            name: "username",
+            required: true,
+            schema: {
+              type: "string"
+            },
+            description: "Case-insensitive username lookup for the user whose KYC submission should be viewed"
+          }
+        ],
+        responses: {
+          "200": {
+            description: "Full KYC submission retrieved successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/UserKycSubmissionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid username path parameter",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to view user KYC submissions",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "KYC submission was not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            description: "Multiple users match the provided username",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ConflictErrorResponse"
                 }
               }
             }

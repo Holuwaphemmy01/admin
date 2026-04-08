@@ -7,7 +7,14 @@ import { QueryResult, QueryResultRow } from "pg";
 import { createAuthenticateAdminMiddleware } from "../../src/modules/admin-auth/middleware";
 import { AuthenticatedAdmin } from "../../src/modules/admin-auth/types";
 import { createAdminKycRouter } from "../../src/modules/admin-kyc/routes";
-import { listPendingKycSubmissions } from "../../src/modules/admin-kyc/service";
+import {
+  getUserKycSubmission,
+  listPendingKycSubmissions,
+  UserKycSubmissionConflictError,
+  UserKycSubmissionNotFoundError,
+  UserKycSubmissionValidationError
+} from "../../src/modules/admin-kyc/service";
+import { UserKycSubmissionResponse } from "../../src/modules/admin-kyc/types";
 
 async function startTestServer(application: ReturnType<typeof express>) {
   const server = application.listen(0);
@@ -156,6 +163,327 @@ test("listPendingKycSubmissions applies the derived KYC type filter consistently
   expect(executedQueries[1]?.params).toEqual(["registered_logistic"]);
 });
 
+test("getUserKycSubmission returns the latest KYC submission grouped into form sections", async () => {
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await getUserKycSubmission(" Hormo2urs ", {
+    queryFn: async <T extends QueryResultRow>(text: string, params?: unknown[]) => {
+      executedQueries.push({ text, params });
+
+      if (text.includes('FROM public."user" u')) {
+        return createQueryResult([
+          {
+            id: 8,
+            username: "Hormo2urs",
+            userTypeId: 2,
+            kycStatus: 3
+          }
+        ]) as unknown as QueryResult<T>;
+      }
+
+      return createQueryResult([
+        {
+          id: 13,
+          completedStep: 3,
+          createdAt: new Date("2025-11-25T15:03:01.000Z"),
+          updatedAt: new Date("2026-02-23T12:41:04.000Z"),
+          firstName: "Ato",
+          lastName: "ade",
+          emailAddress: "Ato@gmail.com",
+          phoneNumber: "0937464383",
+          residentialAddress: "Ikorodu garage market, Ikorodu, Nigeria",
+          validId: "https://cdn.example.com/valid-id.png",
+          validIdFileType: "image/png",
+          bankName: "uba",
+          accountName: "usssadf",
+          accountNumber: "123121241241",
+          bankStatement: "https://cdn.example.com/bank-statement.png",
+          bankStatementFileType: "image/png",
+          confirmAccuracy: true,
+          privacyConsent: true,
+          termsConsent: true,
+          businessName: "Lionel",
+          businessEmail: "akanbiomotoyosi@gmail.com",
+          businessPhone: "8167626708",
+          businessAddress: "hskskkmsmsmsm",
+          authorizedRepresentativeName: "Omotoyosi",
+          authorizedRepresentativePhone: "8167626708",
+          authorizedRepresentativeEmail: "akanbiomotoyosi@gmail.com",
+          tinNumber: null,
+          cacCertificate: null,
+          cacCertificateFileType: null,
+          tinNumberCertificate: null,
+          tinNumberCertificateFileType: null,
+          age: null,
+          profilePhoto: null,
+          profilePhotoFileType: null,
+          proofOfDrivingExperience: null,
+          proofOfDrivingExperienceFileType: null,
+          vehicleRegistrationDocument: null,
+          vehicleRegistrationDocumentFileType: null,
+          insuranceCertificate: null,
+          insuranceCertificateFileType: null,
+          roadWorthinessCertificate: null,
+          roadWorthinessCertificateFileType: null,
+          hackneyPermit: null,
+          hackneyPermitFileType: null,
+          vehicleType: "bike"
+        },
+        {
+          id: 7,
+          completedStep: 3,
+          createdAt: new Date("2025-10-27T12:06:12.000Z"),
+          updatedAt: new Date("2026-02-23T13:07:42.000Z"),
+          firstName: "Alex",
+          lastName: "ayo",
+          emailAddress: "alexadepetu8@gmail.com",
+          phoneNumber: "08012563985",
+          residentialAddress: "Ikorodu garage market, Ikorodu, Nigeria",
+          validId: "https://cdn.example.com/old-valid-id.png",
+          validIdFileType: "image/png",
+          bankName: "uba",
+          accountName: "usssadf",
+          accountNumber: "123121241241",
+          bankStatement: "https://cdn.example.com/old-bank-statement.png",
+          bankStatementFileType: "image/png",
+          confirmAccuracy: true,
+          privacyConsent: true,
+          termsConsent: true,
+          businessName: null,
+          businessEmail: null,
+          businessPhone: null,
+          businessAddress: null,
+          authorizedRepresentativeName: null,
+          authorizedRepresentativePhone: null,
+          authorizedRepresentativeEmail: null,
+          tinNumber: null,
+          cacCertificate: null,
+          cacCertificateFileType: null,
+          tinNumberCertificate: null,
+          tinNumberCertificateFileType: null,
+          age: null,
+          profilePhoto: null,
+          profilePhotoFileType: null,
+          proofOfDrivingExperience: null,
+          proofOfDrivingExperienceFileType: null,
+          vehicleRegistrationDocument: null,
+          vehicleRegistrationDocumentFileType: null,
+          insuranceCertificate: null,
+          insuranceCertificateFileType: null,
+          roadWorthinessCertificate: null,
+          roadWorthinessCertificateFileType: null,
+          hackneyPermit: null,
+          hackneyPermitFileType: null,
+          vehicleType: "bike"
+        }
+      ]) as unknown as QueryResult<T>;
+    }
+  });
+
+  expect(executedQueries).toHaveLength(2);
+  expect(executedQueries[0]?.params).toEqual(["Hormo2urs"]);
+  expect(executedQueries[1]?.params).toEqual([8]);
+  expect(response).toEqual({
+    username: "Hormo2urs",
+    kycType: "registered_company",
+    status: "rejected",
+    submittedAt: "2025-11-25T15:03:01.000Z",
+    forms: [
+      {
+        step: 1,
+        section: "identity",
+        fields: {
+          firstName: "Ato",
+          lastName: "ade",
+          emailAddress: "Ato@gmail.com",
+          phoneNumber: "0937464383",
+          residentialAddress: "Ikorodu garage market, Ikorodu, Nigeria",
+          validId: "https://cdn.example.com/valid-id.png",
+          validIdFileType: "image/png"
+        }
+      },
+      {
+        step: 2,
+        section: "banking",
+        fields: {
+          bankName: "uba",
+          accountName: "usssadf",
+          accountNumber: "123121241241",
+          bankStatement: "https://cdn.example.com/bank-statement.png",
+          bankStatementFileType: "image/png",
+          confirmAccuracy: true,
+          privacyConsent: true,
+          termsConsent: true
+        }
+      },
+      {
+        step: 3,
+        section: "business_verification",
+        fields: {
+          businessName: "Lionel",
+          businessEmail: "akanbiomotoyosi@gmail.com",
+          businessPhone: "8167626708",
+          businessAddress: "hskskkmsmsmsm",
+          authorizedRepresentativeName: "Omotoyosi",
+          authorizedRepresentativePhone: "8167626708",
+          authorizedRepresentativeEmail: "akanbiomotoyosi@gmail.com",
+          tinNumber: null,
+          cacCertificate: null,
+          cacCertificateFileType: null,
+          tinNumberCertificate: null,
+          tinNumberCertificateFileType: null
+        }
+      }
+    ]
+  });
+});
+
+test("getUserKycSubmission derives individual logistics submissions and rejects invalid username states", async () => {
+  const response = await getUserKycSubmission(" logistic_140941420 ", {
+    queryFn: async <T extends QueryResultRow>(text: string) => {
+      if (text.includes('FROM public."user" u')) {
+        return createQueryResult([
+          {
+            id: 176,
+            username: "logistic_140941420",
+            userTypeId: 3,
+            kycStatus: 0
+          }
+        ]) as unknown as QueryResult<T>;
+      }
+
+      return createQueryResult([
+        {
+          id: 35,
+          completedStep: 5,
+          createdAt: new Date("2026-03-31T04:26:12.744Z"),
+          updatedAt: new Date("2026-03-31T04:26:14.482Z"),
+          firstName: "John",
+          lastName: "Doe",
+          emailAddress: "john@example.com",
+          phoneNumber: "+2348012345678",
+          residentialAddress: "Lagos",
+          validId: "https://cdn.example.com/id.png",
+          validIdFileType: "image/png",
+          bankName: "GTB",
+          accountName: "John Doe",
+          accountNumber: "8165253939",
+          bankStatement: "https://cdn.example.com/statement.png",
+          bankStatementFileType: "image/png",
+          confirmAccuracy: true,
+          privacyConsent: true,
+          termsConsent: true,
+          businessName: null,
+          businessEmail: null,
+          businessPhone: null,
+          businessAddress: null,
+          authorizedRepresentativeName: null,
+          authorizedRepresentativePhone: null,
+          authorizedRepresentativeEmail: null,
+          tinNumber: null,
+          cacCertificate: null,
+          cacCertificateFileType: null,
+          tinNumberCertificate: null,
+          tinNumberCertificateFileType: null,
+          age: 30,
+          profilePhoto: "https://cdn.example.com/profile.png",
+          profilePhotoFileType: "image/png",
+          proofOfDrivingExperience: "https://cdn.example.com/experience.png",
+          proofOfDrivingExperienceFileType: "image/png",
+          vehicleRegistrationDocument: "https://cdn.example.com/vehicle.png",
+          vehicleRegistrationDocumentFileType: "image/png",
+          insuranceCertificate: "https://cdn.example.com/insurance.png",
+          insuranceCertificateFileType: "image/png",
+          roadWorthinessCertificate: "https://cdn.example.com/roadworthy.png",
+          roadWorthinessCertificateFileType: "image/png",
+          hackneyPermit: "https://cdn.example.com/hackney.png",
+          hackneyPermitFileType: "image/png",
+          vehicleType: "bike"
+        }
+      ]) as unknown as QueryResult<T>;
+    }
+  });
+
+  expect(response.kycType).toBe("individual_logistic");
+  expect(response.status).toBe("pending");
+  expect(response.forms[response.forms.length - 1]).toEqual({
+    step: 3,
+    section: "logistics_verification",
+    fields: {
+      age: 30,
+      profilePhoto: "https://cdn.example.com/profile.png",
+      profilePhotoFileType: "image/png",
+      proofOfDrivingExperience: "https://cdn.example.com/experience.png",
+      proofOfDrivingExperienceFileType: "image/png",
+      vehicleRegistrationDocument: "https://cdn.example.com/vehicle.png",
+      vehicleRegistrationDocumentFileType: "image/png",
+      insuranceCertificate: "https://cdn.example.com/insurance.png",
+      insuranceCertificateFileType: "image/png",
+      roadWorthinessCertificate: "https://cdn.example.com/roadworthy.png",
+      roadWorthinessCertificateFileType: "image/png",
+      hackneyPermit: "https://cdn.example.com/hackney.png",
+      hackneyPermitFileType: "image/png",
+      vehicleType: "bike"
+    }
+  });
+
+  await expect(
+    getUserKycSubmission("   ", {
+      queryFn: async <T extends QueryResultRow>() => createQueryResult([]) as unknown as QueryResult<T>
+    })
+  ).rejects.toThrow(UserKycSubmissionValidationError);
+
+  await expect(
+    getUserKycSubmission("missing-user", {
+      queryFn: async <T extends QueryResultRow>() => createQueryResult([]) as unknown as QueryResult<T>
+    })
+  ).rejects.toThrow(UserKycSubmissionNotFoundError);
+
+  await expect(
+    getUserKycSubmission("duplicate-user", {
+      queryFn: async <T extends QueryResultRow>(text: string) => {
+        if (text.includes('FROM public."user" u')) {
+          return createQueryResult([
+            {
+              id: 1,
+              username: "Duplicate-User",
+              userTypeId: 2,
+              kycStatus: 0
+            },
+            {
+              id: 2,
+              username: "duplicate-user",
+              userTypeId: 3,
+              kycStatus: 0
+            }
+          ]) as unknown as QueryResult<T>;
+        }
+
+        return createQueryResult([]) as unknown as QueryResult<T>;
+      }
+    })
+  ).rejects.toThrow(UserKycSubmissionConflictError);
+
+  await expect(
+    getUserKycSubmission("submission-less-user", {
+      queryFn: async <T extends QueryResultRow>(text: string) => {
+        if (text.includes('FROM public."user" u')) {
+          return createQueryResult([
+            {
+              id: 42,
+              username: "submission-less-user",
+              userTypeId: 2,
+              kycStatus: 1
+            }
+          ]) as unknown as QueryResult<T>;
+        }
+
+        return createQueryResult([]) as unknown as QueryResult<T>;
+      }
+    })
+  ).rejects.toThrow(UserKycSubmissionNotFoundError);
+});
+
 test("GET /admin/kyc/pending returns 401 when the admin token is missing", async () => {
   const application = express();
 
@@ -172,6 +500,29 @@ test("GET /admin/kyc/pending returns 401 when the admin token is missing", async
 
   try {
     const response = await fetch(`${server.baseUrl}/admin/kyc/pending`);
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/kyc/:username returns 401 when the admin token is missing", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/kyc",
+    createAdminKycRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/kyc/Hormo2urs`);
 
     expect(response.status).toBe(401);
   } finally {
@@ -201,6 +552,42 @@ test("GET /admin/kyc/pending returns 403 for non-super-admins", async () => {
 
   try {
     const response = await fetch(`${server.baseUrl}/admin/kyc/pending`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/kyc/:username returns 403 for non-super-admins", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/kyc",
+    createAdminKycRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "support"
+        })
+      ),
+      getUserKycSubmissionHandler: async () => ({
+        username: "Hormo2urs",
+        kycType: "registered_company",
+        status: "rejected",
+        forms: [],
+        submittedAt: "2025-11-25T15:03:01.000Z"
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/kyc/Hormo2urs`, {
       headers: {
         Authorization: "Bearer any-token"
       }
@@ -249,6 +636,82 @@ test("GET /admin/kyc/pending validates query parameters", async () => {
       }
     });
     expect(response.status).toBe(400);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/kyc/:username returns 404 and 409 for missing or ambiguous usernames", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/kyc",
+    createAdminKycRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getUserKycSubmissionHandler: async (username) => {
+        if (username === "missing-user") {
+          throw new UserKycSubmissionNotFoundError("KYC submission not found");
+        }
+
+        throw new UserKycSubmissionConflictError("Multiple users match the provided username");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    let response = await fetch(`${server.baseUrl}/admin/kyc/missing-user`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(404);
+
+    response = await fetch(`${server.baseUrl}/admin/kyc/duplicate-user`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(409);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/kyc/:username validates the username path parameter", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/kyc",
+    createAdminKycRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getUserKycSubmissionHandler: async (username) => {
+        if (username.trim() === "") {
+          throw new UserKycSubmissionValidationError("username must be a non-empty string");
+        }
+
+        throw new Error("This handler should not be called for non-blank usernames");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/kyc/%20%20`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(400);
+
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    expect(payload.message).toBe("username must be a non-empty string");
   } finally {
     await server.close();
   }
@@ -307,6 +770,85 @@ test("GET /admin/kyc/pending parses filters, defaults page, caps limit, and retu
         kycType: "registered_company",
         status: "pending",
         submittedAt: "2026-03-31T04:26:08.916Z"
+      }
+    ]);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/kyc/:username returns the latest full KYC submission payload for super admins", async () => {
+  const application = express();
+  const userKycSubmissionResponse: UserKycSubmissionResponse = {
+    username: "Hormo2urs",
+    kycType: "registered_company",
+    status: "rejected",
+    forms: [
+      {
+        step: 1,
+        section: "identity",
+        fields: {
+          firstName: "Ato",
+          lastName: "ade"
+        }
+      },
+      {
+        step: 2,
+        section: "banking",
+        fields: {
+          bankName: "uba",
+          accountNumber: "123121241241"
+        }
+      }
+    ],
+    submittedAt: "2025-11-25T15:03:01.000Z"
+  };
+
+  application.use(
+    "/admin/kyc",
+    createAdminKycRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getUserKycSubmissionHandler: async (username) => {
+        expect(username).toBe("Hormo2urs");
+
+        return userKycSubmissionResponse;
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/kyc/Hormo2urs`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(200);
+
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    expect(payload.username).toBe("Hormo2urs");
+    expect(payload.kycType).toBe("registered_company");
+    expect(payload.status).toBe("rejected");
+    expect(payload.submittedAt).toBe("2025-11-25T15:03:01.000Z");
+    expect(payload.forms).toEqual([
+      {
+        step: 1,
+        section: "identity",
+        fields: {
+          firstName: "Ato",
+          lastName: "ade"
+        }
+      },
+      {
+        step: 2,
+        section: "banking",
+        fields: {
+          bankName: "uba",
+          accountNumber: "123121241241"
+        }
       }
     ]);
   } finally {

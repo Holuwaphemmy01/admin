@@ -1,7 +1,13 @@
 import { Request, RequestHandler, Response, Router } from "express";
 
 import { authenticateAdmin, requireAdminRole } from "../admin-auth/middleware";
-import { listPendingKycSubmissions } from "./service";
+import {
+  getUserKycSubmission,
+  listPendingKycSubmissions,
+  UserKycSubmissionConflictError,
+  UserKycSubmissionNotFoundError,
+  UserKycSubmissionValidationError
+} from "./service";
 import {
   DEFAULT_PENDING_KYC_LIMIT,
   DEFAULT_PENDING_KYC_PAGE,
@@ -13,6 +19,7 @@ import {
 
 interface AdminKycRouterDependencies {
   listPendingKycSubmissionsHandler?: typeof listPendingKycSubmissions;
+  getUserKycSubmissionHandler?: typeof getUserKycSubmission;
   authenticateAdminMiddleware?: RequestHandler;
   requireSuperAdminMiddleware?: RequestHandler;
 }
@@ -68,6 +75,8 @@ export function createAdminKycRouter(
   const adminKycRouter = Router();
   const listPendingKycSubmissionsHandler =
     dependencies.listPendingKycSubmissionsHandler ?? listPendingKycSubmissions;
+  const getUserKycSubmissionHandler =
+    dependencies.getUserKycSubmissionHandler ?? getUserKycSubmission;
   const authenticateAdminMiddleware =
     dependencies.authenticateAdminMiddleware ?? authenticateAdmin;
   const requireSuperAdminMiddleware =
@@ -115,6 +124,48 @@ export function createAdminKycRouter(
       } catch (error) {
         if (error instanceof AdminKycQueryValidationError) {
           response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
+
+  adminKycRouter.get(
+    "/:username",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      const rawUsername = request.params.username;
+      const username = Array.isArray(rawUsername) ? rawUsername[0] ?? "" : rawUsername ?? "";
+
+      try {
+        const userKycResponse = await getUserKycSubmissionHandler(username);
+
+        response.json(userKycResponse);
+      } catch (error) {
+        if (error instanceof UserKycSubmissionValidationError) {
+          response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof UserKycSubmissionNotFoundError) {
+          response.status(404).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof UserKycSubmissionConflictError) {
+          response.status(409).json({
             message: error.message
           });
 
