@@ -51,3 +51,14 @@ export interface ManualCreditWalletResponse {
   message: string;
   newBalance: number;
 }
+
+export interface ManualDebitWalletRequestBody {
+  username: string;
+  amount: number;
+  description: string;
+}
+
+export interface ManualDebitWalletResponse {
+  message: string;
+  newBalance: number;
+}

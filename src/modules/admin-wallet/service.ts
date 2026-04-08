@@ -7,6 +7,8 @@ import { normalizeCredentialValue } from "../admin-auth/utils";
 import {
   ManualCreditWalletRequestBody,
   ManualCreditWalletResponse,
+  ManualDebitWalletRequestBody,
+  ManualDebitWalletResponse,
   PLATFORM_WALLET_OWNER_USERNAME,
   PLATFORM_WALLET_RECENT_TRANSACTIONS_LIMIT,
   PlatformWalletOverviewResponse,
@@ -129,6 +131,27 @@ export class ManualCreditWalletConflictError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ManualCreditWalletConflictError";
+  }
+}
+
+export class ManualDebitWalletValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ManualDebitWalletValidationError";
+  }
+}
+
+export class ManualDebitWalletNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ManualDebitWalletNotFoundError";
+  }
+}
+
+export class ManualDebitWalletConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ManualDebitWalletConflictError";
   }
 }
 
@@ -277,6 +300,46 @@ function normalizeManualCreditUsername(value: string): string {
   if (normalizedValue === "") {
     throw new ManualCreditWalletValidationError(
       "username is required and must be a non-empty string"
+    );
+  }
+
+  return normalizedValue;
+}
+
+function normalizeRequiredManualDebitUsername(value: string): string {
+  const normalizedValue = normalizeCredentialValue(value);
+
+  if (normalizedValue === "") {
+    throw new ManualDebitWalletValidationError(
+      "username is required and must be a non-empty string"
+    );
+  }
+
+  return normalizedValue;
+}
+
+function normalizeDebitAmount(value: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw new ManualDebitWalletValidationError(
+      "amount is required and must be a positive finite number"
+    );
+  }
+
+  const roundedAmount = Number(value.toFixed(2));
+
+  if (Math.abs(value - roundedAmount) > Number.EPSILON) {
+    throw new ManualDebitWalletValidationError("amount must have at most 2 decimal places");
+  }
+
+  return roundedAmount;
+}
+
+function normalizeRequiredDebitDescription(value: string): string {
+  const normalizedValue = normalizeCredentialValue(value);
+
+  if (normalizedValue === "") {
+    throw new ManualDebitWalletValidationError(
+      "description is required and must be a non-empty string"
     );
   }
 
@@ -611,6 +674,176 @@ export async function manualCreditUserWallet(
 
     return {
       message: "Wallet credited successfully",
+      newBalance: newAvailableBalance
+    };
+  });
+}
+
+export async function manualDebitUserWallet(
+  payload: ManualDebitWalletRequestBody & {
+    actedByAdminUserId: string;
+  },
+  dependencies: AdminWalletServiceDependencies = {}
+): Promise<ManualDebitWalletResponse> {
+  const runInTransaction = getRunInTransaction(dependencies);
+  const nowFactory = getNowFactory(dependencies);
+  const uuidFactory = getUuidFactory(dependencies);
+  const username = normalizeRequiredManualDebitUsername(payload.username);
+  const amount = normalizeDebitAmount(payload.amount);
+  const description = normalizeRequiredDebitDescription(payload.description);
+  const actedByAdminUserId = normalizeCredentialValue(payload.actedByAdminUserId);
+
+  if (actedByAdminUserId === "") {
+    throw new ManualDebitWalletValidationError("actedByAdminUserId is required");
+  }
+
+  return runInTransaction(async (client) => {
+    const userResult = await client.query<WalletLookupUserRow>(
+      [
+        "SELECT",
+        '  u.id, u.username',
+        'FROM public."user" u',
+        'WHERE u."userTypeId" IN (1, 2, 3)',
+        "  AND u.username IS NOT NULL",
+        "  AND BTRIM(u.username) <> ''",
+        "  AND LOWER(u.username) = LOWER($1)",
+        'ORDER BY u."createdAt" DESC',
+        "LIMIT 2",
+        "FOR UPDATE"
+      ].join("\n"),
+      [username]
+    );
+
+    if ((userResult.rowCount ?? 0) === 0) {
+      throw new ManualDebitWalletNotFoundError("User wallet target not found");
+    }
+
+    if ((userResult.rowCount ?? 0) > 1) {
+      throw new ManualDebitWalletConflictError("Multiple users match the provided username");
+    }
+
+    const user = userResult.rows[0];
+
+    if (!user || typeof user.username !== "string" || user.username.trim() === "") {
+      throw new ManualDebitWalletNotFoundError("User wallet target not found");
+    }
+
+    const targetUserId = mapRequiredInteger(user.id, "user.id");
+    const walletResult = await client.query<WalletForUpdateRow>(
+      [
+        "SELECT",
+        '  w.id, w.currency, w."availableBalance", w."ledgerBalance"',
+        "FROM public.wallet w",
+        'WHERE w."userId" = $1',
+        'ORDER BY w."createdAt" DESC NULLS LAST, w.id DESC',
+        "LIMIT 1",
+        "FOR UPDATE"
+      ].join("\n"),
+      [targetUserId]
+    );
+
+    const wallet = walletResult.rows[0];
+
+    if (!wallet) {
+      throw new ManualDebitWalletNotFoundError("User wallet not found");
+    }
+
+    const walletId = mapRequiredInteger(wallet.id, "wallet.id");
+    const walletCurrency = mapWalletCurrency(wallet.currency);
+    const previousAvailableBalance = mapNumberOrZero(wallet.availableBalance);
+    const previousLedgerBalance = mapNumberOrZero(wallet.ledgerBalance);
+
+    if (previousAvailableBalance < amount || previousLedgerBalance < amount) {
+      throw new ManualDebitWalletConflictError(
+        "Insufficient available balance for manual debit"
+      );
+    }
+
+    const now = nowFactory();
+    const newAvailableBalance = Number((previousAvailableBalance - amount).toFixed(2));
+    const newLedgerBalance = Number((previousLedgerBalance - amount).toFixed(2));
+
+    await client.query(
+      [
+        "UPDATE public.wallet",
+        'SET "availableBalance" = $1,',
+        '    "ledgerBalance" = $2,',
+        '    "updatedAt" = $3',
+        "WHERE id = $4"
+      ].join("\n"),
+      [newAvailableBalance, newLedgerBalance, now, walletId]
+    );
+
+    const transactionReference = [
+      "MANUAL_DEBIT",
+      targetUserId,
+      now.getTime(),
+      actedByAdminUserId
+    ].join(":");
+
+    const walletTransactionResult = await client.query<CreatedWalletTransactionRow>(
+      [
+        "INSERT INTO public.wallet_transaction (",
+        '  "userId", amount, currency, "transactionId", "settlementId", "refundId",',
+        '  "transactionType", "ledgerBalance", "availableBalance", description, status, "createdAt", "updatedAt"',
+        ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+        "RETURNING id"
+      ].join("\n"),
+      [
+        targetUserId,
+        amount,
+        walletCurrency,
+        transactionReference,
+        null,
+        null,
+        2,
+        newLedgerBalance,
+        newAvailableBalance,
+        description,
+        1,
+        now,
+        now
+      ]
+    );
+
+    const walletTransaction = walletTransactionResult.rows[0];
+
+    if (!walletTransaction) {
+      throw new Error("Wallet debit transaction insert did not return a row");
+    }
+
+    const walletTransactionId = mapRequiredInteger(
+      walletTransaction.id,
+      "walletTransaction.id"
+    );
+
+    await client.query(
+      [
+        "INSERT INTO public.admin_wallet_action_audit_logs (",
+        '  id, "targetUserId", "targetWalletId", "walletTransactionId", "actedByAdminUserId",',
+        '  action, amount, description, "previousAvailableBalance", "newAvailableBalance",',
+        '  "previousLedgerBalance", "newLedgerBalance", "createdAt"',
+        ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)"
+      ].join("\n"),
+      [
+        uuidFactory(),
+        targetUserId,
+        walletId,
+        walletTransactionId,
+        actedByAdminUserId,
+        "manual_debit",
+        amount,
+        description,
+        previousAvailableBalance,
+        newAvailableBalance,
+        previousLedgerBalance,
+        newLedgerBalance,
+        now
+      ]
+    );
+
+    return {
+      message: "Wallet debited successfully",
       newBalance: newAvailableBalance
     };
   });

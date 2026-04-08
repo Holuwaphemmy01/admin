@@ -7,7 +7,11 @@ import {
   ManualCreditWalletConflictError,
   ManualCreditWalletNotFoundError,
   ManualCreditWalletValidationError,
+  ManualDebitWalletConflictError,
+  ManualDebitWalletNotFoundError,
+  ManualDebitWalletValidationError,
   manualCreditUserWallet,
+  manualDebitUserWallet,
   PlatformWalletNotFoundError,
   UserWalletConflictError,
   UserWalletNotFoundError,
@@ -18,6 +22,7 @@ interface AdminWalletRouterDependencies {
   getPlatformWalletOverviewHandler?: typeof getPlatformWalletOverview;
   getUserWalletHandler?: typeof getUserWallet;
   manualCreditUserWalletHandler?: typeof manualCreditUserWallet;
+  manualDebitUserWalletHandler?: typeof manualDebitUserWallet;
   authenticateAdminMiddleware?: RequestHandler;
   requireSuperAdminMiddleware?: RequestHandler;
 }
@@ -31,6 +36,8 @@ export function createAdminWalletRouter(
   const getUserWalletHandler = dependencies.getUserWalletHandler ?? getUserWallet;
   const manualCreditUserWalletHandler =
     dependencies.manualCreditUserWalletHandler ?? manualCreditUserWallet;
+  const manualDebitUserWalletHandler =
+    dependencies.manualDebitUserWalletHandler ?? manualDebitUserWallet;
   const authenticateAdminMiddleware =
     dependencies.authenticateAdminMiddleware ?? authenticateAdmin;
   const requireSuperAdminMiddleware =
@@ -130,6 +137,89 @@ export function createAdminWalletRouter(
         }
 
         if (error instanceof ManualCreditWalletConflictError) {
+          response.status(409).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
+
+  adminWalletRouter.post(
+    "/manual_debit",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      const body = request.body as {
+        username?: unknown;
+        amount?: unknown;
+        description?: unknown;
+      };
+      const rawUsername = typeof body.username === "string" ? body.username.trim() : "";
+      const rawAmount = body.amount;
+      const rawDescription =
+        typeof body.description === "string" ? body.description.trim() : "";
+
+      if (rawUsername === "") {
+        response.status(400).json({
+          message: "username is required and must be a non-empty string"
+        });
+
+        return;
+      }
+
+      if (
+        typeof rawAmount !== "number" ||
+        !Number.isFinite(rawAmount) ||
+        rawAmount <= 0 ||
+        Math.abs(rawAmount - Number(rawAmount.toFixed(2))) > Number.EPSILON
+      ) {
+        response.status(400).json({
+          message: "amount is required and must be a positive finite number with at most 2 decimal places"
+        });
+
+        return;
+      }
+
+      if (rawDescription === "") {
+        response.status(400).json({
+          message: "description is required and must be a non-empty string"
+        });
+
+        return;
+      }
+
+      try {
+        const result = await manualDebitUserWalletHandler({
+          username: rawUsername,
+          amount: rawAmount,
+          description: rawDescription,
+          actedByAdminUserId: request.admin?.sub ?? ""
+        });
+
+        response.json(result);
+      } catch (error) {
+        if (error instanceof ManualDebitWalletValidationError) {
+          response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof ManualDebitWalletNotFoundError) {
+          response.status(404).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof ManualDebitWalletConflictError) {
           response.status(409).json({
             message: error.message
           });
