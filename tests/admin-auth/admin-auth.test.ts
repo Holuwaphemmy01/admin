@@ -1109,6 +1109,7 @@ test("GET /docs.json exposes the swagger specification for the API", async () =>
     expect(payload.paths?.["/admin/auth/change_password"]).toBeDefined();
     expect(payload.paths?.["/admin/auth/admins"]).toBeDefined();
     expect(payload.paths?.["/admin/auth/admins/{id}/revoke"]).toBeDefined();
+    expect(payload.paths?.["/admin/kyc/pending"]).toBeDefined();
     expect(payload.paths?.["/admin/users"]).toBeDefined();
     expect(payload.paths?.["/admin/users/stats"]).toBeDefined();
     expect(payload.paths?.["/admin/users/{username}"]).toMatchObject({

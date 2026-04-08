@@ -24,6 +24,10 @@ export const swaggerSpec = {
     {
       name: "User Management",
       description: "Administrative customer-user management endpoints"
+    },
+    {
+      name: "KYC Verification",
+      description: "Administrative KYC review and verification endpoints"
     }
   ],
   components: {
@@ -365,6 +369,50 @@ export const swaggerSpec = {
             items: {
               $ref: "#/components/schemas/PlatformUserGrowthTrendPoint"
             }
+          }
+        }
+      },
+      PendingKycSubmission: {
+        type: "object",
+        properties: {
+          username: {
+            type: "string",
+            example: "seller_117825241"
+          },
+          kycType: {
+            type: "string",
+            enum: [
+              "individual_seller",
+              "registered_company",
+              "individual_logistic",
+              "registered_logistic"
+            ],
+            example: "individual_seller"
+          },
+          status: {
+            type: "string",
+            enum: ["pending"],
+            example: "pending"
+          },
+          submittedAt: {
+            type: "string",
+            format: "date-time",
+            example: "2026-03-31T04:26:08.916Z"
+          }
+        }
+      },
+      PendingKycListResponse: {
+        type: "object",
+        properties: {
+          submissions: {
+            type: "array",
+            items: {
+              $ref: "#/components/schemas/PendingKycSubmission"
+            }
+          },
+          total: {
+            type: "integer",
+            example: 14
           }
         }
       },
@@ -901,6 +949,102 @@ export const swaggerSpec = {
               "application/json": {
                 schema: {
                   $ref: "#/components/schemas/ConflictErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/kyc/pending": {
+      get: {
+        tags: ["KYC Verification"],
+        summary: "List all pending KYC submissions",
+        description:
+          "Returns the latest real pending KYC submission per seller or logistics user for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "query",
+            name: "type",
+            required: false,
+            schema: {
+              type: "string",
+              enum: [
+                "individual_seller",
+                "registered_company",
+                "individual_logistic",
+                "registered_logistic"
+              ]
+            },
+            description:
+              "Filter by derived KYC type: individual_seller, registered_company, individual_logistic, or registered_logistic"
+          },
+          {
+            in: "query",
+            name: "page",
+            required: false,
+            schema: {
+              type: "integer",
+              minimum: 1,
+              default: 1
+            },
+            description: "Pagination page number"
+          },
+          {
+            in: "query",
+            name: "limit",
+            required: false,
+            schema: {
+              type: "integer",
+              minimum: 1,
+              maximum: 100,
+              default: 20
+            },
+            description: "Results per page"
+          }
+        ],
+        responses: {
+          "200": {
+            description: "Pending KYC submissions retrieved successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/PendingKycListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid query parameters",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to list pending KYC submissions",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
                 }
               }
             }
