@@ -8,9 +8,15 @@ import {
   AdminCampaignStatusFilter,
   AdminCampaignsListFilters
 } from "./types";
-import { AdminCampaignsValidationError, listAdminCampaigns } from "./service";
+import {
+  AdminCampaignNotFoundError,
+  AdminCampaignsValidationError,
+  getAdminCampaignDetails,
+  listAdminCampaigns
+} from "./service";
 
 interface AdminCampaignsRouterDependencies {
+  getAdminCampaignDetailsHandler?: typeof getAdminCampaignDetails;
   listAdminCampaignsHandler?: typeof listAdminCampaigns;
   authenticateAdminMiddleware?: RequestHandler;
   requireSuperAdminMiddleware?: RequestHandler;
@@ -72,6 +78,8 @@ export function createAdminCampaignsRouter(
   dependencies: AdminCampaignsRouterDependencies = {}
 ): Router {
   const adminCampaignsRouter = Router();
+  const getAdminCampaignDetailsHandler =
+    dependencies.getAdminCampaignDetailsHandler ?? getAdminCampaignDetails;
   const listAdminCampaignsHandler =
     dependencies.listAdminCampaignsHandler ?? listAdminCampaigns;
   const authenticateAdminMiddleware =
@@ -133,6 +141,50 @@ export function createAdminCampaignsRouter(
           error instanceof AdminCampaignsValidationError
         ) {
           response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
+
+  adminCampaignsRouter.get(
+    "/:campaignId",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      const rawCampaignId = request.params.campaignId;
+      const campaignId = (
+        Array.isArray(rawCampaignId) ? rawCampaignId[0] ?? "" : rawCampaignId ?? ""
+      ).trim();
+
+      if (!/^\d+$/.test(campaignId) || Number(campaignId) <= 0) {
+        response.status(400).json({
+          message: "campaignId must be a positive integer"
+        });
+
+        return;
+      }
+
+      try {
+        const campaignResponse = await getAdminCampaignDetailsHandler(Number(campaignId));
+
+        response.json(campaignResponse);
+      } catch (error) {
+        if (error instanceof AdminCampaignsValidationError) {
+          response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof AdminCampaignNotFoundError) {
+          response.status(404).json({
             message: error.message
           });
 

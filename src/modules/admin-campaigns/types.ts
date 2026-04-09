@@ -34,3 +34,16 @@ export interface AdminCampaignsListResponse {
   campaigns: AdminCampaignItem[];
   total: number;
 }
+
+export interface AdminCampaignDetailsResponse {
+  campaignId: string;
+  username: string;
+  goal: string;
+  status: string;
+  budget: number;
+  impressions: number;
+  clicks: number;
+  conversions: number;
+  postId: string;
+  createdAt: string;
+}

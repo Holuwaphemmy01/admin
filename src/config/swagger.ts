@@ -965,6 +965,61 @@ export const swaggerSpec = {
           }
         }
       },
+      AdminCampaignDetailsResponse: {
+        type: "object",
+        properties: {
+          campaignId: {
+            type: "string",
+            example: "13"
+          },
+          username: {
+            type: "string",
+            example: "seller-one"
+          },
+          goal: {
+            type: "string",
+            enum: ["awareness", "engagement", "conversion"],
+            example: "engagement"
+          },
+          status: {
+            type: "string",
+            enum: [
+              "draft",
+              "pending_approval",
+              "active",
+              "paused",
+              "completed",
+              "rejected"
+            ],
+            example: "active"
+          },
+          budget: {
+            type: "number",
+            example: 5000
+          },
+          impressions: {
+            type: "integer",
+            example: 1200
+          },
+          clicks: {
+            type: "integer",
+            example: 48
+          },
+          conversions: {
+            type: "integer",
+            example: 6
+          },
+          postId: {
+            type: "string",
+            example: "91"
+          },
+          createdAt: {
+            type: "string",
+            format: "date-time",
+            example: "2026-03-08T23:11:59.000Z"
+          }
+        }
+      },
       AdminSettlementItem: {
         type: "object",
         properties: {
@@ -3454,6 +3509,82 @@ export const swaggerSpec = {
               "application/json": {
                 schema: {
                   $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/campaigns/{campaignId}": {
+      get: {
+        tags: ["Ads & Promoted Posts"],
+        summary: "View a specific campaign",
+        description:
+          "Returns one promoted post campaign with current aggregate campaign metrics for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "path",
+            name: "campaignId",
+            required: true,
+            schema: {
+              type: "integer"
+            },
+            description: "Promoted campaign identifier"
+          }
+        ],
+        responses: {
+          "200": {
+            description: "Campaign returned successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/AdminCampaignDetailsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid campaign identifier",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/UnauthorizedErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to view campaign details",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "Campaign not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
                 }
               }
             }

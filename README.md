@@ -67,6 +67,7 @@ This is a TypeScript Node.js and Express starter for the BrickPine admin API wit
 - `PUT /admin/delivery/surge`: Updates the current delivery surge settings for a super admin.
 - `GET /admin/subscriptions`: Lists seller and logistics subscription plans for a super admin.
 - `GET /admin/campaigns`: Lists promoted post campaigns with optional status, username, and pagination filters for a super admin.
+- `GET /admin/campaigns/:campaignId`: Returns one promoted post campaign with current metrics for a super admin.
 - `POST /admin/subscriptions/plans`: Creates a new active annual seller or logistics subscription plan for a super admin.
 - `PUT /admin/subscriptions/plans/:id`: Updates one or more editable fields on an existing subscription plan for a super admin.
 - `DELETE /admin/subscriptions/plans/:id`: Removes an existing subscription plan for a super admin.

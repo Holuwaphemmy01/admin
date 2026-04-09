@@ -3,6 +3,7 @@ import { QueryResult, QueryResultRow } from "pg";
 import { query } from "../../config/db";
 import {
   AdminCampaignStatusFilter,
+  AdminCampaignDetailsResponse,
   AdminCampaignsListFilters,
   AdminCampaignsListResponse
 } from "./types";
@@ -30,10 +31,30 @@ interface TotalCountRow extends QueryResultRow {
   total: number;
 }
 
+interface AdminCampaignDetailsRow extends QueryResultRow {
+  id: string | number;
+  postId: string | number | null;
+  username: string | null;
+  goal: string | null;
+  status: string | null;
+  budget: string | number | null;
+  impressions: string | number | null;
+  clicks: string | number | null;
+  conversions: string | number | null;
+  createdAt: Date;
+}
+
 export class AdminCampaignsValidationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "AdminCampaignsValidationError";
+  }
+}
+
+export class AdminCampaignNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AdminCampaignNotFoundError";
   }
 }
 
@@ -122,6 +143,27 @@ function mapRequiredNumber(value: string | number | null, fieldName: string): nu
   }
 
   return numericValue;
+}
+
+function mapRequiredNonNegativeInteger(
+  value: string | number | null,
+  fieldName: string
+): number {
+  const numericValue = typeof value === "number" ? value : Number(value);
+
+  if (!Number.isInteger(numericValue) || numericValue < 0) {
+    throw new Error(`Admin campaigns query returned an invalid ${fieldName} value`);
+  }
+
+  return numericValue;
+}
+
+function mapRequiredDate(value: Date, fieldName: string): string {
+  if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
+    throw new Error(`Admin campaigns query returned an invalid ${fieldName} value`);
+  }
+
+  return value.toISOString();
 }
 
 function mapOptionalDate(value: Date | null | undefined): string | null {
@@ -269,5 +311,75 @@ export async function listAdminCampaigns(
       endDate: mapOptionalDate(campaign.endDate)
     })),
     total: Number(totalResult.rows[0]?.total ?? 0)
+  };
+}
+
+export async function getAdminCampaignDetails(
+  campaignId: number,
+  dependencies: AdminCampaignsServiceDependencies = {}
+): Promise<AdminCampaignDetailsResponse> {
+  const queryFn = getQueryFn(dependencies);
+  const normalizedCampaignId = normalizePositiveInteger(campaignId, "campaignId");
+  const result = await queryFn<AdminCampaignDetailsRow>(
+    [
+      "SELECT",
+      "  ppc.id,",
+      '  ppc."postId" AS "postId",',
+      "  u.username,",
+      '  ppc.goal::text AS goal,',
+      '  ppc.status::text AS status,',
+      '  ppc."totalBudget" AS budget,',
+      '  COALESCE(ppcs."actualImpressions", ppc."actualImpressions", impression_metrics.impressions, 0) AS impressions,',
+      '  COALESCE(ppcs."actualClicks", ppc."actualClicks", click_metrics.clicks, 0) AS clicks,',
+      '  COALESCE(engagement_metrics.conversions, 0) AS conversions,',
+      '  ppc."createdAt" AS "createdAt"',
+      "FROM public.promote_post_campaign ppc",
+      'INNER JOIN public."user" u ON u.id = ppc."userId"',
+      "LEFT JOIN LATERAL (",
+      "  SELECT",
+      '    ppcs."actualImpressions",',
+      '    ppcs."actualClicks"',
+      "  FROM public.promote_post_campaign_stats ppcs",
+      '  WHERE ppcs."campaignId" = ppc.id',
+      '  ORDER BY COALESCE(ppcs."daysRun", 0) DESC, COALESCE(ppcs."actualImpressions", 0) DESC',
+      "  LIMIT 1",
+      ") ppcs ON TRUE",
+      "LEFT JOIN LATERAL (",
+      "  SELECT COUNT(*)::bigint AS impressions",
+      "  FROM public.promote_post_impression ppi",
+      '  WHERE ppi."campaignId" = ppc.id',
+      ") impression_metrics ON TRUE",
+      "LEFT JOIN LATERAL (",
+      "  SELECT COUNT(*)::bigint AS clicks",
+      "  FROM public.promote_post_click ppclick",
+      '  WHERE ppclick."campaignId" = ppc.id',
+      ") click_metrics ON TRUE",
+      "LEFT JOIN LATERAL (",
+      "  SELECT COUNT(*)::bigint AS conversions",
+      "  FROM public.promote_post_engagement ppe",
+      '  WHERE ppe."campaignId" = ppc.id',
+      ") engagement_metrics ON TRUE",
+      "WHERE ppc.id = $1",
+      "LIMIT 1"
+    ].join("\n"),
+    [normalizedCampaignId]
+  );
+  const campaign = result.rows[0];
+
+  if (!campaign) {
+    throw new AdminCampaignNotFoundError("Campaign not found");
+  }
+
+  return {
+    campaignId: mapRequiredIdAsString(campaign.id, "id"),
+    username: mapRequiredText(campaign.username, "username"),
+    goal: mapCampaignGoal(campaign.goal),
+    status: mapCampaignStatus(campaign.status),
+    budget: mapRequiredNumber(campaign.budget, "budget"),
+    impressions: mapRequiredNonNegativeInteger(campaign.impressions, "impressions"),
+    clicks: mapRequiredNonNegativeInteger(campaign.clicks, "clicks"),
+    conversions: mapRequiredNonNegativeInteger(campaign.conversions, "conversions"),
+    postId: mapRequiredIdAsString(campaign.postId, "postId"),
+    createdAt: mapRequiredDate(campaign.createdAt, "createdAt")
   };
 }
