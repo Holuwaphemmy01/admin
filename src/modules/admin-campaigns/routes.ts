@@ -10,12 +10,15 @@ import {
 } from "./types";
 import {
   AdminCampaignNotFoundError,
+  AdminCampaignApprovalConflictError,
   AdminCampaignsValidationError,
+  approveAdminCampaign,
   getAdminCampaignDetails,
   listAdminCampaigns
 } from "./service";
 
 interface AdminCampaignsRouterDependencies {
+  approveAdminCampaignHandler?: typeof approveAdminCampaign;
   getAdminCampaignDetailsHandler?: typeof getAdminCampaignDetails;
   listAdminCampaignsHandler?: typeof listAdminCampaigns;
   authenticateAdminMiddleware?: RequestHandler;
@@ -78,6 +81,8 @@ export function createAdminCampaignsRouter(
   dependencies: AdminCampaignsRouterDependencies = {}
 ): Router {
   const adminCampaignsRouter = Router();
+  const approveAdminCampaignHandler =
+    dependencies.approveAdminCampaignHandler ?? approveAdminCampaign;
   const getAdminCampaignDetailsHandler =
     dependencies.getAdminCampaignDetailsHandler ?? getAdminCampaignDetails;
   const listAdminCampaignsHandler =
@@ -141,6 +146,71 @@ export function createAdminCampaignsRouter(
           error instanceof AdminCampaignsValidationError
         ) {
           response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
+
+  adminCampaignsRouter.put(
+    "/:campaignId/approve",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      const rawCampaignId = request.params.campaignId;
+      const campaignId = (
+        Array.isArray(rawCampaignId) ? rawCampaignId[0] ?? "" : rawCampaignId ?? ""
+      ).trim();
+      const body = (request.body ?? {}) as {
+        note?: unknown;
+      };
+
+      if (!/^\d+$/.test(campaignId) || Number(campaignId) <= 0) {
+        response.status(400).json({
+          message: "campaignId must be a positive integer"
+        });
+
+        return;
+      }
+
+      if (body.note !== undefined && (typeof body.note !== "string" || body.note.trim() === "")) {
+        response.status(400).json({
+          message: "note must be a non-empty string when provided"
+        });
+
+        return;
+      }
+
+      try {
+        const approveResponse = await approveAdminCampaignHandler(Number(campaignId), {
+          ...(typeof body.note === "string" ? { note: body.note.trim() } : {})
+        });
+
+        response.json(approveResponse);
+      } catch (error) {
+        if (error instanceof AdminCampaignsValidationError) {
+          response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof AdminCampaignNotFoundError) {
+          response.status(404).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof AdminCampaignApprovalConflictError) {
+          response.status(409).json({
             message: error.message
           });
 

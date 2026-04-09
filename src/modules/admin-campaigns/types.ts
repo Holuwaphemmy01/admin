@@ -47,3 +47,11 @@ export interface AdminCampaignDetailsResponse {
   postId: string;
   createdAt: string;
 }
+
+export interface ApproveAdminCampaignRequestBody {
+  note?: string;
+}
+
+export interface ApproveAdminCampaignResponse {
+  message: string;
+}

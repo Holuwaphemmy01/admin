@@ -1020,6 +1020,24 @@ export const swaggerSpec = {
           }
         }
       },
+      ApproveAdminCampaignRequest: {
+        type: "object",
+        properties: {
+          note: {
+            type: "string",
+            example: "Manual review passed"
+          }
+        }
+      },
+      ApproveAdminCampaignResponse: {
+        type: "object",
+        properties: {
+          message: {
+            type: "string",
+            example: "Campaign approved and is now active"
+          }
+        }
+      },
       AdminSettlementItem: {
         type: "object",
         properties: {
@@ -3581,6 +3599,101 @@ export const swaggerSpec = {
           },
           "404": {
             description: "Campaign not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/campaigns/{campaignId}/approve": {
+      put: {
+        tags: ["Ads & Promoted Posts"],
+        summary: "Approve a campaign before it goes live",
+        description:
+          "Activates a promoted post campaign for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "path",
+            name: "campaignId",
+            required: true,
+            schema: {
+              type: "integer"
+            },
+            description: "Promoted campaign identifier"
+          }
+        ],
+        requestBody: {
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/ApproveAdminCampaignRequest"
+              }
+            }
+          }
+        },
+        responses: {
+          "200": {
+            description: "Campaign approved successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ApproveAdminCampaignResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid campaign approval payload",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/UnauthorizedErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to approve campaigns",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "Campaign not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            description: "Campaign cannot be approved in its current state",
             content: {
               "application/json": {
                 schema: {

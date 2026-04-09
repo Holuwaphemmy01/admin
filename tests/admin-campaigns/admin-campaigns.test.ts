@@ -8,8 +8,10 @@ import { createAuthenticateAdminMiddleware } from "../../src/modules/admin-auth/
 import { AuthenticatedAdmin } from "../../src/modules/admin-auth/types";
 import { createAdminCampaignsRouter } from "../../src/modules/admin-campaigns/routes";
 import {
+  AdminCampaignApprovalConflictError,
   AdminCampaignNotFoundError,
   AdminCampaignsValidationError,
+  approveAdminCampaign,
   getAdminCampaignDetails,
   listAdminCampaigns
 } from "../../src/modules/admin-campaigns/service";
@@ -224,6 +226,136 @@ test("listAdminCampaigns applies filters and rejects invalid filter values", asy
   ).rejects.toThrow("username must be a non-empty string when provided");
 });
 
+test("approveAdminCampaign activates a draft campaign and preserves an existing start date", async () => {
+  const fixedNow = new Date("2026-04-09T19:30:00.000Z");
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await approveAdminCampaign(
+    13,
+    {
+      note: " Manual review passed "
+    },
+    {
+      nowFactory: () => fixedNow,
+      queryFn: async <T extends QueryResultRow = QueryResultRow>(
+        text: string,
+        params?: unknown[]
+      ): Promise<QueryResult<T>> => {
+        executedQueries.push({ text, params });
+
+        if (executedQueries.length === 1) {
+          return createQueryResult([
+            {
+              id: 13,
+              status: "draft"
+            }
+          ]) as unknown as QueryResult<T>;
+        }
+
+        if (executedQueries.length === 2) {
+          return createQueryResult([
+            {
+              id: 13
+            }
+          ]) as unknown as QueryResult<T>;
+        }
+
+        throw new Error(`Unexpected query: ${text}`);
+      }
+    }
+  );
+
+  expect(response).toEqual({
+    message: "Campaign approved and is now active"
+  });
+  expect(executedQueries).toHaveLength(2);
+  expect(executedQueries[0]?.text).toContain("FROM public.promote_post_campaign ppc");
+  expect(executedQueries[0]?.params).toEqual([13]);
+  expect(executedQueries[1]?.text).toContain("UPDATE public.promote_post_campaign");
+  expect(executedQueries[1]?.text).toContain('"startDate" = COALESCE("startDate", $2)');
+  expect(executedQueries[1]?.params).toEqual(["active", fixedNow, fixedNow, 13]);
+});
+
+test("approveAdminCampaign validates inputs and maps missing or invalid campaign states", async () => {
+  await expect(approveAdminCampaign(0, {})).rejects.toThrow(AdminCampaignsValidationError);
+
+  await expect(
+    approveAdminCampaign(13, {
+      note: "   "
+    })
+  ).rejects.toThrow("note must be a non-empty string when provided");
+
+  await expect(
+    approveAdminCampaign(404, {}, {
+      queryFn: async <T extends QueryResultRow = QueryResultRow>() =>
+        createQueryResult([]) as unknown as QueryResult<T>
+    })
+  ).rejects.toThrow(AdminCampaignNotFoundError);
+
+  await expect(
+    approveAdminCampaign(13, {}, {
+      queryFn: async <T extends QueryResultRow = QueryResultRow>() =>
+        createQueryResult([
+          {
+            id: 13,
+            status: "active"
+          }
+        ]) as unknown as QueryResult<T>
+    })
+  ).rejects.toThrow("Campaign is already active");
+
+  await expect(
+    approveAdminCampaign(13, {}, {
+      queryFn: async <T extends QueryResultRow = QueryResultRow>() =>
+        createQueryResult([
+          {
+            id: 13,
+            status: "pending_payment"
+          }
+        ]) as unknown as QueryResult<T>
+    })
+  ).rejects.toThrow("Campaign is awaiting payment and cannot be approved");
+
+  await expect(
+    approveAdminCampaign(13, {}, {
+      queryFn: async <T extends QueryResultRow = QueryResultRow>() =>
+        createQueryResult([
+          {
+            id: 13,
+            status: "completed"
+          }
+        ]) as unknown as QueryResult<T>
+    })
+  ).rejects.toThrow("Campaign cannot be approved from its current status");
+
+  await expect(
+    approveAdminCampaign(
+      13,
+      {},
+      {
+        queryFn: async <T extends QueryResultRow = QueryResultRow>(
+          text: string
+        ): Promise<QueryResult<T>> => {
+          if (text.includes("FROM public.promote_post_campaign ppc")) {
+            return createQueryResult([
+              {
+                id: 13,
+                status: "draft"
+              }
+            ]) as unknown as QueryResult<T>;
+          }
+
+          if (text.includes("UPDATE public.promote_post_campaign")) {
+            return createQueryResult([]) as unknown as QueryResult<T>;
+          }
+
+          throw new Error(`Unexpected query: ${text}`);
+        }
+      }
+    )
+  ).rejects.toThrow("Campaign approval update did not return a row");
+});
+
 test("getAdminCampaignDetails maps campaign metrics with stored-stat fallbacks", async () => {
   const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
 
@@ -396,6 +528,194 @@ test("GET /admin/campaigns validates query filters", async () => {
     expect(response.status).toBe(400);
     expect((await response.json()) as Record<string, unknown>).toEqual({
       message: "limit must be a positive integer"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/campaigns/:campaignId/approve returns 401 when the admin token is missing", async () => {
+  const application = express();
+  application.use(express.json());
+
+  application.use(
+    "/admin/campaigns",
+    createAdminCampaignsRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/campaigns/13/approve`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        note: "Manual review passed"
+      })
+    });
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/campaigns/:campaignId/approve returns 403 for non-super-admins", async () => {
+  const application = express();
+  application.use(express.json());
+
+  application.use(
+    "/admin/campaigns",
+    createAdminCampaignsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "support"
+        })
+      ),
+      approveAdminCampaignHandler: async () => {
+        throw new Error("This handler should not be called when access is forbidden");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/campaigns/13/approve`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        note: "Manual review passed"
+      })
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/campaigns/:campaignId/approve validates the campaign identifier and optional note", async () => {
+  const application = express();
+  application.use(express.json());
+
+  application.use(
+    "/admin/campaigns",
+    createAdminCampaignsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      approveAdminCampaignHandler: async () => {
+        throw new Error("This handler should not be called when validation fails");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    let response = await fetch(`${server.baseUrl}/admin/campaigns/abc/approve`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({})
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "campaignId must be a positive integer"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/campaigns/13/approve`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        note: "   "
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "note must be a non-empty string when provided"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/campaigns/:campaignId/approve maps 404 and 409 errors", async () => {
+  let server;
+  const notFoundApplication = express();
+  notFoundApplication.use(express.json());
+  notFoundApplication.use(
+    "/admin/campaigns",
+    createAdminCampaignsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      approveAdminCampaignHandler: async () => {
+        throw new AdminCampaignNotFoundError("Campaign not found");
+      }
+    })
+  );
+
+  server = await startTestServer(notFoundApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/campaigns/13/approve`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({})
+    });
+
+    expect(response.status).toBe(404);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Campaign not found"
+    });
+  } finally {
+    await server.close();
+  }
+
+  const conflictApplication = express();
+  conflictApplication.use(express.json());
+  conflictApplication.use(
+    "/admin/campaigns",
+    createAdminCampaignsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      approveAdminCampaignHandler: async () => {
+        throw new AdminCampaignApprovalConflictError("Campaign is already active");
+      }
+    })
+  );
+
+  server = await startTestServer(conflictApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/campaigns/13/approve`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({})
+    });
+
+    expect(response.status).toBe(409);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Campaign is already active"
     });
   } finally {
     await server.close();
@@ -635,6 +955,53 @@ test("GET /admin/campaigns/:campaignId returns the campaign details payload", as
       conversions: 2,
       postId: "91",
       createdAt: "2026-03-08T23:11:59.000Z"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/campaigns/:campaignId/approve returns the success payload and passes trimmed values", async () => {
+  const application = express();
+  application.use(express.json());
+
+  application.use(
+    "/admin/campaigns",
+    createAdminCampaignsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      approveAdminCampaignHandler: async (
+        campaignId,
+        payload
+      ) => {
+        expect(campaignId).toBe(13);
+        expect(payload).toEqual({
+          note: "Manual review passed"
+        });
+
+        return {
+          message: "Campaign approved and is now active"
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/campaigns/%2013%20/approve`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        note: " Manual review passed "
+      })
+    });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Campaign approved and is now active"
     });
   } finally {
     await server.close();

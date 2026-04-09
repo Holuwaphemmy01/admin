@@ -5,7 +5,9 @@ import {
   AdminCampaignStatusFilter,
   AdminCampaignDetailsResponse,
   AdminCampaignsListFilters,
-  AdminCampaignsListResponse
+  AdminCampaignsListResponse,
+  ApproveAdminCampaignRequestBody,
+  ApproveAdminCampaignResponse
 } from "./types";
 
 type QueryFunction = <T extends QueryResultRow = QueryResultRow>(
@@ -15,6 +17,7 @@ type QueryFunction = <T extends QueryResultRow = QueryResultRow>(
 
 interface AdminCampaignsServiceDependencies {
   queryFn?: QueryFunction;
+  nowFactory?: () => Date;
 }
 
 interface AdminCampaignRow extends QueryResultRow {
@@ -44,6 +47,15 @@ interface AdminCampaignDetailsRow extends QueryResultRow {
   createdAt: Date;
 }
 
+interface CampaignForApprovalRow extends QueryResultRow {
+  id: string | number;
+  status: string | null;
+}
+
+interface ApprovedCampaignRow extends QueryResultRow {
+  id: string | number;
+}
+
 export class AdminCampaignsValidationError extends Error {
   constructor(message: string) {
     super(message);
@@ -58,8 +70,19 @@ export class AdminCampaignNotFoundError extends Error {
   }
 }
 
+export class AdminCampaignApprovalConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AdminCampaignApprovalConflictError";
+  }
+}
+
 function getQueryFn(dependencies: AdminCampaignsServiceDependencies = {}): QueryFunction {
   return dependencies.queryFn ?? query;
+}
+
+function getNowFactory(dependencies: AdminCampaignsServiceDependencies = {}): () => Date {
+  return dependencies.nowFactory ?? (() => new Date());
 }
 
 function normalizePositiveInteger(value: number, fieldName: string): number {
@@ -105,6 +128,22 @@ function normalizeOptionalStatus(
   }
 
   return value;
+}
+
+function normalizeOptionalTextField(value: string | undefined, fieldName: string): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const normalizedValue = value.trim();
+
+  if (normalizedValue === "") {
+    throw new AdminCampaignsValidationError(
+      `${fieldName} must be a non-empty string when provided`
+    );
+  }
+
+  return normalizedValue;
 }
 
 function mapRequiredIdAsString(value: string | number | null, fieldName: string): string {
@@ -381,5 +420,78 @@ export async function getAdminCampaignDetails(
     conversions: mapRequiredNonNegativeInteger(campaign.conversions, "conversions"),
     postId: mapRequiredIdAsString(campaign.postId, "postId"),
     createdAt: mapRequiredDate(campaign.createdAt, "createdAt")
+  };
+}
+
+export async function approveAdminCampaign(
+  campaignId: number,
+  payload: ApproveAdminCampaignRequestBody,
+  dependencies: AdminCampaignsServiceDependencies = {}
+): Promise<ApproveAdminCampaignResponse> {
+  const queryFn = getQueryFn(dependencies);
+  const now = getNowFactory(dependencies)();
+  const normalizedCampaignId = normalizePositiveInteger(campaignId, "campaignId");
+
+  normalizeOptionalTextField(payload.note, "note");
+
+  const campaignResult = await queryFn<CampaignForApprovalRow>(
+    [
+      "SELECT",
+      "  ppc.id,",
+      '  ppc.status::text AS status',
+      "FROM public.promote_post_campaign ppc",
+      "WHERE ppc.id = $1",
+      "LIMIT 1"
+    ].join("\n"),
+    [normalizedCampaignId]
+  );
+  const campaign = campaignResult.rows[0];
+
+  if (!campaign) {
+    throw new AdminCampaignNotFoundError("Campaign not found");
+  }
+
+  const normalizedStatus =
+    typeof campaign.status === "string" ? campaign.status.trim().toLowerCase() : "";
+
+  if (normalizedStatus === "active") {
+    throw new AdminCampaignApprovalConflictError("Campaign is already active");
+  }
+
+  if (normalizedStatus === "pending_payment") {
+    throw new AdminCampaignApprovalConflictError(
+      "Campaign is awaiting payment and cannot be approved"
+    );
+  }
+
+  if (
+    normalizedStatus === "paused" ||
+    normalizedStatus === "cancelled" ||
+    normalizedStatus === "completed"
+  ) {
+    throw new AdminCampaignApprovalConflictError(
+      "Campaign cannot be approved from its current status"
+    );
+  }
+
+  const approvedCampaignResult = await queryFn<ApprovedCampaignRow>(
+    [
+      "UPDATE public.promote_post_campaign",
+      "SET",
+      "  status = $1,",
+      '  "startDate" = COALESCE("startDate", $2),',
+      '  "updatedAt" = $3',
+      "WHERE id = $4",
+      "RETURNING id"
+    ].join("\n"),
+    ["active", now, now, normalizedCampaignId]
+  );
+
+  if (!approvedCampaignResult.rows[0]) {
+    throw new Error("Campaign approval update did not return a row");
+  }
+
+  return {
+    message: "Campaign approved and is now active"
   };
 }
