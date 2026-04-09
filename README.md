@@ -66,6 +66,7 @@ This is a TypeScript Node.js and Express starter for the BrickPine admin API wit
 - `GET /admin/delivery/surge`: Returns the current delivery surge overview for a super admin.
 - `PUT /admin/delivery/surge`: Updates the current delivery surge settings for a super admin.
 - `GET /admin/subscriptions`: Lists seller and logistics subscription plans for a super admin.
+- `POST /admin/subscriptions/plans`: Creates a new active annual seller or logistics subscription plan for a super admin.
 - `POST /admin/delivery/pricing`: Creates a delivery pricing record for a state and vehicle type for a super admin.
 - `PUT /admin/delivery/pricing/:id`: Updates one or more fields on an existing delivery pricing record for a super admin.
 - `DELETE /admin/delivery/pricing/:id`: Removes an existing delivery pricing record for a super admin.
@@ -104,7 +105,7 @@ This is a TypeScript Node.js and Express starter for the BrickPine admin API wit
 
 ## Database migration
 
-Run the SQL migrations in `migrations/001_create_admin_invites.sql`, `migrations/002_create_admin_auth_tables.sql`, `migrations/003_create_admin_access_audit_logs.sql`, `migrations/004_create_user_access_audit_logs.sql`, `migrations/005_update_user_access_audit_logs_for_reactivation.sql`, `migrations/006_create_user_deletion_audit_logs.sql`, `migrations/007_create_kyc_rejection_audit_logs.sql`, `migrations/008_add_product_category_normalized_name_unique_index.sql`, `migrations/009_add_product_policy_moderation_support.sql`, `migrations/010_create_admin_order_action_audit_logs.sql`, `migrations/011_create_admin_wallet_action_audit_logs.sql`, `migrations/012_update_admin_wallet_action_audit_logs_for_manual_debit.sql`, `migrations/013_create_admin_settlement_action_audit_logs.sql`, `migrations/014_create_admin_settlement_rejection_audit_logs.sql`, and `migrations/015_create_delivery_current_surge_config.sql` against your PostgreSQL database before using the admin and user-management endpoints.
+Run the SQL migrations in `migrations/001_create_admin_invites.sql`, `migrations/002_create_admin_auth_tables.sql`, `migrations/003_create_admin_access_audit_logs.sql`, `migrations/004_create_user_access_audit_logs.sql`, `migrations/005_update_user_access_audit_logs_for_reactivation.sql`, `migrations/006_create_user_deletion_audit_logs.sql`, `migrations/007_create_kyc_rejection_audit_logs.sql`, `migrations/008_add_product_category_normalized_name_unique_index.sql`, `migrations/009_add_product_policy_moderation_support.sql`, `migrations/010_create_admin_order_action_audit_logs.sql`, `migrations/011_create_admin_wallet_action_audit_logs.sql`, `migrations/012_update_admin_wallet_action_audit_logs_for_manual_debit.sql`, `migrations/013_create_admin_settlement_action_audit_logs.sql`, `migrations/014_create_admin_settlement_rejection_audit_logs.sql`, `migrations/015_create_delivery_current_surge_config.sql`, and `migrations/016_add_subscription_normalized_name_type_duration_unique_index.sql` against your PostgreSQL database before using the admin and user-management endpoints.
 
 ## Testing
 

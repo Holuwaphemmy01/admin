@@ -709,6 +709,105 @@ export const swaggerSpec = {
           }
         }
       },
+      CreateAdminSubscriptionPlanRequest: {
+        type: "object",
+        required: ["name", "type", "price"],
+        properties: {
+          name: {
+            type: "string",
+            example: "Premium"
+          },
+          type: {
+            type: "string",
+            enum: ["seller", "logistics"],
+            example: "seller"
+          },
+          price: {
+            type: "number",
+            example: 120000
+          },
+          productLimit: {
+            type: "integer",
+            nullable: true,
+            example: 500
+          },
+          monthlyOrderLimit: {
+            type: "integer",
+            nullable: true,
+            example: 5000
+          },
+          features: {
+            type: "array",
+            items: {
+              type: "string"
+            },
+            example: ["Priority support", "Unlimited analytics"]
+          }
+        }
+      },
+      CreatedAdminSubscriptionPlan: {
+        type: "object",
+        properties: {
+          id: {
+            type: "integer",
+            example: 11
+          },
+          name: {
+            type: "string",
+            example: "Premium"
+          },
+          type: {
+            type: "string",
+            enum: ["seller", "logistics"],
+            example: "seller"
+          },
+          price: {
+            type: "number",
+            example: 120000
+          },
+          currency: {
+            type: "string",
+            example: "NGN"
+          },
+          duration: {
+            type: "integer",
+            example: 12
+          },
+          productLimit: {
+            type: "integer",
+            nullable: true,
+            example: 500
+          },
+          monthlyOrderLimit: {
+            type: "integer",
+            nullable: true,
+            example: 5000
+          },
+          features: {
+            type: "array",
+            items: {
+              type: "string"
+            },
+            example: ["Priority support", "Unlimited analytics"]
+          },
+          status: {
+            type: "integer",
+            example: 1
+          }
+        }
+      },
+      CreateAdminSubscriptionPlanResponse: {
+        type: "object",
+        properties: {
+          message: {
+            type: "string",
+            example: "Subscription plan created successfully"
+          },
+          plan: {
+            $ref: "#/components/schemas/CreatedAdminSubscriptionPlan"
+          }
+        }
+      },
       AdminSettlementItem: {
         type: "object",
         properties: {
@@ -2654,6 +2753,81 @@ export const swaggerSpec = {
               "application/json": {
                 schema: {
                   $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/subscriptions/plans": {
+      post: {
+        tags: ["Subscriptions"],
+        summary: "Create a new subscription plan",
+        description:
+          "Creates a new active annual subscription plan for seller or logistics plans for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/CreateAdminSubscriptionPlanRequest"
+              }
+            }
+          }
+        },
+        responses: {
+          "201": {
+            description: "Subscription plan created successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/CreateAdminSubscriptionPlanResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid subscription-plan creation payload",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to create subscription plans",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            description: "An active annual subscription plan with this name and type already exists",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ConflictErrorResponse"
                 }
               }
             }

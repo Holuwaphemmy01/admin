@@ -16,3 +16,32 @@ export interface AdminSubscriptionsResponse {
   seller: AdminSubscriptionPlan[];
   logistics: AdminSubscriptionPlan[];
 }
+
+export type AdminSubscriptionPlanType = "seller" | "logistics";
+
+export interface CreateAdminSubscriptionPlanRequestBody {
+  name: string;
+  type: AdminSubscriptionPlanType;
+  price: number;
+  productLimit?: number;
+  monthlyOrderLimit?: number;
+  features?: string[];
+}
+
+export interface CreatedAdminSubscriptionPlan {
+  id: number;
+  name: string;
+  type: AdminSubscriptionPlanType;
+  price: number;
+  currency: string;
+  duration: number;
+  productLimit: number | null;
+  monthlyOrderLimit: number | null;
+  features: string[];
+  status: number;
+}
+
+export interface CreateAdminSubscriptionPlanResponse {
+  message: string;
+  plan: CreatedAdminSubscriptionPlan;
+}
