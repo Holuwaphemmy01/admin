@@ -56,6 +56,14 @@ export interface ApproveAdminCampaignResponse {
   message: string;
 }
 
+export interface PauseAdminCampaignRequestBody {
+  reason?: string;
+}
+
+export interface PauseAdminCampaignResponse {
+  message: string;
+}
+
 export interface RejectAdminCampaignRequestBody {
   reason: string;
   actedByAdminUserId: string;

@@ -70,6 +70,7 @@ This is a TypeScript Node.js and Express starter for the BrickPine admin API wit
 - `GET /admin/campaigns/:campaignId`: Returns one promoted post campaign with current metrics for a super admin.
 - `PUT /admin/campaigns/:campaignId/approve`: Approves and activates a promoted post campaign for a super admin.
 - `PUT /admin/campaigns/:campaignId/reject`: Rejects a promoted post campaign with a required reason for a super admin.
+- `PUT /admin/campaigns/:campaignId/pause`: Force-pauses an active promoted post campaign for a super admin.
 - `POST /admin/subscriptions/plans`: Creates a new active annual seller or logistics subscription plan for a super admin.
 - `PUT /admin/subscriptions/plans/:id`: Updates one or more editable fields on an existing subscription plan for a super admin.
 - `DELETE /admin/subscriptions/plans/:id`: Removes an existing subscription plan for a super admin.

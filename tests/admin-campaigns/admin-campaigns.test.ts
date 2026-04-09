@@ -10,16 +10,19 @@ import { createAdminCampaignsRouter } from "../../src/modules/admin-campaigns/ro
 import {
   AdminCampaignApprovalConflictError,
   AdminCampaignNotFoundError,
+  AdminCampaignPauseConflictError,
   AdminCampaignRejectionConflictError,
   AdminCampaignsValidationError,
   approveAdminCampaign,
   getAdminCampaignDetails,
   listAdminCampaigns,
+  pauseAdminCampaign,
   rejectAdminCampaign
 } from "../../src/modules/admin-campaigns/service";
 import {
   AdminCampaignDetailsResponse,
   AdminCampaignsListResponse,
+  PauseAdminCampaignResponse,
   RejectAdminCampaignResponse
 } from "../../src/modules/admin-campaigns/types";
 
@@ -548,6 +551,123 @@ test("rejectAdminCampaign validates inputs and maps missing or invalid campaign 
       }
     )
   ).rejects.toThrow("Campaign rejection update did not return a row");
+});
+
+test("pauseAdminCampaign pauses an active campaign", async () => {
+  const fixedNow = new Date("2026-04-09T20:30:00.000Z");
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await pauseAdminCampaign(
+    13,
+    {
+      reason: " Policy review in progress "
+    },
+    {
+      nowFactory: () => fixedNow,
+      queryFn: async <T extends QueryResultRow = QueryResultRow>(
+        text: string,
+        params?: unknown[]
+      ): Promise<QueryResult<T>> => {
+        executedQueries.push({ text, params });
+
+        if (executedQueries.length === 1) {
+          return createQueryResult([
+            {
+              id: 13,
+              status: "active"
+            }
+          ]) as unknown as QueryResult<T>;
+        }
+
+        if (executedQueries.length === 2) {
+          return createQueryResult([
+            {
+              id: 13
+            }
+          ]) as unknown as QueryResult<T>;
+        }
+
+        throw new Error(`Unexpected query: ${text}`);
+      }
+    }
+  );
+
+  expect(response).toEqual({
+    message: "Campaign paused"
+  });
+  expect(executedQueries).toHaveLength(2);
+  expect(executedQueries[0]?.text).toContain("FROM public.promote_post_campaign ppc");
+  expect(executedQueries[0]?.params).toEqual([13]);
+  expect(executedQueries[1]?.text).toContain("UPDATE public.promote_post_campaign");
+  expect(executedQueries[1]?.params).toEqual(["paused", fixedNow, 13]);
+});
+
+test("pauseAdminCampaign validates inputs and maps missing or invalid campaign states", async () => {
+  await expect(pauseAdminCampaign(0, {})).rejects.toThrow(AdminCampaignsValidationError);
+
+  await expect(
+    pauseAdminCampaign(13, {
+      reason: "   "
+    })
+  ).rejects.toThrow("reason must be a non-empty string when provided");
+
+  await expect(
+    pauseAdminCampaign(404, {}, {
+      queryFn: async <T extends QueryResultRow = QueryResultRow>() =>
+        createQueryResult([]) as unknown as QueryResult<T>
+    })
+  ).rejects.toThrow(AdminCampaignNotFoundError);
+
+  await expect(
+    pauseAdminCampaign(13, {}, {
+      queryFn: async <T extends QueryResultRow = QueryResultRow>() =>
+        createQueryResult([
+          {
+            id: 13,
+            status: "paused"
+          }
+        ]) as unknown as QueryResult<T>
+    })
+  ).rejects.toThrow("Campaign is already paused");
+
+  await expect(
+    pauseAdminCampaign(13, {}, {
+      queryFn: async <T extends QueryResultRow = QueryResultRow>() =>
+        createQueryResult([
+          {
+            id: 13,
+            status: "draft"
+          }
+        ]) as unknown as QueryResult<T>
+    })
+  ).rejects.toThrow("Campaign cannot be paused from its current status");
+
+  await expect(
+    pauseAdminCampaign(
+      13,
+      {},
+      {
+        queryFn: async <T extends QueryResultRow = QueryResultRow>(
+          text: string
+        ): Promise<QueryResult<T>> => {
+          if (text.includes("FROM public.promote_post_campaign ppc")) {
+            return createQueryResult([
+              {
+                id: 13,
+                status: "active"
+              }
+            ]) as unknown as QueryResult<T>;
+          }
+
+          if (text.includes("UPDATE public.promote_post_campaign")) {
+            return createQueryResult([]) as unknown as QueryResult<T>;
+          }
+
+          throw new Error(`Unexpected query: ${text}`);
+        }
+      }
+    )
+  ).rejects.toThrow("Campaign pause update did not return a row");
 });
 
 test("getAdminCampaignDetails maps campaign metrics with stored-stat fallbacks", async () => {
@@ -1108,6 +1228,194 @@ test("PUT /admin/campaigns/:campaignId/reject maps 404 and 409 errors", async ()
   }
 });
 
+test("PUT /admin/campaigns/:campaignId/pause returns 401 when the admin token is missing", async () => {
+  const application = express();
+  application.use(express.json());
+
+  application.use(
+    "/admin/campaigns",
+    createAdminCampaignsRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/campaigns/13/pause`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        reason: "Policy review in progress"
+      })
+    });
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/campaigns/:campaignId/pause returns 403 for non-super-admins", async () => {
+  const application = express();
+  application.use(express.json());
+
+  application.use(
+    "/admin/campaigns",
+    createAdminCampaignsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "support"
+        })
+      ),
+      pauseAdminCampaignHandler: async () => {
+        throw new Error("This handler should not be called when access is forbidden");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/campaigns/13/pause`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        reason: "Policy review in progress"
+      })
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/campaigns/:campaignId/pause validates the campaign identifier and optional reason", async () => {
+  const application = express();
+  application.use(express.json());
+
+  application.use(
+    "/admin/campaigns",
+    createAdminCampaignsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      pauseAdminCampaignHandler: async () => {
+        throw new Error("This handler should not be called when validation fails");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    let response = await fetch(`${server.baseUrl}/admin/campaigns/abc/pause`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({})
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "campaignId must be a positive integer"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/campaigns/13/pause`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        reason: "   "
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "reason must be a non-empty string when provided"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/campaigns/:campaignId/pause maps 404 and 409 errors", async () => {
+  let server;
+  const notFoundApplication = express();
+  notFoundApplication.use(express.json());
+  notFoundApplication.use(
+    "/admin/campaigns",
+    createAdminCampaignsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      pauseAdminCampaignHandler: async () => {
+        throw new AdminCampaignNotFoundError("Campaign not found");
+      }
+    })
+  );
+
+  server = await startTestServer(notFoundApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/campaigns/13/pause`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({})
+    });
+
+    expect(response.status).toBe(404);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Campaign not found"
+    });
+  } finally {
+    await server.close();
+  }
+
+  const conflictApplication = express();
+  conflictApplication.use(express.json());
+  conflictApplication.use(
+    "/admin/campaigns",
+    createAdminCampaignsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      pauseAdminCampaignHandler: async () => {
+        throw new AdminCampaignPauseConflictError("Campaign is already paused");
+      }
+    })
+  );
+
+  server = await startTestServer(conflictApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/campaigns/13/pause`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({})
+    });
+
+    expect(response.status).toBe(409);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Campaign is already paused"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
 test("GET /admin/campaigns/:campaignId returns 401 when the admin token is missing", async () => {
   const application = express();
 
@@ -1436,6 +1744,53 @@ test("PUT /admin/campaigns/:campaignId/reject returns the success payload and pa
     expect(response.status).toBe(200);
     expect((await response.json()) as Record<string, unknown>).toEqual({
       message: "Campaign rejected"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/campaigns/:campaignId/pause returns the success payload and passes trimmed values", async () => {
+  const application = express();
+  application.use(express.json());
+
+  application.use(
+    "/admin/campaigns",
+    createAdminCampaignsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      pauseAdminCampaignHandler: async (
+        campaignId,
+        payload
+      ): Promise<PauseAdminCampaignResponse> => {
+        expect(campaignId).toBe(13);
+        expect(payload).toEqual({
+          reason: "Policy review in progress"
+        });
+
+        return {
+          message: "Campaign paused"
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/campaigns/%2013%20/pause`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        reason: " Policy review in progress "
+      })
+    });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Campaign paused"
     });
   } finally {
     await server.close();

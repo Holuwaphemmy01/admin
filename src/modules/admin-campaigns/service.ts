@@ -11,6 +11,8 @@ import {
   AdminCampaignsListResponse,
   ApproveAdminCampaignRequestBody,
   ApproveAdminCampaignResponse,
+  PauseAdminCampaignRequestBody,
+  PauseAdminCampaignResponse,
   RejectAdminCampaignRequestBody,
   RejectAdminCampaignResponse
 } from "./types";
@@ -72,6 +74,15 @@ interface ApprovedCampaignRow extends QueryResultRow {
   id: string | number;
 }
 
+interface CampaignForPauseRow extends QueryResultRow {
+  id: string | number;
+  status: string | null;
+}
+
+interface PausedCampaignRow extends QueryResultRow {
+  id: string | number;
+}
+
 interface CampaignForRejectionRow extends QueryResultRow {
   id: string | number;
   userId: string | number | null;
@@ -107,6 +118,13 @@ export class AdminCampaignRejectionConflictError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "AdminCampaignRejectionConflictError";
+  }
+}
+
+export class AdminCampaignPauseConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AdminCampaignPauseConflictError";
   }
 }
 
@@ -667,4 +685,69 @@ export async function rejectAdminCampaign(
       message: "Campaign rejected"
     };
   });
+}
+
+export async function pauseAdminCampaign(
+  campaignId: number,
+  payload: PauseAdminCampaignRequestBody,
+  dependencies: AdminCampaignsServiceDependencies = {}
+): Promise<PauseAdminCampaignResponse> {
+  const queryFn = getQueryFn(dependencies);
+  const now = getNowFactory(dependencies)();
+  const normalizedCampaignId = normalizePositiveInteger(campaignId, "campaignId");
+
+  normalizeOptionalTextField(payload.reason, "reason");
+
+  const campaignResult = await queryFn<CampaignForPauseRow>(
+    [
+      "SELECT",
+      "  ppc.id,",
+      '  ppc.status::text AS status',
+      "FROM public.promote_post_campaign ppc",
+      "WHERE ppc.id = $1",
+      "LIMIT 1"
+    ].join("\n"),
+    [normalizedCampaignId]
+  );
+  const campaign = campaignResult.rows[0];
+
+  if (!campaign) {
+    throw new AdminCampaignNotFoundError("Campaign not found");
+  }
+
+  const normalizedStatus =
+    typeof campaign.status === "string" ? campaign.status.trim().toLowerCase() : "";
+
+  if (normalizedStatus === "paused" || normalizedStatus === "cancelled") {
+    throw new AdminCampaignPauseConflictError("Campaign is already paused");
+  }
+
+  if (
+    normalizedStatus === "draft" ||
+    normalizedStatus === "pending_payment" ||
+    normalizedStatus === "completed" ||
+    normalizedStatus === "rejected"
+  ) {
+    throw new AdminCampaignPauseConflictError("Campaign cannot be paused from its current status");
+  }
+
+  const pausedCampaignResult = await queryFn<PausedCampaignRow>(
+    [
+      "UPDATE public.promote_post_campaign",
+      "SET",
+      "  status = $1,",
+      '  "updatedAt" = $2',
+      "WHERE id = $3",
+      "RETURNING id"
+    ].join("\n"),
+    ["paused", now, normalizedCampaignId]
+  );
+
+  if (!pausedCampaignResult.rows[0]) {
+    throw new Error("Campaign pause update did not return a row");
+  }
+
+  return {
+    message: "Campaign paused"
+  };
 }

@@ -11,11 +11,13 @@ import {
 import {
   AdminCampaignNotFoundError,
   AdminCampaignApprovalConflictError,
+  AdminCampaignPauseConflictError,
   AdminCampaignRejectionConflictError,
   AdminCampaignsValidationError,
   approveAdminCampaign,
   getAdminCampaignDetails,
   listAdminCampaigns,
+  pauseAdminCampaign,
   rejectAdminCampaign
 } from "./service";
 
@@ -23,6 +25,7 @@ interface AdminCampaignsRouterDependencies {
   approveAdminCampaignHandler?: typeof approveAdminCampaign;
   getAdminCampaignDetailsHandler?: typeof getAdminCampaignDetails;
   listAdminCampaignsHandler?: typeof listAdminCampaigns;
+  pauseAdminCampaignHandler?: typeof pauseAdminCampaign;
   rejectAdminCampaignHandler?: typeof rejectAdminCampaign;
   authenticateAdminMiddleware?: RequestHandler;
   requireSuperAdminMiddleware?: RequestHandler;
@@ -90,6 +93,8 @@ export function createAdminCampaignsRouter(
     dependencies.getAdminCampaignDetailsHandler ?? getAdminCampaignDetails;
   const listAdminCampaignsHandler =
     dependencies.listAdminCampaignsHandler ?? listAdminCampaigns;
+  const pauseAdminCampaignHandler =
+    dependencies.pauseAdminCampaignHandler ?? pauseAdminCampaign;
   const rejectAdminCampaignHandler =
     dependencies.rejectAdminCampaignHandler ?? rejectAdminCampaign;
   const authenticateAdminMiddleware =
@@ -215,6 +220,74 @@ export function createAdminCampaignsRouter(
         }
 
         if (error instanceof AdminCampaignApprovalConflictError) {
+          response.status(409).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
+
+  adminCampaignsRouter.put(
+    "/:campaignId/pause",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      const rawCampaignId = request.params.campaignId;
+      const campaignId = (
+        Array.isArray(rawCampaignId) ? rawCampaignId[0] ?? "" : rawCampaignId ?? ""
+      ).trim();
+      const body = (request.body ?? {}) as {
+        reason?: unknown;
+      };
+
+      if (!/^\d+$/.test(campaignId) || Number(campaignId) <= 0) {
+        response.status(400).json({
+          message: "campaignId must be a positive integer"
+        });
+
+        return;
+      }
+
+      if (
+        body.reason !== undefined &&
+        (typeof body.reason !== "string" || body.reason.trim() === "")
+      ) {
+        response.status(400).json({
+          message: "reason must be a non-empty string when provided"
+        });
+
+        return;
+      }
+
+      try {
+        const pauseResponse = await pauseAdminCampaignHandler(Number(campaignId), {
+          ...(typeof body.reason === "string" ? { reason: body.reason.trim() } : {})
+        });
+
+        response.json(pauseResponse);
+      } catch (error) {
+        if (error instanceof AdminCampaignsValidationError) {
+          response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof AdminCampaignNotFoundError) {
+          response.status(404).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof AdminCampaignPauseConflictError) {
           response.status(409).json({
             message: error.message
           });

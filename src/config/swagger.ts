@@ -1038,6 +1038,24 @@ export const swaggerSpec = {
           }
         }
       },
+      PauseAdminCampaignRequest: {
+        type: "object",
+        properties: {
+          reason: {
+            type: "string",
+            example: "Policy review in progress"
+          }
+        }
+      },
+      PauseAdminCampaignResponse: {
+        type: "object",
+        properties: {
+          message: {
+            type: "string",
+            example: "Campaign paused"
+          }
+        }
+      },
       RejectAdminCampaignRequest: {
         type: "object",
         required: ["reason"],
@@ -3809,6 +3827,101 @@ export const swaggerSpec = {
           },
           "409": {
             description: "Campaign cannot be rejected in its current state",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/campaigns/{campaignId}/pause": {
+      put: {
+        tags: ["Ads & Promoted Posts"],
+        summary: "Admin-force pause a campaign",
+        description:
+          "Pauses an active promoted post campaign for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "path",
+            name: "campaignId",
+            required: true,
+            schema: {
+              type: "integer"
+            },
+            description: "Promoted campaign identifier"
+          }
+        ],
+        requestBody: {
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/PauseAdminCampaignRequest"
+              }
+            }
+          }
+        },
+        responses: {
+          "200": {
+            description: "Campaign paused successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/PauseAdminCampaignResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid campaign pause payload",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/UnauthorizedErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to pause campaigns",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "Campaign not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            description: "Campaign cannot be paused in its current state",
             content: {
               "application/json": {
                 schema: {
