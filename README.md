@@ -69,6 +69,7 @@ This is a TypeScript Node.js and Express starter for the BrickPine admin API wit
 - `POST /admin/wallet/manual_debit`: Debits a customer user's wallet, records the wallet transaction, and writes an admin wallet audit row for a super admin.
 - `GET /admin/wallet/:username`: Returns a customer user's wallet balances and currency for a super admin.
 - `GET /admin/settlements`: Lists settlement requests with optional status, username, and pagination filters for a super admin.
+- `PUT /admin/settlements/:id/approve`: Approves a pending settlement payout, debits the beneficiary wallet, creates a settlement-linked wallet transaction, and writes an admin audit row for a super admin.
 - `POST /admin/product/categories`: Creates an active product category with required description and commission VAT tiers for a super admin.
 - `PUT /admin/product/categories/:id`: Updates one or more fields on an existing product category for a super admin.
 - `DELETE /admin/product/categories/:id`: Deletes a product category for a super admin when no linked products or category commissions still reference it.
@@ -94,7 +95,7 @@ This is a TypeScript Node.js and Express starter for the BrickPine admin API wit
 
 ## Database migration
 
-Run the SQL migrations in `migrations/001_create_admin_invites.sql`, `migrations/002_create_admin_auth_tables.sql`, `migrations/003_create_admin_access_audit_logs.sql`, `migrations/004_create_user_access_audit_logs.sql`, `migrations/005_update_user_access_audit_logs_for_reactivation.sql`, `migrations/006_create_user_deletion_audit_logs.sql`, `migrations/007_create_kyc_rejection_audit_logs.sql`, `migrations/008_add_product_category_normalized_name_unique_index.sql`, `migrations/009_add_product_policy_moderation_support.sql`, `migrations/010_create_admin_order_action_audit_logs.sql`, `migrations/011_create_admin_wallet_action_audit_logs.sql`, and `migrations/012_update_admin_wallet_action_audit_logs_for_manual_debit.sql` against your PostgreSQL database before using the admin and user-management endpoints.
+Run the SQL migrations in `migrations/001_create_admin_invites.sql`, `migrations/002_create_admin_auth_tables.sql`, `migrations/003_create_admin_access_audit_logs.sql`, `migrations/004_create_user_access_audit_logs.sql`, `migrations/005_update_user_access_audit_logs_for_reactivation.sql`, `migrations/006_create_user_deletion_audit_logs.sql`, `migrations/007_create_kyc_rejection_audit_logs.sql`, `migrations/008_add_product_category_normalized_name_unique_index.sql`, `migrations/009_add_product_policy_moderation_support.sql`, `migrations/010_create_admin_order_action_audit_logs.sql`, `migrations/011_create_admin_wallet_action_audit_logs.sql`, `migrations/012_update_admin_wallet_action_audit_logs_for_manual_debit.sql`, and `migrations/013_create_admin_settlement_action_audit_logs.sql` against your PostgreSQL database before using the admin and user-management endpoints.
 
 ## Testing
 

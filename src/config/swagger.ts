@@ -519,6 +519,37 @@ export const swaggerSpec = {
           }
         }
       },
+      AdminApproveSettlementRequest: {
+        type: "object",
+        required: ["username", "amount", "description", "settlementAccountId"],
+        properties: {
+          username: {
+            type: "string",
+            example: "seller-one"
+          },
+          amount: {
+            type: "number",
+            example: 100.5
+          },
+          description: {
+            type: "string",
+            example: "payment description"
+          },
+          settlementAccountId: {
+            type: "integer",
+            example: 1
+          }
+        }
+      },
+      AdminApproveSettlementResponse: {
+        type: "object",
+        properties: {
+          message: {
+            type: "string",
+            example: "Settlement successfully saved"
+          }
+        }
+      },
       AdminTransactionItem: {
         type: "object",
         properties: {
@@ -1964,6 +1995,103 @@ export const swaggerSpec = {
               "application/json": {
                 schema: {
                   $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/settlements/{id}/approve": {
+      put: {
+        tags: ["Settlements"],
+        summary: "Approve a settlement payout",
+        description:
+          "Approves a pending settlement request, updates the payout details, debits the beneficiary wallet, creates a settlement-linked wallet transaction, and writes an admin audit log for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "path",
+            name: "id",
+            required: true,
+            schema: {
+              type: "integer",
+              minimum: 1
+            },
+            description: "Settlement request ID"
+          }
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/AdminApproveSettlementRequest"
+              }
+            }
+          }
+        },
+        responses: {
+          "200": {
+            description: "Settlement approved successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/AdminApproveSettlementResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid settlement-approval request payload",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to approve settlements",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "Settlement request not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            description: "Settlement request cannot be approved in its current state",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ConflictErrorResponse"
                 }
               }
             }

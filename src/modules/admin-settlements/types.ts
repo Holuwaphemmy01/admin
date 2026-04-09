@@ -26,3 +26,14 @@ export interface AdminSettlementsListResponse {
   settlements: AdminSettlementItem[];
   total: number;
 }
+
+export interface AdminApproveSettlementRequestBody {
+  username: string;
+  amount: number;
+  description: string;
+  settlementAccountId: number;
+}
+
+export interface AdminApproveSettlementResponse {
+  message: string;
+}

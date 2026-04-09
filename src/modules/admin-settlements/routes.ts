@@ -9,11 +9,15 @@ import {
   AdminSettlementsListFilters
 } from "./types";
 import {
+  AdminSettlementApprovalConflictError,
+  AdminSettlementApprovalNotFoundError,
   AdminSettlementsValidationError,
+  approveAdminSettlement,
   listAdminSettlements
 } from "./service";
 
 interface AdminSettlementsRouterDependencies {
+  approveAdminSettlementHandler?: typeof approveAdminSettlement;
   listAdminSettlementsHandler?: typeof listAdminSettlements;
   authenticateAdminMiddleware?: RequestHandler;
   requireSuperAdminMiddleware?: RequestHandler;
@@ -72,6 +76,8 @@ export function createAdminSettlementsRouter(
   dependencies: AdminSettlementsRouterDependencies = {}
 ): Router {
   const adminSettlementsRouter = Router();
+  const approveAdminSettlementHandler =
+    dependencies.approveAdminSettlementHandler ?? approveAdminSettlement;
   const listAdminSettlementsHandler =
     dependencies.listAdminSettlementsHandler ?? listAdminSettlements;
   const authenticateAdminMiddleware =
@@ -131,6 +137,115 @@ export function createAdminSettlementsRouter(
           error instanceof AdminSettlementsValidationError
         ) {
           response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
+
+  adminSettlementsRouter.put(
+    "/:id/approve",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      const rawId = request.params.id;
+      const idText = (Array.isArray(rawId) ? rawId[0] ?? "" : rawId ?? "").trim();
+
+      if (!/^\d+$/.test(idText)) {
+        response.status(400).json({
+          message: "id must be a positive integer"
+        });
+
+        return;
+      }
+
+      const body = request.body as {
+        username?: unknown;
+        amount?: unknown;
+        description?: unknown;
+        settlementAccountId?: unknown;
+      };
+      const rawUsername = typeof body.username === "string" ? body.username.trim() : "";
+      const rawAmount = body.amount;
+      const rawDescription =
+        typeof body.description === "string" ? body.description.trim() : "";
+      const rawSettlementAccountId = body.settlementAccountId;
+
+      if (rawUsername === "") {
+        response.status(400).json({
+          message: "username must be a non-empty string"
+        });
+
+        return;
+      }
+
+      if (
+        typeof rawAmount !== "number" ||
+        !Number.isFinite(rawAmount) ||
+        rawAmount <= 0 ||
+        Math.abs(rawAmount - Number(rawAmount.toFixed(2))) > Number.EPSILON
+      ) {
+        response.status(400).json({
+          message: "amount must be a positive finite number with at most 2 decimal places"
+        });
+
+        return;
+      }
+
+      if (rawDescription === "") {
+        response.status(400).json({
+          message: "description must be a non-empty string"
+        });
+
+        return;
+      }
+
+      if (
+        typeof rawSettlementAccountId !== "number" ||
+        !Number.isInteger(rawSettlementAccountId) ||
+        rawSettlementAccountId <= 0
+      ) {
+        response.status(400).json({
+          message: "settlementAccountId must be a positive integer"
+        });
+
+        return;
+      }
+
+      try {
+        const settlementResponse = await approveAdminSettlementHandler(Number(idText), {
+          username: rawUsername,
+          amount: rawAmount,
+          description: rawDescription,
+          settlementAccountId: rawSettlementAccountId,
+          actedByAdminUserId: request.admin?.sub ?? ""
+        });
+
+        response.json(settlementResponse);
+      } catch (error) {
+        if (error instanceof AdminSettlementsValidationError) {
+          response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof AdminSettlementApprovalNotFoundError) {
+          response.status(404).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof AdminSettlementApprovalConflictError) {
+          response.status(409).json({
             message: error.message
           });
 

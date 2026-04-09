@@ -1,7 +1,12 @@
+import { randomUUID } from "node:crypto";
+
 import { QueryResult, QueryResultRow } from "pg";
 
-import { query } from "../../config/db";
+import { query, withTransaction } from "../../config/db";
+import { normalizeCredentialValue } from "../admin-auth/utils";
 import {
+  AdminApproveSettlementRequestBody,
+  AdminApproveSettlementResponse,
   AdminSettlementStatus,
   AdminSettlementsListFilters,
   AdminSettlementsListResponse
@@ -14,7 +19,19 @@ type QueryFunction = <T extends QueryResultRow = QueryResultRow>(
 
 interface AdminSettlementsServiceDependencies {
   queryFn?: QueryFunction;
+  runInTransaction?: RunInTransaction;
+  nowFactory?: () => Date;
+  uuidFactory?: () => string;
 }
+
+interface TransactionClient {
+  query<T extends QueryResultRow = QueryResultRow>(
+    text: string,
+    params?: unknown[]
+  ): Promise<QueryResult<T>>;
+}
+
+type RunInTransaction = <T>(operation: (client: TransactionClient) => Promise<T>) => Promise<T>;
 
 interface AdminSettlementRow extends QueryResultRow {
   id: string | number;
@@ -30,6 +47,30 @@ interface TotalCountRow extends QueryResultRow {
   total: number;
 }
 
+interface SettlementForApprovalRow extends QueryResultRow {
+  id: string | number;
+  userId: string | number | null;
+  username: string | null;
+  status: string | number | null;
+}
+
+interface SettlementAccountRow extends QueryResultRow {
+  id: string | number;
+  userId: string | number | null;
+  status: string | number | null;
+}
+
+interface WalletForApprovalRow extends QueryResultRow {
+  id: string | number;
+  currency: string | null;
+  availableBalance: string | number | null;
+  ledgerBalance: string | number | null;
+}
+
+interface CreatedWalletTransactionRow extends QueryResultRow {
+  id: string | number;
+}
+
 export class AdminSettlementsValidationError extends Error {
   constructor(message: string) {
     super(message);
@@ -37,8 +78,49 @@ export class AdminSettlementsValidationError extends Error {
   }
 }
 
+export class AdminSettlementApprovalNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AdminSettlementApprovalNotFoundError";
+  }
+}
+
+export class AdminSettlementApprovalConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AdminSettlementApprovalConflictError";
+  }
+}
+
 function getQueryFn(dependencies: AdminSettlementsServiceDependencies = {}): QueryFunction {
   return dependencies.queryFn ?? query;
+}
+
+function getRunInTransaction(
+  dependencies: AdminSettlementsServiceDependencies = {}
+): RunInTransaction {
+  if (dependencies.runInTransaction) {
+    return dependencies.runInTransaction;
+  }
+
+  const queryFn = getQueryFn(dependencies);
+
+  if (queryFn !== query) {
+    return async <T>(operation: (client: TransactionClient) => Promise<T>) =>
+      operation({
+        query: queryFn
+      });
+  }
+
+  return withTransaction;
+}
+
+function getNowFactory(dependencies: AdminSettlementsServiceDependencies = {}): () => Date {
+  return dependencies.nowFactory ?? (() => new Date());
+}
+
+function getUuidFactory(dependencies: AdminSettlementsServiceDependencies = {}): () => string {
+  return dependencies.uuidFactory ?? randomUUID;
 }
 
 function normalizePositiveInteger(value: number, fieldName: string): number {
@@ -152,6 +234,42 @@ function mapSettlementStatusToDbValue(status: AdminSettlementStatus): number {
   return 1;
 }
 
+function normalizeRequiredUsername(value: string): string {
+  const normalizedValue = normalizeCredentialValue(value);
+
+  if (normalizedValue === "") {
+    throw new AdminSettlementsValidationError("username must be a non-empty string");
+  }
+
+  return normalizedValue;
+}
+
+function normalizeRequiredDescription(value: string): string {
+  const normalizedValue = normalizeCredentialValue(value);
+
+  if (normalizedValue === "") {
+    throw new AdminSettlementsValidationError("description must be a non-empty string");
+  }
+
+  return normalizedValue;
+}
+
+function normalizeAmount(value: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw new AdminSettlementsValidationError(
+      "amount must be a positive finite number"
+    );
+  }
+
+  const roundedAmount = Number(value.toFixed(2));
+
+  if (Math.abs(value - roundedAmount) > Number.EPSILON) {
+    throw new AdminSettlementsValidationError("amount must have at most 2 decimal places");
+  }
+
+  return roundedAmount;
+}
+
 function buildSettlementFilters(filters: AdminSettlementsListFilters): {
   whereSql: string;
   params: unknown[];
@@ -233,4 +351,249 @@ export async function listAdminSettlements(
     })),
     total: totalResult.rows[0]?.total ?? 0
   };
+}
+
+export async function approveAdminSettlement(
+  settlementId: number,
+  payload: AdminApproveSettlementRequestBody & { actedByAdminUserId: string },
+  dependencies: AdminSettlementsServiceDependencies = {}
+): Promise<AdminApproveSettlementResponse> {
+  const runInTransaction = getRunInTransaction(dependencies);
+  const nowFactory = getNowFactory(dependencies);
+  const uuidFactory = getUuidFactory(dependencies);
+  const normalizedSettlementId = normalizePositiveInteger(settlementId, "id");
+  const normalizedUsername = normalizeRequiredUsername(payload.username);
+  const normalizedAmount = normalizeAmount(payload.amount);
+  const normalizedDescription = normalizeRequiredDescription(payload.description);
+  const normalizedSettlementAccountId = normalizePositiveInteger(
+    payload.settlementAccountId,
+    "settlementAccountId"
+  );
+  const actedByAdminUserId = normalizeCredentialValue(payload.actedByAdminUserId);
+
+  if (actedByAdminUserId === "") {
+    throw new AdminSettlementsValidationError("actedByAdminUserId is required");
+  }
+
+  return runInTransaction(async (client) => {
+    const settlementResult = await client.query<SettlementForApprovalRow>(
+      [
+        "SELECT",
+        '  s.id, s."userId", u.username, s.status',
+        "FROM public.settlement s",
+        'INNER JOIN public."user" u ON u.id = s."userId"',
+        "WHERE s.id = $1",
+        "FOR UPDATE"
+      ].join("\n"),
+      [normalizedSettlementId]
+    );
+
+    const settlement = settlementResult.rows[0];
+
+    if (!settlement) {
+      throw new AdminSettlementApprovalNotFoundError("Settlement request not found");
+    }
+
+    const beneficiaryUserId = mapRequiredInteger(settlement.userId, "settlement.userId");
+    const settlementUsername = normalizeRequiredUsername(settlement.username ?? "");
+    const settlementStatusCode =
+      settlement.status === null || settlement.status === undefined
+        ? null
+        : typeof settlement.status === "number"
+          ? settlement.status
+          : Number(settlement.status);
+
+    if (settlementUsername.toLowerCase() !== normalizedUsername.toLowerCase()) {
+      throw new AdminSettlementApprovalConflictError(
+        "Beneficiary username does not match the settlement request"
+      );
+    }
+
+    if (settlementStatusCode !== 1) {
+      throw new AdminSettlementApprovalConflictError("Settlement request is not pending");
+    }
+
+    const settlementAccountResult = await client.query<SettlementAccountRow>(
+      [
+        "SELECT",
+        '  sa.id, sa."userId", sa.status',
+        "FROM public.settlement_account sa",
+        "WHERE sa.id = $1"
+      ].join("\n"),
+      [normalizedSettlementAccountId]
+    );
+
+    const settlementAccount = settlementAccountResult.rows[0];
+
+    if (!settlementAccount) {
+      throw new AdminSettlementApprovalConflictError(
+        "Settlement account does not belong to the beneficiary user"
+      );
+    }
+
+    const settlementAccountUserId = mapRequiredInteger(
+      settlementAccount.userId,
+      "settlementAccount.userId"
+    );
+    const settlementAccountStatus =
+      settlementAccount.status === null || settlementAccount.status === undefined
+        ? null
+        : typeof settlementAccount.status === "number"
+          ? settlementAccount.status
+          : Number(settlementAccount.status);
+
+    if (settlementAccountUserId !== beneficiaryUserId || settlementAccountStatus !== 1) {
+      throw new AdminSettlementApprovalConflictError(
+        "Settlement account does not belong to the beneficiary user"
+      );
+    }
+
+    const walletResult = await client.query<WalletForApprovalRow>(
+      [
+        "SELECT",
+        '  w.id, w.currency, w."availableBalance", w."ledgerBalance"',
+        "FROM public.wallet w",
+        'WHERE w."userId" = $1',
+        'ORDER BY w."createdAt" DESC NULLS LAST, w.id DESC',
+        "LIMIT 1",
+        "FOR UPDATE"
+      ].join("\n"),
+      [beneficiaryUserId]
+    );
+
+    const wallet = walletResult.rows[0];
+
+    if (!wallet) {
+      throw new AdminSettlementApprovalConflictError(
+        "Beneficiary wallet not found for settlement payout"
+      );
+    }
+
+    const walletId = mapRequiredInteger(wallet.id, "wallet.id");
+    const walletCurrency = mapOptionalText(wallet.currency) ?? "NGN";
+    const previousAvailableBalance = mapNumberOrZero(wallet.availableBalance);
+    const previousLedgerBalance = mapNumberOrZero(wallet.ledgerBalance);
+
+    if (
+      previousAvailableBalance < normalizedAmount ||
+      previousLedgerBalance < normalizedAmount
+    ) {
+      throw new AdminSettlementApprovalConflictError(
+        "Insufficient available balance for settlement payout"
+      );
+    }
+
+    const now = nowFactory();
+    const newAvailableBalance = Number((previousAvailableBalance - normalizedAmount).toFixed(2));
+    const newLedgerBalance = Number((previousLedgerBalance - normalizedAmount).toFixed(2));
+
+    await client.query(
+      [
+        "UPDATE public.settlement",
+        'SET amount = $1,',
+        '    description = $2,',
+        '    "settlementAccountId" = $3,',
+        "    status = $4,",
+        '    "updatedAt" = $5',
+        "WHERE id = $6"
+      ].join("\n"),
+      [
+        normalizedAmount,
+        normalizedDescription,
+        normalizedSettlementAccountId,
+        2,
+        now,
+        normalizedSettlementId
+      ]
+    );
+
+    await client.query(
+      [
+        "UPDATE public.wallet",
+        'SET "availableBalance" = $1,',
+        '    "ledgerBalance" = $2,',
+        '    "updatedAt" = $3',
+        "WHERE id = $4"
+      ].join("\n"),
+      [newAvailableBalance, newLedgerBalance, now, walletId]
+    );
+
+    const transactionReference = [
+      "SETTLEMENT",
+      normalizedSettlementId,
+      "APPROVED",
+      now.getTime(),
+      actedByAdminUserId
+    ].join(":");
+
+    const walletTransactionResult = await client.query<CreatedWalletTransactionRow>(
+      [
+        "INSERT INTO public.wallet_transaction (",
+        '  "userId", amount, currency, "transactionId", "settlementId", "refundId",',
+        '  "transactionType", "ledgerBalance", "availableBalance", description, status, "createdAt", "updatedAt"',
+        ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+        "RETURNING id"
+      ].join("\n"),
+      [
+        beneficiaryUserId,
+        normalizedAmount,
+        walletCurrency,
+        transactionReference,
+        normalizedSettlementId,
+        null,
+        2,
+        newLedgerBalance,
+        newAvailableBalance,
+        normalizedDescription,
+        1,
+        now,
+        now
+      ]
+    );
+
+    const walletTransaction = walletTransactionResult.rows[0];
+
+    if (!walletTransaction) {
+      throw new Error("Settlement wallet transaction insert did not return a row");
+    }
+
+    const walletTransactionId = mapRequiredInteger(
+      walletTransaction.id,
+      "walletTransaction.id"
+    );
+
+    await client.query(
+      [
+        "INSERT INTO public.admin_settlement_action_audit_logs (",
+        '  id, "settlementId", "targetUserId", "targetWalletId", "settlementAccountId",',
+        '  "walletTransactionId", "actedByAdminUserId", action, amount, description,',
+        '  "previousStatus", "newStatus", "previousAvailableBalance", "newAvailableBalance",',
+        '  "previousLedgerBalance", "newLedgerBalance", "createdAt"',
+        ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)"
+      ].join("\n"),
+      [
+        uuidFactory(),
+        normalizedSettlementId,
+        beneficiaryUserId,
+        walletId,
+        normalizedSettlementAccountId,
+        walletTransactionId,
+        actedByAdminUserId,
+        "approve_settlement",
+        normalizedAmount,
+        normalizedDescription,
+        1,
+        2,
+        previousAvailableBalance,
+        newAvailableBalance,
+        previousLedgerBalance,
+        newLedgerBalance,
+        now
+      ]
+    );
+
+    return {
+      message: "Settlement successfully saved"
+    };
+  });
 }
