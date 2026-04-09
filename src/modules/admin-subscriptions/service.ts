@@ -1,6 +1,6 @@
 import { QueryResult, QueryResultRow } from "pg";
 
-import { query } from "../../config/db";
+import { query, withTransaction } from "../../config/db";
 import { normalizeCredentialValue } from "../admin-auth/utils";
 import {
   AdminSubscriptionPlan,
@@ -10,6 +10,8 @@ import {
   CreateAdminSubscriptionPlanResponse,
   DeleteAdminSubscriptionPlanRequestBody,
   DeleteAdminSubscriptionPlanResponse,
+  GrantAdminSubscriptionRequestBody,
+  GrantAdminSubscriptionResponse,
   UpdateAdminSubscriptionPlanRequestBody,
   UpdateAdminSubscriptionPlanResponse
 } from "./types";
@@ -19,8 +21,18 @@ type QueryFunction = <T extends QueryResultRow = QueryResultRow>(
   params?: unknown[]
 ) => Promise<QueryResult<T>>;
 
+interface TransactionClient {
+  query<T extends QueryResultRow = QueryResultRow>(
+    text: string,
+    params?: unknown[]
+  ): Promise<QueryResult<T>>;
+}
+
+type RunInTransaction = <T>(operation: (client: TransactionClient) => Promise<T>) => Promise<T>;
+
 interface AdminSubscriptionsServiceDependencies {
   queryFn?: QueryFunction;
+  runInTransaction?: RunInTransaction;
   nowFactory?: () => Date;
 }
 
@@ -61,6 +73,22 @@ interface DeletedSubscriptionPlanRow extends QueryResultRow {
   id: string | number;
 }
 
+interface PlatformUserForGrantRow extends QueryResultRow {
+  id: string | number;
+  username: string | null;
+  userTypeId: string | number | null;
+}
+
+interface SubscriptionPlanForGrantRow extends QueryResultRow {
+  id: string | number;
+  duration: string | number | null;
+  status: string | number | null;
+}
+
+interface GrantedUserSubscriptionRow extends QueryResultRow {
+  id: string | number;
+}
+
 type MessageErrorConstructor = new (message: string) => Error;
 
 export class AdminSubscriptionValidationError extends Error {
@@ -90,6 +118,12 @@ function getQueryFn(dependencies: AdminSubscriptionsServiceDependencies = {}): Q
 
 function getNowFactory(dependencies: AdminSubscriptionsServiceDependencies = {}): () => Date {
   return dependencies.nowFactory ?? (() => new Date());
+}
+
+function getRunInTransaction(
+  dependencies: AdminSubscriptionsServiceDependencies = {}
+): RunInTransaction {
+  return dependencies.runInTransaction ?? withTransaction;
 }
 
 function isPostgresErrorWithCode(error: unknown, code: string): boolean {
@@ -136,6 +170,23 @@ function normalizeOptionalTextField(
 
   if (normalizedValue === "") {
     throw new ErrorType(`${fieldName} must be a non-empty string when provided`);
+  }
+
+  return normalizedValue;
+}
+
+function normalizeRequiredUsername(
+  value: string,
+  ErrorType: MessageErrorConstructor
+): string {
+  if (typeof value !== "string") {
+    throw new ErrorType("username must be a non-empty string");
+  }
+
+  const normalizedValue = normalizeCredentialValue(value);
+
+  if (normalizedValue === "") {
+    throw new ErrorType("username must be a non-empty string");
   }
 
   return normalizedValue;
@@ -218,6 +269,38 @@ function normalizeSubscriptionPlanId(
   }
 
   return value;
+}
+
+function normalizeOptionalExpiryDate(
+  value: string | undefined,
+  startDate: Date,
+  ErrorType: MessageErrorConstructor
+): Date | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== "string") {
+    throw new ErrorType("expiryDate must be a valid ISO 8601 date-time string when provided");
+  }
+
+  const normalizedValue = normalizeCredentialValue(value);
+
+  if (normalizedValue === "") {
+    throw new ErrorType("expiryDate must be a valid ISO 8601 date-time string when provided");
+  }
+
+  const parsedValue = new Date(normalizedValue);
+
+  if (Number.isNaN(parsedValue.getTime())) {
+    throw new ErrorType("expiryDate must be a valid ISO 8601 date-time string when provided");
+  }
+
+  if (parsedValue.getTime() <= startDate.getTime()) {
+    throw new ErrorType("expiryDate must be later than the grant start time when provided");
+  }
+
+  return parsedValue;
 }
 
 function normalizeFeatures(
@@ -710,4 +793,117 @@ export async function deleteAdminSubscriptionPlan(
   return {
     message: "Plan removed"
   };
+}
+
+export async function grantAdminSubscriptionToUser(
+  payload: GrantAdminSubscriptionRequestBody,
+  dependencies: AdminSubscriptionsServiceDependencies = {}
+): Promise<GrantAdminSubscriptionResponse> {
+  const runInTransaction = getRunInTransaction(dependencies);
+  const nowFactory = getNowFactory(dependencies);
+  const username = normalizeRequiredUsername(payload.username, AdminSubscriptionValidationError);
+  const subscriptionId = normalizeSubscriptionPlanId(
+    payload.subscriptionId,
+    AdminSubscriptionValidationError
+  );
+  const startDate = nowFactory();
+  const expiryDate = normalizeOptionalExpiryDate(
+    payload.expiryDate,
+    startDate,
+    AdminSubscriptionValidationError
+  );
+
+  return runInTransaction(async (client) => {
+    const userResult = await client.query<PlatformUserForGrantRow>(
+      [
+        "SELECT",
+        '  u.id, u.username, u."userTypeId"',
+        'FROM public."user" u',
+        'WHERE u."userTypeId" IN (1, 2, 3)',
+        "  AND u.username IS NOT NULL",
+        "  AND BTRIM(u.username) <> ''",
+        "  AND LOWER(u.username) = LOWER($1)",
+        'ORDER BY u."createdAt" DESC',
+        "LIMIT 2",
+        "FOR UPDATE"
+      ].join("\n"),
+      [username]
+    );
+
+    if ((userResult.rowCount ?? 0) === 0) {
+      throw new AdminSubscriptionNotFoundError("User account not found");
+    }
+
+    if ((userResult.rowCount ?? 0) > 1) {
+      throw new AdminSubscriptionConflictError("Multiple users match the provided username");
+    }
+
+    const targetUser = userResult.rows[0];
+
+    if (!targetUser) {
+      throw new AdminSubscriptionNotFoundError("User account not found");
+    }
+
+    const userId = mapRequiredPositiveInteger(targetUser.id, "user.id");
+    const subscriptionResult = await client.query<SubscriptionPlanForGrantRow>(
+      [
+        "SELECT",
+        "  s.id, s.duration, s.status",
+        "FROM public.subscription s",
+        "WHERE s.id = $1",
+        "  AND COALESCE(s.status, 1) = 1",
+        "LIMIT 1",
+        "FOR UPDATE"
+      ].join("\n"),
+      [subscriptionId]
+    );
+    const subscriptionPlan = subscriptionResult.rows[0];
+
+    if (!subscriptionPlan) {
+      throw new AdminSubscriptionNotFoundError("Subscription plan not found");
+    }
+
+    const planDuration = mapNullableInteger(subscriptionPlan.duration, "duration");
+    const monthsToGrant =
+      planDuration === null || planDuration <= 0 ? 1 : planDuration;
+
+    await client.query(
+      [
+        "UPDATE public.user_subscription",
+        "SET",
+        "  status = 0,",
+        '  "updatedAt" = $1',
+        'WHERE "userId" = $2',
+        "  AND COALESCE(status, 1) = 1"
+      ].join("\n"),
+      [startDate, userId]
+    );
+
+    const grantedSubscriptionResult = await client.query<GrantedUserSubscriptionRow>(
+      [
+        "INSERT INTO public.user_subscription (",
+        '  "userId", "subscriptionId", "startDate", "endDate", "initiatedAmountToPayNext", status, "createdAt", "updatedAt"',
+        ") VALUES (",
+        "  $1,",
+        "  $2,",
+        "  $3,",
+        '  COALESCE($4, $3 + make_interval(months => $5)),',
+        "  $6,",
+        "  $7,",
+        "  $3,",
+        "  $3",
+        ")",
+        "RETURNING id"
+      ].join("\n"),
+      [userId, subscriptionId, startDate, expiryDate ?? null, monthsToGrant, null, 1]
+    );
+
+    if (!grantedSubscriptionResult.rows[0]) {
+      throw new Error("Subscription grant insert did not return a row");
+    }
+
+    return {
+      message: "Subscription granted"
+    };
+  });
 }

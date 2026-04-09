@@ -858,6 +858,30 @@ export const swaggerSpec = {
           }
         }
       },
+      GrantAdminSubscriptionRequest: {
+        type: "object",
+        required: ["subscriptionId"],
+        properties: {
+          subscriptionId: {
+            type: "integer",
+            example: 4
+          },
+          expiryDate: {
+            type: "string",
+            format: "date-time",
+            example: "2027-04-09T00:00:00.000Z"
+          }
+        }
+      },
+      GrantAdminSubscriptionResponse: {
+        type: "object",
+        properties: {
+          message: {
+            type: "string",
+            example: "Subscription granted"
+          }
+        }
+      },
       AdminSettlementItem: {
         type: "object",
         properties: {
@@ -3046,6 +3070,102 @@ export const swaggerSpec = {
           },
           "404": {
             description: "Subscription plan not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/subscriptions/{username}/grant": {
+      put: {
+        tags: ["Subscriptions"],
+        summary: "Manually grant a subscription to a user",
+        description:
+          "Creates a new active subscription grant for a platform user and moves any currently active subscription history rows to inactive status for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "path",
+            name: "username",
+            required: true,
+            schema: {
+              type: "string"
+            },
+            description: "Target platform username"
+          }
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/GrantAdminSubscriptionRequest"
+              }
+            }
+          }
+        },
+        responses: {
+          "200": {
+            description: "Subscription granted successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/GrantAdminSubscriptionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid subscription grant payload",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/UnauthorizedErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to grant subscriptions",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "Target user or subscription plan not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            description: "Subscription grant conflict",
             content: {
               "application/json": {
                 schema: {

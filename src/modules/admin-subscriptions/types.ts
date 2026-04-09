@@ -41,6 +41,12 @@ export interface DeleteAdminSubscriptionPlanRequestBody {
   id: number;
 }
 
+export interface GrantAdminSubscriptionRequestBody {
+  username: string;
+  subscriptionId: number;
+  expiryDate?: string;
+}
+
 export interface CreatedAdminSubscriptionPlan {
   id: number;
   name: string;
@@ -65,5 +71,9 @@ export interface UpdateAdminSubscriptionPlanResponse {
 }
 
 export interface DeleteAdminSubscriptionPlanResponse {
+  message: string;
+}
+
+export interface GrantAdminSubscriptionResponse {
   message: string;
 }

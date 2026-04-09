@@ -7,6 +7,7 @@ import {
   AdminSubscriptionValidationError,
   createAdminSubscriptionPlan,
   deleteAdminSubscriptionPlan,
+  grantAdminSubscriptionToUser,
   listAdminSubscriptions,
   updateAdminSubscriptionPlan
 } from "./service";
@@ -15,6 +16,7 @@ import { AdminSubscriptionPlanType } from "./types";
 interface AdminSubscriptionsRouterDependencies {
   createAdminSubscriptionPlanHandler?: typeof createAdminSubscriptionPlan;
   deleteAdminSubscriptionPlanHandler?: typeof deleteAdminSubscriptionPlan;
+  grantAdminSubscriptionToUserHandler?: typeof grantAdminSubscriptionToUser;
   listAdminSubscriptionsHandler?: typeof listAdminSubscriptions;
   updateAdminSubscriptionPlanHandler?: typeof updateAdminSubscriptionPlan;
   authenticateAdminMiddleware?: RequestHandler;
@@ -54,6 +56,8 @@ export function createAdminSubscriptionsRouter(
     dependencies.createAdminSubscriptionPlanHandler ?? createAdminSubscriptionPlan;
   const deleteAdminSubscriptionPlanHandler =
     dependencies.deleteAdminSubscriptionPlanHandler ?? deleteAdminSubscriptionPlan;
+  const grantAdminSubscriptionToUserHandler =
+    dependencies.grantAdminSubscriptionToUserHandler ?? grantAdminSubscriptionToUser;
   const listAdminSubscriptionsHandler =
     dependencies.listAdminSubscriptionsHandler ?? listAdminSubscriptions;
   const updateAdminSubscriptionPlanHandler =
@@ -374,6 +378,93 @@ export function createAdminSubscriptionsRouter(
 
         if (error instanceof AdminSubscriptionNotFoundError) {
           response.status(404).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
+
+  adminSubscriptionsRouter.put(
+    "/:username/grant",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      const rawUsername = Array.isArray(request.params.username)
+        ? request.params.username[0] ?? ""
+        : request.params.username ?? "";
+      const username = rawUsername.trim();
+      const body = request.body as {
+        subscriptionId?: unknown;
+        expiryDate?: unknown;
+      };
+
+      if (username === "") {
+        response.status(400).json({
+          message: "username must be a non-empty string"
+        });
+
+        return;
+      }
+
+      if (
+        !(
+          typeof body.subscriptionId === "number" &&
+          Number.isInteger(body.subscriptionId) &&
+          body.subscriptionId > 0
+        )
+      ) {
+        response.status(400).json({
+          message: "subscriptionId is required and must be a positive integer"
+        });
+
+        return;
+      }
+
+      if (
+        body.expiryDate !== undefined &&
+        (typeof body.expiryDate !== "string" ||
+          body.expiryDate.trim() === "" ||
+          Number.isNaN(new Date(body.expiryDate.trim()).getTime()))
+      ) {
+        response.status(400).json({
+          message: "expiryDate must be a valid ISO 8601 date-time string when provided"
+        });
+
+        return;
+      }
+
+      try {
+        const result = await grantAdminSubscriptionToUserHandler({
+          username,
+          subscriptionId: body.subscriptionId,
+          ...(body.expiryDate !== undefined ? { expiryDate: body.expiryDate.trim() } : {})
+        });
+
+        response.json(result);
+      } catch (error) {
+        if (error instanceof AdminSubscriptionValidationError) {
+          response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof AdminSubscriptionNotFoundError) {
+          response.status(404).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof AdminSubscriptionConflictError) {
+          response.status(409).json({
             message: error.message
           });
 

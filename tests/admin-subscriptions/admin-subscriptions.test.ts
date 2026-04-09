@@ -13,6 +13,7 @@ import {
   AdminSubscriptionValidationError,
   createAdminSubscriptionPlan,
   deleteAdminSubscriptionPlan,
+  grantAdminSubscriptionToUser,
   listAdminSubscriptions,
   updateAdminSubscriptionPlan
 } from "../../src/modules/admin-subscriptions/service";
@@ -20,6 +21,7 @@ import {
   AdminSubscriptionsResponse,
   CreateAdminSubscriptionPlanResponse,
   DeleteAdminSubscriptionPlanResponse,
+  GrantAdminSubscriptionResponse,
   UpdateAdminSubscriptionPlanResponse
 } from "../../src/modules/admin-subscriptions/types";
 
@@ -865,6 +867,314 @@ test("deleteAdminSubscriptionPlan validates the id and maps missing plans", asyn
       }
     )
   ).rejects.toThrow(AdminSubscriptionNotFoundError);
+});
+
+test("grantAdminSubscriptionToUser deactivates existing active rows and creates a new active grant", async () => {
+  const fixedNow = new Date("2026-04-09T17:00:00.000Z");
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await grantAdminSubscriptionToUser(
+    {
+      username: " seller-one ",
+      subscriptionId: 4
+    },
+    {
+      nowFactory: () => fixedNow,
+      runInTransaction: async (operation) =>
+        operation({
+          query: async <T extends QueryResultRow = QueryResultRow>(
+            text: string,
+            params?: unknown[]
+          ): Promise<QueryResult<T>> => {
+            executedQueries.push({ text, params });
+
+            if (executedQueries.length === 1) {
+              return createQueryResult([
+                {
+                  id: 42,
+                  username: "seller-one",
+                  userTypeId: 2
+                }
+              ]) as unknown as QueryResult<T>;
+            }
+
+            if (executedQueries.length === 2) {
+              return createQueryResult([
+                {
+                  id: 4,
+                  duration: 12,
+                  status: 1
+                }
+              ]) as unknown as QueryResult<T>;
+            }
+
+            if (executedQueries.length === 3) {
+              return createQueryResult([]) as unknown as QueryResult<T>;
+            }
+
+            if (executedQueries.length === 4) {
+              return createQueryResult([
+                {
+                  id: 81
+                }
+              ]) as unknown as QueryResult<T>;
+            }
+
+            throw new Error(`Unexpected query: ${text}`);
+          }
+        })
+    }
+  );
+
+  expect(response).toEqual({
+    message: "Subscription granted"
+  });
+  expect(executedQueries).toHaveLength(4);
+  expect(executedQueries[0]?.text).toContain('FROM public."user" u');
+  expect(executedQueries[0]?.text).toContain("FOR UPDATE");
+  expect(executedQueries[0]?.params).toEqual(["seller-one"]);
+  expect(executedQueries[1]?.text).toContain("FROM public.subscription s");
+  expect(executedQueries[1]?.text).toContain("COALESCE(s.status, 1) = 1");
+  expect(executedQueries[1]?.params).toEqual([4]);
+  expect(executedQueries[2]?.text).toContain("UPDATE public.user_subscription");
+  expect(executedQueries[2]?.params).toEqual([fixedNow, 42]);
+  expect(executedQueries[3]?.text).toContain("INSERT INTO public.user_subscription");
+  expect(executedQueries[3]?.text).toContain("make_interval(months => $5)");
+  expect(executedQueries[3]?.params).toEqual([42, 4, fixedNow, null, 12, null, 1]);
+});
+
+test("grantAdminSubscriptionToUser accepts a custom expiry date and treats zero-duration plans as monthly", async () => {
+  const fixedNow = new Date("2026-04-09T17:30:00.000Z");
+  const customExpiryDate = "2026-06-30T12:00:00.000Z";
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await grantAdminSubscriptionToUser(
+    {
+      username: "logistics-one",
+      subscriptionId: 6,
+      expiryDate: customExpiryDate
+    },
+    {
+      nowFactory: () => fixedNow,
+      runInTransaction: async (operation) =>
+        operation({
+          query: async <T extends QueryResultRow = QueryResultRow>(
+            text: string,
+            params?: unknown[]
+          ): Promise<QueryResult<T>> => {
+            executedQueries.push({ text, params });
+
+            if (executedQueries.length === 1) {
+              return createQueryResult([
+                {
+                  id: 76,
+                  username: "logistics-one",
+                  userTypeId: 3
+                }
+              ]) as unknown as QueryResult<T>;
+            }
+
+            if (executedQueries.length === 2) {
+              return createQueryResult([
+                {
+                  id: 6,
+                  duration: 0,
+                  status: 1
+                }
+              ]) as unknown as QueryResult<T>;
+            }
+
+            if (executedQueries.length === 3) {
+              return createQueryResult([]) as unknown as QueryResult<T>;
+            }
+
+            if (executedQueries.length === 4) {
+              return createQueryResult([
+                {
+                  id: 82
+                }
+              ]) as unknown as QueryResult<T>;
+            }
+
+            throw new Error(`Unexpected query: ${text}`);
+          }
+        })
+    }
+  );
+
+  expect(response).toEqual({
+    message: "Subscription granted"
+  });
+  expect(executedQueries[3]?.params).toEqual([
+    76,
+    6,
+    fixedNow,
+    new Date(customExpiryDate),
+    1,
+    null,
+    1
+  ]);
+});
+
+test("grantAdminSubscriptionToUser validates payloads and maps missing users, plans, or ambiguous usernames", async () => {
+  await expect(
+    grantAdminSubscriptionToUser({
+      username: "   ",
+      subscriptionId: 4
+    })
+  ).rejects.toThrow(AdminSubscriptionValidationError);
+
+  await expect(
+    grantAdminSubscriptionToUser({
+      username: "seller-one",
+      subscriptionId: 0
+    })
+  ).rejects.toThrow(AdminSubscriptionValidationError);
+
+  await expect(
+    grantAdminSubscriptionToUser({
+      username: "seller-one",
+      subscriptionId: 4,
+      expiryDate: "not-a-date"
+    })
+  ).rejects.toThrow(AdminSubscriptionValidationError);
+
+  await expect(
+    grantAdminSubscriptionToUser(
+      {
+        username: "seller-one",
+        subscriptionId: 4,
+        expiryDate: "2026-04-09T17:00:00.000Z"
+      },
+      {
+        nowFactory: () => new Date("2026-04-09T17:00:00.000Z"),
+        runInTransaction: async (operation) =>
+          operation({
+            query: async <T extends QueryResultRow = QueryResultRow>() =>
+              createQueryResult([]) as unknown as QueryResult<T>
+          })
+      }
+    )
+  ).rejects.toThrow(AdminSubscriptionValidationError);
+
+  await expect(
+    grantAdminSubscriptionToUser(
+      {
+        username: "missing-user",
+        subscriptionId: 4
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation({
+            query: async <T extends QueryResultRow = QueryResultRow>() =>
+              createQueryResult([]) as unknown as QueryResult<T>
+          })
+      }
+    )
+  ).rejects.toThrow(AdminSubscriptionNotFoundError);
+
+  await expect(
+    grantAdminSubscriptionToUser(
+      {
+        username: "duplicate-user",
+        subscriptionId: 4
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation({
+            query: async <T extends QueryResultRow = QueryResultRow>() =>
+              createQueryResult([
+                {
+                  id: 10,
+                  username: "duplicate-user",
+                  userTypeId: 2
+                },
+                {
+                  id: 11,
+                  username: "duplicate-user",
+                  userTypeId: 2
+                }
+              ]) as unknown as QueryResult<T>
+          })
+      }
+    )
+  ).rejects.toThrow(AdminSubscriptionConflictError);
+
+  await expect(
+    grantAdminSubscriptionToUser(
+      {
+        username: "seller-one",
+        subscriptionId: 404
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation({
+            query: async <T extends QueryResultRow = QueryResultRow>(
+              text: string
+            ): Promise<QueryResult<T>> => {
+              if (text.includes('FROM public."user" u')) {
+                return createQueryResult([
+                  {
+                    id: 42,
+                    username: "seller-one",
+                    userTypeId: 2
+                  }
+                ]) as unknown as QueryResult<T>;
+              }
+
+              return createQueryResult([]) as unknown as QueryResult<T>;
+            }
+          })
+      }
+    )
+  ).rejects.toThrow(AdminSubscriptionNotFoundError);
+
+  await expect(
+    grantAdminSubscriptionToUser(
+      {
+        username: "seller-one",
+        subscriptionId: 4
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation({
+            query: async <T extends QueryResultRow = QueryResultRow>(
+              text: string
+            ): Promise<QueryResult<T>> => {
+              if (text.includes('FROM public."user" u')) {
+                return createQueryResult([
+                  {
+                    id: 42,
+                    username: "seller-one",
+                    userTypeId: 2
+                  }
+                ]) as unknown as QueryResult<T>;
+              }
+
+              if (text.includes("FROM public.subscription s")) {
+                return createQueryResult([
+                  {
+                    id: 4,
+                    duration: 1,
+                    status: 1
+                  }
+                ]) as unknown as QueryResult<T>;
+              }
+
+              if (text.includes("UPDATE public.user_subscription")) {
+                return createQueryResult([]) as unknown as QueryResult<T>;
+              }
+
+              if (text.includes("INSERT INTO public.user_subscription")) {
+                return createQueryResult([]) as unknown as QueryResult<T>;
+              }
+
+              throw new Error(`Unexpected query: ${text}`);
+            }
+          })
+      }
+    )
+  ).rejects.toThrow("Subscription grant insert did not return a row");
 });
 
 test("GET /admin/subscriptions returns 401 when the admin token is missing", async () => {
@@ -1728,6 +2038,275 @@ test("DELETE /admin/subscriptions/plans/:id returns the success payload", async 
     expect(response.status).toBe(200);
     expect((await response.json()) as Record<string, unknown>).toEqual({
       message: "Plan removed"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/subscriptions/:username/grant returns 401 when the admin token is missing", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/subscriptions",
+    createAdminSubscriptionsRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/subscriptions/seller-one/grant`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        subscriptionId: 4
+      })
+    });
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/subscriptions/:username/grant returns 403 for non-super-admins", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/subscriptions",
+    createAdminSubscriptionsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "support"
+        })
+      ),
+      grantAdminSubscriptionToUserHandler: async () => {
+        throw new Error("This handler should not be called when access is forbidden");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/subscriptions/seller-one/grant`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        subscriptionId: 4
+      })
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/subscriptions/:username/grant validates the path and request body", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/subscriptions",
+    createAdminSubscriptionsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      grantAdminSubscriptionToUserHandler: async () => {
+        throw new Error("This handler should not be called when validation fails");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    let response = await fetch(`${server.baseUrl}/admin/subscriptions/%20/grant`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        subscriptionId: 4
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "username must be a non-empty string"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/subscriptions/seller-one/grant`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({})
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "subscriptionId is required and must be a positive integer"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/subscriptions/seller-one/grant`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        subscriptionId: 4.5
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "subscriptionId is required and must be a positive integer"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/subscriptions/seller-one/grant`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        subscriptionId: 4,
+        expiryDate: "invalid-date"
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "expiryDate must be a valid ISO 8601 date-time string when provided"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/subscriptions/:username/grant maps 404 and 409 errors", async () => {
+  let server;
+  const notFoundApplication = express();
+  notFoundApplication.use(express.json());
+  notFoundApplication.use(
+    "/admin/subscriptions",
+    createAdminSubscriptionsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      grantAdminSubscriptionToUserHandler: async () => {
+        throw new AdminSubscriptionNotFoundError("User account not found");
+      }
+    })
+  );
+
+  server = await startTestServer(notFoundApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/subscriptions/seller-one/grant`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        subscriptionId: 4
+      })
+    });
+
+    expect(response.status).toBe(404);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "User account not found"
+    });
+  } finally {
+    await server.close();
+  }
+
+  const conflictApplication = express();
+  conflictApplication.use(express.json());
+  conflictApplication.use(
+    "/admin/subscriptions",
+    createAdminSubscriptionsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      grantAdminSubscriptionToUserHandler: async () => {
+        throw new AdminSubscriptionConflictError("Multiple users match the provided username");
+      }
+    })
+  );
+
+  server = await startTestServer(conflictApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/subscriptions/seller-one/grant`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        subscriptionId: 4
+      })
+    });
+
+    expect(response.status).toBe(409);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Multiple users match the provided username"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/subscriptions/:username/grant returns the success payload and passes trimmed values", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/subscriptions",
+    createAdminSubscriptionsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      grantAdminSubscriptionToUserHandler: async (
+        payload
+      ): Promise<GrantAdminSubscriptionResponse> => {
+        expect(payload).toEqual({
+          username: "seller-one",
+          subscriptionId: 4,
+          expiryDate: "2027-04-09T00:00:00.000Z"
+        });
+
+        return {
+          message: "Subscription granted"
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/subscriptions/%20seller-one%20/grant`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        subscriptionId: 4,
+        expiryDate: " 2027-04-09T00:00:00.000Z "
+      })
+    });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Subscription granted"
     });
   } finally {
     await server.close();
