@@ -14,13 +14,15 @@ import {
   AdminSettlementRejectionConflictError,
   AdminSettlementRejectionNotFoundError,
   AdminSettlementsValidationError,
+  getAdminSettlementsStats,
   rejectAdminSettlement,
   listAdminSettlements
 } from "../../src/modules/admin-settlements/service";
 import {
   AdminApproveSettlementResponse,
   AdminRejectSettlementResponse,
-  AdminSettlementsListResponse
+  AdminSettlementsListResponse,
+  AdminSettlementsStatsResponse
 } from "../../src/modules/admin-settlements/types";
 
 async function startTestServer(application: ReturnType<typeof express>) {
@@ -223,6 +225,65 @@ test("listAdminSettlements applies filters, pagination, and validation rules", a
   ).rejects.toThrow("status must be one of pending, approved, or rejected");
 });
 
+test("getAdminSettlementsStats returns aggregate settlement counts and amounts", async () => {
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await getAdminSettlementsStats({
+    queryFn: async <T extends QueryResultRow = QueryResultRow>(
+      text: string,
+      params?: unknown[]
+    ): Promise<QueryResult<T>> => {
+      executedQueries.push({ text, params });
+
+      return createQueryResult([
+        {
+          totalPending: "3",
+          totalApproved: 7,
+          totalRejected: null,
+          pendingAmount: "45000.5",
+          approvedAmount: null
+        }
+      ]) as unknown as QueryResult<T>;
+    }
+  });
+
+  expect(executedQueries).toHaveLength(1);
+  expect(executedQueries[0]?.text).toContain('COUNT(*) FILTER (WHERE s.status = 1)::int AS "totalPending"');
+  expect(executedQueries[0]?.text).toContain(
+    'COALESCE(SUM(s.amount) FILTER (WHERE s.status = 2), 0) AS "approvedAmount"'
+  );
+  expect(response).toEqual({
+    totalPending: 3,
+    totalApproved: 7,
+    totalRejected: 0,
+    pendingAmount: 45000.5,
+    approvedAmount: 0
+  });
+});
+
+test("getAdminSettlementsStats returns zeros when there are no settlements", async () => {
+  const response = await getAdminSettlementsStats({
+    queryFn: async <T extends QueryResultRow = QueryResultRow>() =>
+      createQueryResult([
+        {
+          totalPending: 0,
+          totalApproved: 0,
+          totalRejected: 0,
+          pendingAmount: 0,
+          approvedAmount: 0
+        }
+      ]) as unknown as QueryResult<T>
+  });
+
+  expect(response).toEqual({
+    totalPending: 0,
+    totalApproved: 0,
+    totalRejected: 0,
+    pendingAmount: 0,
+    approvedAmount: 0
+  });
+});
+
 test("GET /admin/settlements returns 401 when the admin token is missing", async () => {
   const application = express();
 
@@ -273,6 +334,106 @@ test("GET /admin/settlements returns 403 for non-super-admins", async () => {
     });
 
     expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/settlements/stats returns 401 when the admin token is missing", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/settlements",
+    createAdminSettlementsRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/settlements/stats`);
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/settlements/stats returns 403 for non-super-admins", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/settlements",
+    createAdminSettlementsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "support"
+        })
+      ),
+      getAdminSettlementsStatsHandler: async () => {
+        throw new Error("This handler should not be called when access is forbidden");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/settlements/stats`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/settlements/stats returns the stats payload and resolves before the dynamic settlement routes", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/settlements",
+    createAdminSettlementsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getAdminSettlementsStatsHandler: async (): Promise<AdminSettlementsStatsResponse> => ({
+        totalPending: 4,
+        totalApproved: 10,
+        totalRejected: 2,
+        pendingAmount: 15000.5,
+        approvedAmount: 78000
+      }),
+      approveAdminSettlementHandler: async () => {
+        throw new Error("The dynamic settlement approve route should not capture /stats");
+      },
+      rejectAdminSettlementHandler: async () => {
+        throw new Error("The dynamic settlement reject route should not capture /stats");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/settlements/stats`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      totalPending: 4,
+      totalApproved: 10,
+      totalRejected: 2,
+      pendingAmount: 15000.5,
+      approvedAmount: 78000
+    });
   } finally {
     await server.close();
   }

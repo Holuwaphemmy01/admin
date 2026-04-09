@@ -15,12 +15,14 @@ import {
   AdminSettlementRejectionNotFoundError,
   AdminSettlementsValidationError,
   approveAdminSettlement,
+  getAdminSettlementsStats,
   rejectAdminSettlement,
   listAdminSettlements
 } from "./service";
 
 interface AdminSettlementsRouterDependencies {
   approveAdminSettlementHandler?: typeof approveAdminSettlement;
+  getAdminSettlementsStatsHandler?: typeof getAdminSettlementsStats;
   rejectAdminSettlementHandler?: typeof rejectAdminSettlement;
   listAdminSettlementsHandler?: typeof listAdminSettlements;
   authenticateAdminMiddleware?: RequestHandler;
@@ -82,6 +84,8 @@ export function createAdminSettlementsRouter(
   const adminSettlementsRouter = Router();
   const approveAdminSettlementHandler =
     dependencies.approveAdminSettlementHandler ?? approveAdminSettlement;
+  const getAdminSettlementsStatsHandler =
+    dependencies.getAdminSettlementsStatsHandler ?? getAdminSettlementsStats;
   const rejectAdminSettlementHandler =
     dependencies.rejectAdminSettlementHandler ?? rejectAdminSettlement;
   const listAdminSettlementsHandler =
@@ -90,6 +94,21 @@ export function createAdminSettlementsRouter(
     dependencies.authenticateAdminMiddleware ?? authenticateAdmin;
   const requireSuperAdminMiddleware =
     dependencies.requireSuperAdminMiddleware ?? requireAdminRole("super_admin");
+
+  adminSettlementsRouter.get(
+    "/stats",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (_request: Request, response: Response, next) => {
+      try {
+        const statsResponse = await getAdminSettlementsStatsHandler();
+
+        response.json(statsResponse);
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
 
   adminSettlementsRouter.get(
     "/",

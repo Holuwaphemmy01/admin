@@ -27,6 +27,14 @@ export interface AdminSettlementsListResponse {
   total: number;
 }
 
+export interface AdminSettlementsStatsResponse {
+  totalPending: number;
+  totalApproved: number;
+  totalRejected: number;
+  pendingAmount: number;
+  approvedAmount: number;
+}
+
 export interface AdminApproveSettlementRequestBody {
   username: string;
   amount: number;

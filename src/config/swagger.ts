@@ -519,6 +519,31 @@ export const swaggerSpec = {
           }
         }
       },
+      AdminSettlementsStatsResponse: {
+        type: "object",
+        properties: {
+          totalPending: {
+            type: "integer",
+            example: 4
+          },
+          totalApproved: {
+            type: "integer",
+            example: 12
+          },
+          totalRejected: {
+            type: "integer",
+            example: 2
+          },
+          pendingAmount: {
+            type: "number",
+            example: 45000.5
+          },
+          approvedAmount: {
+            type: "number",
+            example: 250000
+          }
+        }
+      },
       AdminApproveSettlementRequest: {
         type: "object",
         required: ["username", "amount", "description", "settlementAccountId"],
@@ -2010,6 +2035,51 @@ export const swaggerSpec = {
           },
           "403": {
             description: "Authenticated admin is not allowed to list settlement requests",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/settlements/stats": {
+      get: {
+        tags: ["Settlements"],
+        summary: "Settlement volume and pending amounts",
+        description:
+          "Returns settlement counts and amount summaries across pending, approved, and rejected requests for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        responses: {
+          "200": {
+            description: "Settlement stats retrieved successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/AdminSettlementsStatsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to view settlement stats",
             content: {
               "application/json": {
                 schema: {

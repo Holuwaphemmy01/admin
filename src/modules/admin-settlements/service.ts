@@ -11,7 +11,8 @@ import {
   AdminRejectSettlementResponse,
   AdminSettlementStatus,
   AdminSettlementsListFilters,
-  AdminSettlementsListResponse
+  AdminSettlementsListResponse,
+  AdminSettlementsStatsResponse
 } from "./types";
 
 type QueryFunction = <T extends QueryResultRow = QueryResultRow>(
@@ -47,6 +48,14 @@ interface AdminSettlementRow extends QueryResultRow {
 
 interface TotalCountRow extends QueryResultRow {
   total: number;
+}
+
+interface AdminSettlementStatsRow extends QueryResultRow {
+  totalPending: string | number | null;
+  totalApproved: string | number | null;
+  totalRejected: string | number | null;
+  pendingAmount: string | number | null;
+  approvedAmount: string | number | null;
 }
 
 interface SettlementForApprovalRow extends QueryResultRow {
@@ -376,6 +385,35 @@ export async function listAdminSettlements(
       settlementAccountId: mapOptionalInteger(settlement.settlementAccountId)
     })),
     total: totalResult.rows[0]?.total ?? 0
+  };
+}
+
+export async function getAdminSettlementsStats(
+  dependencies: AdminSettlementsServiceDependencies = {}
+): Promise<AdminSettlementsStatsResponse> {
+  const queryFn = getQueryFn(dependencies);
+
+  const statsResult = await queryFn<AdminSettlementStatsRow>(
+    [
+      "SELECT",
+      "  COUNT(*) FILTER (WHERE s.status = 1)::int AS \"totalPending\",",
+      "  COUNT(*) FILTER (WHERE s.status = 2)::int AS \"totalApproved\",",
+      "  COUNT(*) FILTER (WHERE s.status = 3)::int AS \"totalRejected\",",
+      '  COALESCE(SUM(s.amount) FILTER (WHERE s.status = 1), 0) AS "pendingAmount",',
+      '  COALESCE(SUM(s.amount) FILTER (WHERE s.status = 2), 0) AS "approvedAmount"',
+      "FROM public.settlement s",
+      "WHERE s.status IN (1, 2, 3)"
+    ].join("\n")
+  );
+
+  const stats = statsResult.rows[0];
+
+  return {
+    totalPending: mapNumberOrZero(stats?.totalPending),
+    totalApproved: mapNumberOrZero(stats?.totalApproved),
+    totalRejected: mapNumberOrZero(stats?.totalRejected),
+    pendingAmount: mapNumberOrZero(stats?.pendingAmount),
+    approvedAmount: mapNumberOrZero(stats?.approvedAmount)
   };
 }
 

@@ -69,6 +69,7 @@ This is a TypeScript Node.js and Express starter for the BrickPine admin API wit
 - `POST /admin/wallet/manual_debit`: Debits a customer user's wallet, records the wallet transaction, and writes an admin wallet audit row for a super admin.
 - `GET /admin/wallet/:username`: Returns a customer user's wallet balances and currency for a super admin.
 - `GET /admin/settlements`: Lists settlement requests with optional status, username, and pagination filters for a super admin.
+- `GET /admin/settlements/stats`: Returns settlement counts and pending/approved amount totals for a super admin.
 - `PUT /admin/settlements/:id/approve`: Approves a pending settlement payout, debits the beneficiary wallet, creates a settlement-linked wallet transaction, and writes an admin audit row for a super admin.
 - `PUT /admin/settlements/:id/reject`: Rejects a pending settlement request with a required reason and writes an admin rejection audit row for a super admin.
 - `POST /admin/product/categories`: Creates an active product category with required description and commission VAT tiers for a super admin.
