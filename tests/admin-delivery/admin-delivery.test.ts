@@ -12,9 +12,11 @@ import {
   deleteDeliveryPricing,
   getDeliverySurgeOverview,
   listDeliveryPricing,
+  updateDeliverySurge,
   DeliveryPricingConflictError,
   DeliveryPricingNotFoundError,
-  DeliveryPricingValidationError
+  DeliveryPricingValidationError,
+  DeliverySurgeValidationError
 } from "../../src/modules/admin-delivery/service";
 import { updateDeliveryPricing } from "../../src/modules/admin-delivery/service";
 import {
@@ -22,6 +24,7 @@ import {
   DeleteDeliveryPricingResponse,
   DeliverySurgeOverviewResponse,
   ListDeliveryPricingResponse,
+  UpdateDeliverySurgeResponse,
   UpdateDeliveryPricingResponse
 } from "../../src/modules/admin-delivery/types";
 
@@ -418,7 +421,7 @@ test("deleteDeliveryPricing removes a pricing rule and validates not-found input
   ).rejects.toThrow(DeliveryPricingNotFoundError);
 });
 
-test("getDeliverySurgeOverview returns the strongest active surge factor, fuel surcharge, and latest update time", async () => {
+test("getDeliverySurgeOverview returns the saved current surge config when one exists", async () => {
   const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
 
   const response = await getDeliverySurgeOverview({
@@ -427,6 +430,45 @@ test("getDeliverySurgeOverview returns the strongest active surge factor, fuel s
       params?: unknown[]
     ): Promise<QueryResult<T>> => {
       executedQueries.push({ text, params });
+
+      if (text.includes("FROM public.delivery_current_surge_config dcs")) {
+        return createQueryResult([
+          {
+            surgeFactor: "1.50",
+            fuelSurcharge: "12.75",
+            reason: "High demand",
+            updatedAt: new Date("2026-04-09T12:00:00.000Z")
+          }
+        ]) as unknown as QueryResult<T>;
+      }
+
+      throw new Error(`Unexpected query: ${text}`);
+    }
+  });
+
+  expect(response).toEqual({
+    surgeFactor: 1.5,
+    fuelSurcharge: 12.75,
+    reason: "High demand",
+    updatedAt: "2026-04-09T12:00:00.000Z"
+  });
+  expect(executedQueries).toHaveLength(1);
+  expect(executedQueries[0]?.text).toContain("FROM public.delivery_current_surge_config dcs");
+});
+
+test("getDeliverySurgeOverview falls back to the derived surge tables when no current surge config exists", async () => {
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await getDeliverySurgeOverview({
+    queryFn: async <T extends QueryResultRow = QueryResultRow>(
+      text: string,
+      params?: unknown[]
+    ): Promise<QueryResult<T>> => {
+      executedQueries.push({ text, params });
+
+      if (text.includes("FROM public.delivery_current_surge_config dcs")) {
+        return createQueryResult([]) as unknown as QueryResult<T>;
+      }
 
       if (text.includes("FROM public.delivery_general_surge_surcharge dgs")) {
         return createQueryResult([
@@ -457,9 +499,10 @@ test("getDeliverySurgeOverview returns the strongest active surge factor, fuel s
     reason: "publicHoliday",
     updatedAt: "2026-04-09T10:00:00.000Z"
   });
-  expect(executedQueries).toHaveLength(2);
-  expect(executedQueries[0]?.text).toContain("FROM public.delivery_general_surge_surcharge dgs");
-  expect(executedQueries[1]?.text).toContain("FROM public.delivery_fuel_surge_surcharge dfs");
+  expect(executedQueries).toHaveLength(3);
+  expect(executedQueries[0]?.text).toContain("FROM public.delivery_current_surge_config dcs");
+  expect(executedQueries[1]?.text).toContain("FROM public.delivery_general_surge_surcharge dgs");
+  expect(executedQueries[2]?.text).toContain("FROM public.delivery_fuel_surge_surcharge dfs");
 });
 
 test("getDeliverySurgeOverview returns defaults when no active surge config exists", async () => {
@@ -474,6 +517,148 @@ test("getDeliverySurgeOverview returns defaults when no active surge config exis
     reason: null,
     updatedAt: null
   });
+});
+
+test("getDeliverySurgeOverview falls back cleanly when the current surge config table is unavailable", async () => {
+  const response = await getDeliverySurgeOverview({
+    queryFn: async <T extends QueryResultRow = QueryResultRow>(
+      text: string
+    ): Promise<QueryResult<T>> => {
+      if (text.includes("FROM public.delivery_current_surge_config dcs")) {
+        const error = new Error("relation does not exist") as Error & { code?: string };
+        error.code = "42P01";
+        throw error;
+      }
+
+      if (text.includes("FROM public.delivery_general_surge_surcharge dgs")) {
+        return createQueryResult([
+          {
+            condition: "publicHoliday",
+            rate: "1.30",
+            updatedAt: new Date("2026-04-09T09:30:00.000Z")
+          }
+        ]) as unknown as QueryResult<T>;
+      }
+
+      if (text.includes("FROM public.delivery_fuel_surge_surcharge dfs")) {
+        return createQueryResult([
+          {
+            fuelSurcharge: "3.20",
+            updatedAt: new Date("2026-04-09T08:30:00.000Z")
+          }
+        ]) as unknown as QueryResult<T>;
+      }
+
+      throw new Error(`Unexpected query: ${text}`);
+    }
+  });
+
+  expect(response).toEqual({
+    surgeFactor: 1.3,
+    fuelSurcharge: 3.2,
+    reason: "publicHoliday",
+    updatedAt: "2026-04-09T09:30:00.000Z"
+  });
+});
+
+test("updateDeliverySurge upserts the current surge config and preserves unspecified optional fields", async () => {
+  const fixedNow = new Date("2026-04-09T12:45:00.000Z");
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await updateDeliverySurge(
+    {
+      surgeFactor: 1.5
+    },
+    {
+      nowFactory: () => fixedNow,
+      queryFn: async <T extends QueryResultRow = QueryResultRow>(
+        text: string,
+        params?: unknown[]
+      ): Promise<QueryResult<T>> => {
+        executedQueries.push({ text, params });
+
+        if (executedQueries.length === 1) {
+          return createQueryResult([
+            {
+              surgeFactor: "1.40",
+              fuelSurcharge: "2.64",
+              reason: "publicHoliday",
+              updatedAt: new Date("2026-04-09T11:00:00.000Z")
+            }
+          ]) as unknown as QueryResult<T>;
+        }
+
+        if (executedQueries.length === 2) {
+          return createQueryResult([
+            {
+              surgeFactor: "1.50",
+              fuelSurcharge: "2.64",
+              reason: "publicHoliday",
+              updatedAt: fixedNow
+            }
+          ]) as unknown as QueryResult<T>;
+        }
+
+        throw new Error(`Unexpected query: ${text}`);
+      }
+    }
+  );
+
+  expect(response).toEqual({
+    message: "Surge updated",
+    surgeFactor: 1.5
+  });
+  expect(executedQueries).toHaveLength(2);
+  expect(executedQueries[0]?.text).toContain("FROM public.delivery_current_surge_config dcs");
+  expect(executedQueries[1]?.text).toContain("INSERT INTO public.delivery_current_surge_config");
+  expect(executedQueries[1]?.params).toEqual([1, 1.5, 2.64, "publicHoliday", fixedNow]);
+});
+
+test("updateDeliverySurge validates the payload and fails cleanly when the update does not return a row", async () => {
+  await expect(
+    updateDeliverySurge({
+      surgeFactor: 0
+    })
+  ).rejects.toThrow(DeliverySurgeValidationError);
+
+  await expect(
+    updateDeliverySurge({
+      surgeFactor: 1.5,
+      fuelSurcharge: -1
+    })
+  ).rejects.toThrow(DeliverySurgeValidationError);
+
+  await expect(
+    updateDeliverySurge({
+      surgeFactor: 1.5,
+      reason: "   "
+    })
+  ).rejects.toThrow(DeliverySurgeValidationError);
+
+  await expect(
+    updateDeliverySurge(
+      {
+        surgeFactor: 1.5,
+        fuelSurcharge: 12.75,
+        reason: "High demand"
+      },
+      {
+        queryFn: async <T extends QueryResultRow = QueryResultRow>(
+          text: string
+        ): Promise<QueryResult<T>> => {
+          if (text.includes("FROM public.delivery_current_surge_config dcs")) {
+            return createQueryResult([]) as unknown as QueryResult<T>;
+          }
+
+          if (text.includes("INSERT INTO public.delivery_current_surge_config")) {
+            return createQueryResult([]) as unknown as QueryResult<T>;
+          }
+
+          throw new Error(`Unexpected query: ${text}`);
+        }
+      }
+    )
+  ).rejects.toThrow("Delivery surge update did not return a row");
 });
 
 test("listDeliveryPricing returns mapped pricing rules with stable ordering and optional filters", async () => {
@@ -699,6 +884,196 @@ test("GET /admin/delivery/surge returns the current surge overview payload", asy
       fuelSurcharge: 2.64,
       reason: "feastivePeaks",
       updatedAt: "2026-04-09T11:00:00.000Z"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/delivery/surge returns 401 when the admin token is missing", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/delivery",
+    createAdminDeliveryRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/delivery/surge`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        surgeFactor: 1.5
+      })
+    });
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/delivery/surge returns 403 for non-super-admins", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/delivery",
+    createAdminDeliveryRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "support"
+        })
+      ),
+      updateDeliverySurgeHandler: async () => {
+        throw new Error("This handler should not be called when access is forbidden");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/delivery/surge`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        surgeFactor: 1.5
+      })
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/delivery/surge validates the request body", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/delivery",
+    createAdminDeliveryRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      updateDeliverySurgeHandler: async () => {
+        throw new Error("This handler should not be called when validation fails");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    let response = await fetch(`${server.baseUrl}/admin/delivery/surge`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        fuelSurcharge: 12
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message:
+        "surgeFactor is required and must be a finite number greater than or equal to 1 with at most 2 decimal places"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/delivery/surge`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        surgeFactor: 1.5,
+        fuelSurcharge: -1
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message:
+        "fuelSurcharge must be a non-negative finite number with at most 2 decimal places when provided"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/delivery/surge`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        surgeFactor: 1.5,
+        reason: "   "
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "reason must be a non-empty string when provided"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/delivery/surge returns the success payload and passes trimmed values", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/delivery",
+    createAdminDeliveryRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      updateDeliverySurgeHandler: async (
+        payload
+      ): Promise<UpdateDeliverySurgeResponse> => {
+        expect(payload).toEqual({
+          surgeFactor: 1.5,
+          fuelSurcharge: 12.75,
+          reason: "High demand"
+        });
+
+        return {
+          message: "Surge updated",
+          surgeFactor: 1.5
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/delivery/surge`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        surgeFactor: 1.5,
+        fuelSurcharge: 12.75,
+        reason: " High demand "
+      })
+    });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Surge updated",
+      surgeFactor: 1.5
     });
   } finally {
     await server.close();

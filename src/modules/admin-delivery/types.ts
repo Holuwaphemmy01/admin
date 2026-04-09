@@ -45,6 +45,17 @@ export interface DeliverySurgeOverviewResponse {
   updatedAt: string | null;
 }
 
+export interface UpdateDeliverySurgeRequestBody {
+  surgeFactor: number;
+  fuelSurcharge?: number;
+  reason?: string;
+}
+
+export interface UpdateDeliverySurgeResponse {
+  message: string;
+  surgeFactor: number;
+}
+
 export interface ListDeliveryPricingFilters {
   state?: string;
   vehicleType?: DeliveryVehicleType;

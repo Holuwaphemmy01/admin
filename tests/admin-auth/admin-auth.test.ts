@@ -1161,7 +1161,10 @@ test("GET /docs.json exposes the swagger specification for the API", async () =>
       get: expect.any(Object),
       post: expect.any(Object)
     });
-    expect(payload.paths?.["/admin/delivery/surge"]).toBeDefined();
+    expect(payload.paths?.["/admin/delivery/surge"]).toMatchObject({
+      get: expect.any(Object),
+      put: expect.any(Object)
+    });
     expect(payload.paths?.["/admin/delivery/pricing/{id}"]).toMatchObject({
       put: expect.any(Object),
       delete: expect.any(Object)

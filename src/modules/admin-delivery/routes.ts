@@ -6,10 +6,12 @@ import {
   deleteDeliveryPricing,
   getDeliverySurgeOverview,
   listDeliveryPricing,
+  updateDeliverySurge,
   updateDeliveryPricing,
   DeliveryPricingConflictError,
   DeliveryPricingNotFoundError,
-  DeliveryPricingValidationError
+  DeliveryPricingValidationError,
+  DeliverySurgeValidationError
 } from "./service";
 import { DeliveryVehicleType } from "./types";
 
@@ -18,6 +20,7 @@ interface AdminDeliveryRouterDependencies {
   deleteDeliveryPricingHandler?: typeof deleteDeliveryPricing;
   getDeliverySurgeOverviewHandler?: typeof getDeliverySurgeOverview;
   listDeliveryPricingHandler?: typeof listDeliveryPricing;
+  updateDeliverySurgeHandler?: typeof updateDeliverySurge;
   updateDeliveryPricingHandler?: typeof updateDeliveryPricing;
   authenticateAdminMiddleware?: RequestHandler;
   requireSuperAdminMiddleware?: RequestHandler;
@@ -32,6 +35,24 @@ function isValidVehicleType(value: unknown): value is DeliveryVehicleType {
 }
 
 function isValidBaseFee(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= 0 &&
+    Math.abs(value - Number(value.toFixed(2))) <= Number.EPSILON
+  );
+}
+
+function isValidSurgeFactor(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= 1 &&
+    Math.abs(value - Number(value.toFixed(2))) <= Number.EPSILON
+  );
+}
+
+function isValidFuelSurcharge(value: unknown): value is number {
   return (
     typeof value === "number" &&
     Number.isFinite(value) &&
@@ -68,6 +89,8 @@ export function createAdminDeliveryRouter(
     dependencies.getDeliverySurgeOverviewHandler ?? getDeliverySurgeOverview;
   const listDeliveryPricingHandler =
     dependencies.listDeliveryPricingHandler ?? listDeliveryPricing;
+  const updateDeliverySurgeHandler =
+    dependencies.updateDeliverySurgeHandler ?? updateDeliverySurge;
   const updateDeliveryPricingHandler =
     dependencies.updateDeliveryPricingHandler ?? updateDeliveryPricing;
   const authenticateAdminMiddleware =
@@ -85,6 +108,65 @@ export function createAdminDeliveryRouter(
 
         response.json(result);
       } catch (error) {
+        next(error);
+      }
+    }
+  );
+
+  adminDeliveryRouter.put(
+    "/surge",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      const rawSurgeFactor = request.body?.surgeFactor;
+      const rawFuelSurcharge = request.body?.fuelSurcharge;
+      const rawReason = request.body?.reason;
+
+      if (!isValidSurgeFactor(rawSurgeFactor)) {
+        response.status(400).json({
+          message:
+            "surgeFactor is required and must be a finite number greater than or equal to 1 with at most 2 decimal places"
+        });
+
+        return;
+      }
+
+      if (rawFuelSurcharge !== undefined && !isValidFuelSurcharge(rawFuelSurcharge)) {
+        response.status(400).json({
+          message:
+            "fuelSurcharge must be a non-negative finite number with at most 2 decimal places when provided"
+        });
+
+        return;
+      }
+
+      if (rawReason !== undefined && !isNonEmptyString(rawReason)) {
+        response.status(400).json({
+          message: "reason must be a non-empty string when provided"
+        });
+
+        return;
+      }
+
+      try {
+        const result = await updateDeliverySurgeHandler({
+          surgeFactor: rawSurgeFactor,
+          fuelSurcharge: rawFuelSurcharge,
+          reason: typeof rawReason === "string" ? rawReason.trim() : undefined
+        });
+
+        console.info("Delivery surge updated.");
+
+        response.json(result);
+      } catch (error) {
+        if (error instanceof DeliverySurgeValidationError) {
+          response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
         next(error);
       }
     }

@@ -587,6 +587,37 @@ export const swaggerSpec = {
           }
         }
       },
+      UpdateDeliverySurgeRequest: {
+        type: "object",
+        required: ["surgeFactor"],
+        properties: {
+          surgeFactor: {
+            type: "number",
+            example: 1.5
+          },
+          fuelSurcharge: {
+            type: "number",
+            example: 12.75
+          },
+          reason: {
+            type: "string",
+            example: "High demand"
+          }
+        }
+      },
+      UpdateDeliverySurgeResponse: {
+        type: "object",
+        properties: {
+          message: {
+            type: "string",
+            example: "Surge updated"
+          },
+          surgeFactor: {
+            type: "number",
+            example: 1.5
+          }
+        }
+      },
       DeliveryPricingListResponse: {
         type: "object",
         properties: {
@@ -2232,7 +2263,7 @@ export const swaggerSpec = {
         tags: ["Delivery & Logistics"],
         summary: "View current surge pricing factors",
         description:
-          "Returns the current delivery surge overview, including the strongest active general surge factor, derived fuel surcharge, active reason when available, and the latest relevant update time for authenticated super admin access.",
+          "Returns the current delivery surge overview, preferring the explicit current surge configuration when present and otherwise falling back to the strongest active derived surge and fuel settings for authenticated super admin access.",
         security: [
           {
             AdminBearerAuth: []
@@ -2261,6 +2292,69 @@ export const swaggerSpec = {
           },
           "403": {
             description: "Authenticated admin is not allowed to view delivery surge settings",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      put: {
+        tags: ["Delivery & Logistics"],
+        summary: "Update surge multipliers",
+        description:
+          "Updates the current delivery surge configuration for authenticated super admin access while preserving optional values that are not supplied.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/UpdateDeliverySurgeRequest"
+              }
+            }
+          }
+        },
+        responses: {
+          "200": {
+            description: "Delivery surge updated successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/UpdateDeliverySurgeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid delivery surge update payload",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to update delivery surge settings",
             content: {
               "application/json": {
                 schema: {

@@ -11,6 +11,8 @@ import {
   DeliveryVehicleType,
   ListDeliveryPricingFilters,
   ListDeliveryPricingResponse,
+  UpdateDeliverySurgeRequestBody,
+  UpdateDeliverySurgeResponse,
   UpdateDeliveryPricingRequestBody,
   UpdateDeliveryPricingResponse
 } from "./types";
@@ -61,6 +63,13 @@ interface DeliveryFuelSurgeRow extends QueryResultRow {
   updatedAt: Date | null;
 }
 
+interface DeliveryCurrentSurgeConfigRow extends QueryResultRow {
+  surgeFactor: string | number | null;
+  fuelSurcharge: string | number | null;
+  reason: string | null;
+  updatedAt: Date | null;
+}
+
 type MessageErrorConstructor = new (message: string) => Error;
 
 export class DeliveryPricingValidationError extends Error {
@@ -81,6 +90,13 @@ export class DeliveryPricingNotFoundError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "DeliveryPricingNotFoundError";
+  }
+}
+
+export class DeliverySurgeValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DeliverySurgeValidationError";
   }
 }
 
@@ -170,6 +186,43 @@ function normalizeOptionalBaseFee(
   return normalizeBaseFee(value, ErrorType);
 }
 
+function normalizeSurgeFactor(value: number, ErrorType: MessageErrorConstructor): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    value < 1 ||
+    Math.abs(value - Number(value.toFixed(2))) > Number.EPSILON
+  ) {
+    throw new ErrorType(
+      "surgeFactor is required and must be a finite number greater than or equal to 1 with at most 2 decimal places"
+    );
+  }
+
+  return value;
+}
+
+function normalizeOptionalFuelSurcharge(
+  value: number | undefined,
+  ErrorType: MessageErrorConstructor
+): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    value < 0 ||
+    Math.abs(value - Number(value.toFixed(2))) > Number.EPSILON
+  ) {
+    throw new ErrorType(
+      "fuelSurcharge must be a non-negative finite number with at most 2 decimal places when provided"
+    );
+  }
+
+  return value;
+}
+
 function normalizePricingId(value: number, ErrorType: MessageErrorConstructor): number {
   if (!Number.isInteger(value) || value <= 0) {
     throw new ErrorType("id must be a positive integer");
@@ -232,10 +285,78 @@ function mapDateOrNull(value: Date | null): string | null {
   return value.toISOString();
 }
 
+function normalizeOptionalStoredText(value: string | null): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalizedValue = normalizeCredentialValue(value);
+
+  return normalizedValue === "" ? null : normalizedValue;
+}
+
+function isPostgresErrorWithCode(error: unknown, code: string): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === code
+  );
+}
+
+async function getCurrentDeliverySurgeConfig(
+  queryFn: QueryFunction,
+  options: { allowMissingTable?: boolean } = {}
+): Promise<DeliveryCurrentSurgeConfigRow | null> {
+  const { allowMissingTable = false } = options;
+
+  try {
+    const currentConfigResult = await queryFn<DeliveryCurrentSurgeConfigRow>(
+      [
+        "SELECT",
+        '  dcs."surgeFactor" AS "surgeFactor",',
+        '  dcs."fuelSurcharge" AS "fuelSurcharge",',
+        "  dcs.reason,",
+        '  dcs."updatedAt" AS "updatedAt"',
+        "FROM public.delivery_current_surge_config dcs",
+        "WHERE dcs.id = 1",
+        "LIMIT 1"
+      ].join("\n")
+    );
+
+    return currentConfigResult.rows[0] ?? null;
+  } catch (error) {
+    if (allowMissingTable && isPostgresErrorWithCode(error, "42P01")) {
+      return null;
+    }
+
+    throw error;
+  }
+}
+
+function mapDeliverySurgeOverviewFromConfig(
+  row: DeliveryCurrentSurgeConfigRow
+): DeliverySurgeOverviewResponse {
+  return {
+    surgeFactor: mapFiniteNumber(row.surgeFactor, "surgeFactor"),
+    fuelSurcharge: Number(mapFiniteNumber(row.fuelSurcharge, "fuelSurcharge").toFixed(2)),
+    reason: normalizeOptionalStoredText(row.reason),
+    updatedAt: mapDateOrNull(row.updatedAt)
+  };
+}
+
 export async function getDeliverySurgeOverview(
   dependencies: AdminDeliveryServiceDependencies = {}
 ): Promise<DeliverySurgeOverviewResponse> {
   const queryFn = getQueryFn(dependencies);
+  const currentConfig = await getCurrentDeliverySurgeConfig(queryFn, {
+    allowMissingTable: true
+  });
+
+  if (currentConfig !== null) {
+    return mapDeliverySurgeOverviewFromConfig(currentConfig);
+  }
+
   const [generalResult, fuelResult] = await Promise.all([
     queryFn<DeliveryGeneralSurgeRow>(
       [
@@ -277,16 +398,66 @@ export async function getDeliverySurgeOverview(
     .sort();
   const latestUpdatedAt =
     updatedAtCandidates.length > 0 ? updatedAtCandidates[updatedAtCandidates.length - 1] : null;
-  const normalizedReason =
-    typeof generalRow?.condition === "string" && normalizeCredentialValue(generalRow.condition) !== ""
-      ? normalizeCredentialValue(generalRow.condition)
-      : null;
+  const normalizedReason = normalizeOptionalStoredText(generalRow?.condition ?? null);
 
   return {
     surgeFactor,
     fuelSurcharge,
     reason: surgeFactor > 1 ? normalizedReason : null,
     updatedAt: latestUpdatedAt
+  };
+}
+
+export async function updateDeliverySurge(
+  payload: UpdateDeliverySurgeRequestBody,
+  dependencies: AdminDeliveryServiceDependencies = {}
+): Promise<UpdateDeliverySurgeResponse> {
+  const queryFn = getQueryFn(dependencies);
+  const now = getNowFactory(dependencies)();
+  const surgeFactor = normalizeSurgeFactor(payload.surgeFactor, DeliverySurgeValidationError);
+  const normalizedFuelSurcharge = normalizeOptionalFuelSurcharge(
+    payload.fuelSurcharge,
+    DeliverySurgeValidationError
+  );
+  const normalizedReason =
+    payload.reason === undefined
+      ? undefined
+      : normalizeOptionalTextField(payload.reason, "reason", DeliverySurgeValidationError) ?? null;
+  const existingConfig = await getCurrentDeliverySurgeConfig(queryFn);
+  const fuelSurcharge =
+    normalizedFuelSurcharge ??
+    (existingConfig === null
+      ? 0
+      : Number(mapFiniteNumber(existingConfig.fuelSurcharge, "fuelSurcharge").toFixed(2)));
+  const reason =
+    normalizedReason === undefined
+      ? normalizeOptionalStoredText(existingConfig?.reason ?? null)
+      : normalizedReason;
+  const updateResult = await queryFn<DeliveryCurrentSurgeConfigRow>(
+    [
+      "INSERT INTO public.delivery_current_surge_config (",
+      '  id, "surgeFactor", "fuelSurcharge", reason, "createdAt", "updatedAt"',
+      ")",
+      "VALUES ($1, $2, $3, $4, $5, $5)",
+      "ON CONFLICT (id) DO UPDATE",
+      "SET",
+      '  "surgeFactor" = EXCLUDED."surgeFactor",',
+      '  "fuelSurcharge" = EXCLUDED."fuelSurcharge",',
+      "  reason = EXCLUDED.reason,",
+      '  "updatedAt" = EXCLUDED."updatedAt"',
+      'RETURNING "surgeFactor" AS "surgeFactor", "fuelSurcharge" AS "fuelSurcharge", reason, "updatedAt" AS "updatedAt"'
+    ].join("\n"),
+    [1, surgeFactor, fuelSurcharge, reason, now]
+  );
+  const updatedConfig = updateResult.rows[0];
+
+  if (!updatedConfig) {
+    throw new Error("Delivery surge update did not return a row");
+  }
+
+  return {
+    message: "Surge updated",
+    surgeFactor: mapFiniteNumber(updatedConfig.surgeFactor, "surgeFactor")
   };
 }
 
