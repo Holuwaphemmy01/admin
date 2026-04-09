@@ -2,6 +2,7 @@ import { Router } from "express";
 
 import adminAccountsRouter from "../admin-accounts/routes";
 import adminAuthRouter from "../admin-auth/routes";
+import adminDeliveryRouter from "../admin-delivery/routes";
 import adminKycRouter from "../admin-kyc/routes";
 import adminOrdersRouter from "../admin-orders/routes";
 import adminProductsRouter, { adminProductsCollectionRouter } from "../admin-products/routes";
@@ -14,6 +15,7 @@ const adminRouter = Router();
 
 adminRouter.use("/auth", adminAuthRouter);
 adminRouter.use("/auth", adminAccountsRouter);
+adminRouter.use("/delivery", adminDeliveryRouter);
 adminRouter.use("/transactions", adminTransactionsRouter);
 adminRouter.use("/wallet", adminWalletRouter);
 adminRouter.use("/settlements", adminSettlementsRouter);

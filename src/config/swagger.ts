@@ -26,6 +26,10 @@ export const swaggerSpec = {
       description: "Administrative platform wallet overview and recent transaction endpoints"
     },
     {
+      name: "Delivery & Logistics",
+      description: "Administrative delivery-pricing management endpoints"
+    },
+    {
       name: "Settlements",
       description: "Administrative settlement-listing endpoints"
     },
@@ -464,6 +468,59 @@ export const swaggerSpec = {
           newBalance: {
             type: "number",
             example: 1500
+          }
+        }
+      },
+      DeliveryPricingRecord: {
+        type: "object",
+        properties: {
+          id: {
+            type: "integer",
+            example: 4
+          },
+          state: {
+            type: "string",
+            example: "Abuja"
+          },
+          vehicleType: {
+            type: "string",
+            enum: ["bike", "car", "truck"],
+            example: "bike"
+          },
+          baseFee: {
+            type: "number",
+            example: 1000
+          }
+        }
+      },
+      CreateDeliveryPricingRequest: {
+        type: "object",
+        required: ["state", "vehicleType", "baseFee"],
+        properties: {
+          state: {
+            type: "string",
+            example: "Lagos"
+          },
+          vehicleType: {
+            type: "string",
+            enum: ["bike", "car", "truck"],
+            example: "bike"
+          },
+          baseFee: {
+            type: "number",
+            example: 1000
+          }
+        }
+      },
+      CreateDeliveryPricingResponse: {
+        type: "object",
+        properties: {
+          message: {
+            type: "string",
+            example: "Delivery pricing added successfully"
+          },
+          data: {
+            $ref: "#/components/schemas/DeliveryPricingRecord"
           }
         }
       },
@@ -1936,6 +1993,81 @@ export const swaggerSpec = {
           },
           "409": {
             description: "Username lookup is ambiguous or the wallet balance is insufficient",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ConflictErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/delivery/pricing": {
+      post: {
+        tags: ["Delivery & Logistics"],
+        summary: "Add delivery pricing (bike/car/truck per state)",
+        description:
+          "Creates a delivery pricing record for a state and vehicle type for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/CreateDeliveryPricingRequest"
+              }
+            }
+          }
+        },
+        responses: {
+          "201": {
+            description: "Delivery pricing created successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/CreateDeliveryPricingResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid delivery pricing request payload",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to create delivery pricing",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            description: "Delivery pricing already exists for the provided state and vehicle type",
             content: {
               "application/json": {
                 schema: {
