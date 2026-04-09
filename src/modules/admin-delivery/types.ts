@@ -18,6 +18,18 @@ export interface CreateDeliveryPricingResponse {
   data: DeliveryPricingRecord;
 }
 
+export interface UpdateDeliveryPricingRequestBody {
+  id: number;
+  state?: string;
+  vehicleType?: DeliveryVehicleType;
+  baseFee?: number;
+}
+
+export interface UpdateDeliveryPricingResponse {
+  message: string;
+  data: DeliveryPricingRecord;
+}
+
 export interface ListDeliveryPricingFilters {
   state?: string;
   vehicleType?: DeliveryVehicleType;

@@ -7,7 +7,9 @@ import {
   CreateDeliveryPricingResponse,
   DeliveryVehicleType,
   ListDeliveryPricingFilters,
-  ListDeliveryPricingResponse
+  ListDeliveryPricingResponse,
+  UpdateDeliveryPricingRequestBody,
+  UpdateDeliveryPricingResponse
 } from "./types";
 
 type QueryFunction = <T extends QueryResultRow = QueryResultRow>(
@@ -38,6 +40,13 @@ interface DeliveryPricingListRow extends QueryResultRow {
   baseFee: string | number | null;
 }
 
+interface DeliveryPricingForUpdateRow extends QueryResultRow {
+  id: number;
+  state: string | null;
+  vehicleType: string | null;
+  baseFee: string | number | null;
+}
+
 type MessageErrorConstructor = new (message: string) => Error;
 
 export class DeliveryPricingValidationError extends Error {
@@ -51,6 +60,13 @@ export class DeliveryPricingConflictError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "DeliveryPricingConflictError";
+  }
+}
+
+export class DeliveryPricingNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DeliveryPricingNotFoundError";
   }
 }
 
@@ -129,6 +145,25 @@ function normalizeBaseFee(value: number, ErrorType: MessageErrorConstructor): nu
   return value;
 }
 
+function normalizeOptionalBaseFee(
+  value: number | undefined,
+  ErrorType: MessageErrorConstructor
+): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  return normalizeBaseFee(value, ErrorType);
+}
+
+function normalizePricingId(value: number, ErrorType: MessageErrorConstructor): number {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new ErrorType("id must be a positive integer");
+  }
+
+  return value;
+}
+
 function mapPositiveInteger(value: string | number | null, fieldName: string): number {
   const numericValue = typeof value === "number" ? value : Number(value);
 
@@ -169,6 +204,17 @@ function mapFiniteNumber(value: string | number | null, fieldName: string): numb
   }
 
   return numericValue;
+}
+
+function mapDeliveryPricingRecord(
+  row: DeliveryPricingForUpdateRow | CreatedDeliveryPricingRow | DeliveryPricingListRow
+): UpdateDeliveryPricingResponse["data"] {
+  return {
+    id: mapPositiveInteger(row.id, "id"),
+    state: mapNormalizedText(row.state, "state"),
+    vehicleType: mapDeliveryVehicleType(row.vehicleType),
+    baseFee: mapFiniteNumber(row.baseFee, "baseFee")
+  };
 }
 
 export async function listDeliveryPricing(
@@ -212,12 +258,99 @@ export async function listDeliveryPricing(
   );
 
   return {
-    pricingRules: pricingResult.rows.map((pricingRule) => ({
-      id: mapPositiveInteger(pricingRule.id, "id"),
-      state: mapNormalizedText(pricingRule.state, "state"),
-      vehicleType: mapDeliveryVehicleType(pricingRule.vehicleType),
-      baseFee: mapFiniteNumber(pricingRule.baseFee, "baseFee")
-    }))
+    pricingRules: pricingResult.rows.map((pricingRule) => mapDeliveryPricingRecord(pricingRule))
+  };
+}
+
+export async function updateDeliveryPricing(
+  payload: UpdateDeliveryPricingRequestBody,
+  dependencies: AdminDeliveryServiceDependencies = {}
+): Promise<UpdateDeliveryPricingResponse> {
+  const queryFn = getQueryFn(dependencies);
+  const nowFactory = getNowFactory(dependencies);
+  const id = normalizePricingId(payload.id, DeliveryPricingValidationError);
+  const state = normalizeOptionalTextField(
+    payload.state,
+    "state",
+    DeliveryPricingValidationError
+  );
+  const vehicleType = normalizeOptionalVehicleType(
+    payload.vehicleType,
+    DeliveryPricingValidationError
+  );
+  const baseFee = normalizeOptionalBaseFee(payload.baseFee, DeliveryPricingValidationError);
+
+  if (state === undefined && vehicleType === undefined && baseFee === undefined) {
+    throw new DeliveryPricingValidationError(
+      "At least one delivery pricing field must be provided for update"
+    );
+  }
+
+  const existingPricingResult = await queryFn<DeliveryPricingForUpdateRow>(
+    [
+      "SELECT",
+      '  dp.id, dp.state, dp."vehicleType"::text AS "vehicleType", dp."baseFee"',
+      "FROM public.delivery_pricings dp",
+      "WHERE dp.id = $1",
+      "LIMIT 1"
+    ].join("\n"),
+    [id]
+  );
+
+  const existingPricing = existingPricingResult.rows[0];
+
+  if (!existingPricing) {
+    throw new DeliveryPricingNotFoundError("Delivery pricing not found");
+  }
+
+  const resolvedState = state ?? mapNormalizedText(existingPricing.state, "state");
+  const resolvedVehicleType =
+    vehicleType ?? mapDeliveryVehicleType(existingPricing.vehicleType);
+  const resolvedBaseFee = baseFee ?? mapFiniteNumber(existingPricing.baseFee, "baseFee");
+
+  if (state !== undefined || vehicleType !== undefined) {
+    const duplicatePricingResult = await queryFn<ExistingDeliveryPricingRow>(
+      [
+        "SELECT",
+        "  dp.id",
+        "FROM public.delivery_pricings dp",
+        "WHERE LOWER(BTRIM(dp.state)) = LOWER(BTRIM($1))",
+        '  AND dp."vehicleType"::text = $2',
+        "  AND dp.id <> $3",
+        "LIMIT 1"
+      ].join("\n"),
+      [resolvedState, resolvedVehicleType, id]
+    );
+
+    if ((duplicatePricingResult.rowCount ?? 0) > 0) {
+      throw new DeliveryPricingConflictError(
+        "Delivery pricing already exists for the provided state and vehicle type"
+      );
+    }
+  }
+
+  const updatedPricingResult = await queryFn<DeliveryPricingForUpdateRow>(
+    [
+      "UPDATE public.delivery_pricings",
+      'SET state = $1,',
+      '    "vehicleType" = $2::public."enum_delivery_pricings_vehicleType",',
+      '    "baseFee" = $3,',
+      '    "updatedAt" = $4',
+      "WHERE id = $5",
+      'RETURNING id, state, "vehicleType"::text AS "vehicleType", "baseFee"'
+    ].join("\n"),
+    [resolvedState, resolvedVehicleType, resolvedBaseFee, nowFactory(), id]
+  );
+
+  const updatedPricing = updatedPricingResult.rows[0];
+
+  if (!updatedPricing) {
+    throw new DeliveryPricingNotFoundError("Delivery pricing not found");
+  }
+
+  return {
+    message: "Delivery pricing updated successfully",
+    data: mapDeliveryPricingRecord(updatedPricing)
   };
 }
 
@@ -277,11 +410,6 @@ export async function createDeliveryPricing(
 
   return {
     message: "Delivery pricing added successfully",
-    data: {
-      id: mapPositiveInteger(createdPricing.id, "id"),
-      state: mapNormalizedText(createdPricing.state, "state"),
-      vehicleType: mapDeliveryVehicleType(createdPricing.vehicleType),
-      baseFee: mapFiniteNumber(createdPricing.baseFee, "baseFee")
-    }
+    data: mapDeliveryPricingRecord(createdPricing)
   };
 }

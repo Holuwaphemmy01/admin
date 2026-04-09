@@ -11,11 +11,14 @@ import {
   createDeliveryPricing,
   listDeliveryPricing,
   DeliveryPricingConflictError,
+  DeliveryPricingNotFoundError,
   DeliveryPricingValidationError
 } from "../../src/modules/admin-delivery/service";
+import { updateDeliveryPricing } from "../../src/modules/admin-delivery/service";
 import {
   CreateDeliveryPricingResponse,
-  ListDeliveryPricingResponse
+  ListDeliveryPricingResponse,
+  UpdateDeliveryPricingResponse
 } from "../../src/modules/admin-delivery/types";
 
 async function startTestServer(application: ReturnType<typeof express>) {
@@ -209,6 +212,157 @@ test("createDeliveryPricing fails cleanly when the insert does not return a crea
       }
     )
   ).rejects.toThrow("Delivery pricing insert did not return a row");
+});
+
+test("updateDeliveryPricing updates provided fields and preserves unspecified values", async () => {
+  const fixedNow = new Date("2026-04-09T13:00:00.000Z");
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await updateDeliveryPricing(
+    {
+      id: 2,
+      state: " Abuja ",
+      baseFee: 1200
+    },
+    {
+      nowFactory: () => fixedNow,
+      queryFn: async <T extends QueryResultRow = QueryResultRow>(
+        text: string,
+        params?: unknown[]
+      ): Promise<QueryResult<T>> => {
+        executedQueries.push({ text, params });
+
+        if (executedQueries.length === 1) {
+          return createQueryResult([
+            {
+              id: 2,
+              state: "Lagos",
+              vehicleType: "car",
+              baseFee: "900"
+            }
+          ]) as unknown as QueryResult<T>;
+        }
+
+        if (executedQueries.length === 2) {
+          return createQueryResult([]) as unknown as QueryResult<T>;
+        }
+
+        if (executedQueries.length === 3) {
+          return createQueryResult([
+            {
+              id: 2,
+              state: "Abuja",
+              vehicleType: "car",
+              baseFee: "1200"
+            }
+          ]) as unknown as QueryResult<T>;
+        }
+
+        throw new Error(`Unexpected query: ${text}`);
+      }
+    }
+  );
+
+  expect(response).toEqual({
+    message: "Delivery pricing updated successfully",
+    data: {
+      id: 2,
+      state: "Abuja",
+      vehicleType: "car",
+      baseFee: 1200
+    }
+  });
+  expect(executedQueries).toHaveLength(3);
+  expect(executedQueries[0]?.text).toContain("WHERE dp.id = $1");
+  expect(executedQueries[0]?.params).toEqual([2]);
+  expect(executedQueries[1]?.text).toContain("AND dp.id <> $3");
+  expect(executedQueries[1]?.params).toEqual(["Abuja", "car", 2]);
+  expect(executedQueries[2]?.text).toContain("UPDATE public.delivery_pricings");
+  expect(executedQueries[2]?.params).toEqual(["Abuja", "car", 1200, fixedNow, 2]);
+});
+
+test("updateDeliveryPricing validates inputs and maps not-found or duplicate conflicts", async () => {
+  await expect(
+    updateDeliveryPricing({
+      id: 0,
+      state: "Lagos"
+    })
+  ).rejects.toThrow(DeliveryPricingValidationError);
+
+  await expect(
+    updateDeliveryPricing({
+      id: 1
+    })
+  ).rejects.toThrow(DeliveryPricingValidationError);
+
+  await expect(
+    updateDeliveryPricing({
+      id: 1,
+      state: "   "
+    })
+  ).rejects.toThrow(DeliveryPricingValidationError);
+
+  await expect(
+    updateDeliveryPricing({
+      id: 1,
+      vehicleType: "van" as never
+    })
+  ).rejects.toThrow(DeliveryPricingValidationError);
+
+  await expect(
+    updateDeliveryPricing({
+      id: 1,
+      baseFee: 10.001
+    })
+  ).rejects.toThrow(DeliveryPricingValidationError);
+
+  await expect(
+    updateDeliveryPricing(
+      {
+        id: 3,
+        vehicleType: "truck"
+      },
+      {
+        queryFn: async <T extends QueryResultRow = QueryResultRow>() =>
+          createQueryResult([]) as unknown as QueryResult<T>
+      }
+    )
+  ).rejects.toThrow(DeliveryPricingNotFoundError);
+
+  await expect(
+    updateDeliveryPricing(
+      {
+        id: 3,
+        vehicleType: "truck"
+      },
+      {
+        queryFn: async <T extends QueryResultRow = QueryResultRow>(
+          text: string
+        ): Promise<QueryResult<T>> => {
+          if (text.includes("WHERE dp.id = $1")) {
+            return createQueryResult([
+              {
+                id: 3,
+                state: "Lagos",
+                vehicleType: "car",
+                baseFee: 900
+              }
+            ]) as unknown as QueryResult<T>;
+          }
+
+          if (text.includes("AND dp.id <> $3")) {
+            return createQueryResult([
+              {
+                id: 1
+              }
+            ]) as unknown as QueryResult<T>;
+          }
+
+          throw new Error(`Unexpected query: ${text}`);
+        }
+      }
+    )
+  ).rejects.toThrow(DeliveryPricingConflictError);
 });
 
 test("listDeliveryPricing returns mapped pricing rules with stable ordering and optional filters", async () => {
@@ -471,6 +625,307 @@ test("GET /admin/delivery/pricing returns the success payload and passes trimmed
           baseFee: 500
         }
       ]
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/delivery/pricing/:id returns 401 when the admin token is missing", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/delivery",
+    createAdminDeliveryRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/delivery/pricing/1`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        baseFee: 1200
+      })
+    });
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/delivery/pricing/:id returns 403 for non-super-admins", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/delivery",
+    createAdminDeliveryRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "finance"
+        })
+      ),
+      updateDeliveryPricingHandler: async () => {
+        throw new Error("This handler should not be called when access is forbidden");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/delivery/pricing/1`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        baseFee: 1200
+      })
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/delivery/pricing/:id validates the path and request body", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/delivery",
+    createAdminDeliveryRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      updateDeliveryPricingHandler: async () => {
+        throw new Error("This handler should not be called when validation fails");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    let response = await fetch(`${server.baseUrl}/admin/delivery/pricing/abc`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        baseFee: 1200
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "id must be a positive integer"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/delivery/pricing/1`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({})
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "At least one delivery pricing field must be provided for update"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/delivery/pricing/1`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        state: "   "
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "state must be a non-empty string when provided"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/delivery/pricing/1`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        vehicleType: "van"
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "vehicleType must be one of bike, car, truck when provided"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/delivery/pricing/1`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        baseFee: 1000.001
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message:
+        "baseFee must be a non-negative finite number with at most 2 decimal places when provided"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/delivery/pricing/:id maps 404 and 409 errors", async () => {
+  let server;
+  const notFoundApplication = express();
+  notFoundApplication.use(express.json());
+  notFoundApplication.use(
+    "/admin/delivery",
+    createAdminDeliveryRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      updateDeliveryPricingHandler: async () => {
+        throw new DeliveryPricingNotFoundError("Delivery pricing not found");
+      }
+    })
+  );
+
+  server = await startTestServer(notFoundApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/delivery/pricing/1`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        baseFee: 1200
+      })
+    });
+
+    expect(response.status).toBe(404);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Delivery pricing not found"
+    });
+  } finally {
+    await server.close();
+  }
+
+  const conflictApplication = express();
+  conflictApplication.use(express.json());
+  conflictApplication.use(
+    "/admin/delivery",
+    createAdminDeliveryRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      updateDeliveryPricingHandler: async () => {
+        throw new DeliveryPricingConflictError(
+          "Delivery pricing already exists for the provided state and vehicle type"
+        );
+      }
+    })
+  );
+
+  server = await startTestServer(conflictApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/delivery/pricing/1`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        vehicleType: "bike"
+      })
+    });
+
+    expect(response.status).toBe(409);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Delivery pricing already exists for the provided state and vehicle type"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/delivery/pricing/:id returns the success payload and passes trimmed values", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/delivery",
+    createAdminDeliveryRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      updateDeliveryPricingHandler: async (
+        payload
+      ): Promise<UpdateDeliveryPricingResponse> => {
+        expect(payload).toEqual({
+          id: 2,
+          state: "Abuja",
+          vehicleType: "truck",
+          baseFee: 1500
+        });
+
+        return {
+          message: "Delivery pricing updated successfully",
+          data: {
+            id: 2,
+            state: "Abuja",
+            vehicleType: "truck",
+            baseFee: 1500
+          }
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/delivery/pricing/2`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        state: " Abuja ",
+        vehicleType: "truck",
+        baseFee: 1500
+      })
+    });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Delivery pricing updated successfully",
+      data: {
+        id: 2,
+        state: "Abuja",
+        vehicleType: "truck",
+        baseFee: 1500
+      }
     });
   } finally {
     await server.close();

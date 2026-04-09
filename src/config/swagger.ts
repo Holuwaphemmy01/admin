@@ -524,6 +524,36 @@ export const swaggerSpec = {
           }
         }
       },
+      UpdateDeliveryPricingRequest: {
+        type: "object",
+        properties: {
+          state: {
+            type: "string",
+            example: "Abuja"
+          },
+          vehicleType: {
+            type: "string",
+            enum: ["bike", "car", "truck"],
+            example: "car"
+          },
+          baseFee: {
+            type: "number",
+            example: 1200
+          }
+        }
+      },
+      UpdateDeliveryPricingResponse: {
+        type: "object",
+        properties: {
+          message: {
+            type: "string",
+            example: "Delivery pricing updated successfully"
+          },
+          data: {
+            $ref: "#/components/schemas/DeliveryPricingRecord"
+          }
+        }
+      },
       DeliveryPricingListResponse: {
         type: "object",
         properties: {
@@ -2147,6 +2177,102 @@ export const swaggerSpec = {
               "application/json": {
                 schema: {
                   $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            description: "Delivery pricing already exists for the provided state and vehicle type",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ConflictErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/delivery/pricing/{id}": {
+      put: {
+        tags: ["Delivery & Logistics"],
+        summary: "Update a delivery pricing entry",
+        description:
+          "Updates one or more fields on an existing delivery pricing record for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "path",
+            name: "id",
+            required: true,
+            schema: {
+              type: "integer"
+            },
+            description: "Delivery pricing record ID"
+          }
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/UpdateDeliveryPricingRequest"
+              }
+            }
+          }
+        },
+        responses: {
+          "200": {
+            description: "Delivery pricing updated successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/UpdateDeliveryPricingResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid delivery pricing update request payload",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to update delivery pricing",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "Delivery pricing record not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
                 }
               }
             }
