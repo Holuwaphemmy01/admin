@@ -5,6 +5,8 @@ import { QueryResult, QueryResultRow } from "pg";
 import { query, withTransaction } from "../../config/db";
 import { normalizeCredentialValue } from "../admin-auth/utils";
 import {
+  AdminCampaignAnalyticsFilters,
+  AdminCampaignAnalyticsResponse,
   AdminCampaignStatusFilter,
   AdminCampaignDetailsResponse,
   AdminCampaignsListFilters,
@@ -50,6 +52,14 @@ interface AdminCampaignRow extends QueryResultRow {
 
 interface TotalCountRow extends QueryResultRow {
   total: number;
+}
+
+interface AdminCampaignAnalyticsRow extends QueryResultRow {
+  totalCampaigns: string | number | null;
+  totalImpressions: string | number | null;
+  totalClicks: string | number | null;
+  totalConversions: string | number | null;
+  totalRevenue: string | number | null;
 }
 
 interface AdminCampaignDetailsRow extends QueryResultRow {
@@ -236,6 +246,18 @@ function normalizeRequiredTextField(value: string, fieldName: string): string {
   }
 
   return normalizedValue;
+}
+
+function normalizeOptionalDateFilter(value: Date | undefined, fieldName: string): Date | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
+    throw new AdminCampaignsValidationError(`${fieldName} must be a valid ISO 8601 datetime`);
+  }
+
+  return value;
 }
 
 function mapRequiredIdAsString(value: string | number | null, fieldName: string): string {
@@ -442,6 +464,103 @@ export async function listAdminCampaigns(
       endDate: mapOptionalDate(campaign.endDate)
     })),
     total: Number(totalResult.rows[0]?.total ?? 0)
+  };
+}
+
+export async function getAdminCampaignAnalytics(
+  filters: AdminCampaignAnalyticsFilters,
+  dependencies: AdminCampaignsServiceDependencies = {}
+): Promise<AdminCampaignAnalyticsResponse> {
+  const queryFn = getQueryFn(dependencies);
+  const normalizedFilters: AdminCampaignAnalyticsFilters = {
+    ...(filters.from !== undefined
+      ? { from: normalizeOptionalDateFilter(filters.from, "from") }
+      : {}),
+    ...(filters.to !== undefined ? { to: normalizeOptionalDateFilter(filters.to, "to") } : {})
+  };
+
+  if (
+    normalizedFilters.from instanceof Date &&
+    normalizedFilters.to instanceof Date &&
+    normalizedFilters.from > normalizedFilters.to
+  ) {
+    throw new AdminCampaignsValidationError("from must be less than or equal to to");
+  }
+
+  const result = await queryFn<AdminCampaignAnalyticsRow>(
+    [
+      "WITH bounds AS (",
+      "  SELECT",
+      '    $1::timestamp with time zone AS "fromDate",',
+      '    $2::timestamp with time zone AS "toDate"',
+      ")",
+      "SELECT",
+      "  (",
+      "    SELECT COUNT(*)::int",
+      "    FROM public.promote_post_campaign ppc",
+      "    CROSS JOIN bounds",
+      '    WHERE (bounds."fromDate" IS NULL OR ppc."createdAt" >= bounds."fromDate")',
+      '      AND (bounds."toDate" IS NULL OR ppc."createdAt" <= bounds."toDate")',
+      '  ) AS "totalCampaigns",',
+      "  (",
+      "    SELECT COUNT(*)::bigint",
+      "    FROM public.promote_post_impression ppi",
+      "    CROSS JOIN bounds",
+      '    WHERE (bounds."fromDate" IS NULL OR ppi."viewedAt" >= bounds."fromDate")',
+      '      AND (bounds."toDate" IS NULL OR ppi."viewedAt" <= bounds."toDate")',
+      '  ) AS "totalImpressions",',
+      "  (",
+      "    SELECT COUNT(*)::bigint",
+      "    FROM public.promote_post_click ppclick",
+      "    CROSS JOIN bounds",
+      '    WHERE (bounds."fromDate" IS NULL OR ppclick."clickedAt" >= bounds."fromDate")',
+      '      AND (bounds."toDate" IS NULL OR ppclick."clickedAt" <= bounds."toDate")',
+      '  ) AS "totalClicks",',
+      "  (",
+      "    SELECT COUNT(*)::bigint",
+      "    FROM public.promote_post_engagement ppe",
+      "    CROSS JOIN bounds",
+      '    WHERE (bounds."fromDate" IS NULL OR ppe."engagedAt" >= bounds."fromDate")',
+      '      AND (bounds."toDate" IS NULL OR ppe."engagedAt" <= bounds."toDate")',
+      '  ) AS "totalConversions",',
+      "  (",
+      "    SELECT COALESCE(SUM(ppt.amount), 0)::numeric",
+      "    FROM public.promote_post_transaction ppt",
+      "    CROSS JOIN bounds",
+      '    WHERE (bounds."fromDate" IS NULL OR ppt."createdAt" >= bounds."fromDate")',
+      '      AND (bounds."toDate" IS NULL OR ppt."createdAt" <= bounds."toDate")',
+      '  ) AS "totalRevenue"',
+    ].join("\n"),
+    [normalizedFilters.from ?? null, normalizedFilters.to ?? null]
+  );
+  const analytics = result.rows[0];
+
+  if (!analytics) {
+    throw new Error("Admin campaign analytics query did not return a row");
+  }
+
+  const totalCampaigns = mapRequiredNonNegativeInteger(analytics.totalCampaigns, "totalCampaigns");
+  const totalImpressions = mapRequiredNonNegativeInteger(
+    analytics.totalImpressions,
+    "totalImpressions"
+  );
+  const totalClicks = mapRequiredNonNegativeInteger(analytics.totalClicks, "totalClicks");
+  const totalConversions = mapRequiredNonNegativeInteger(
+    analytics.totalConversions,
+    "totalConversions"
+  );
+  const totalRevenue = mapRequiredNumber(analytics.totalRevenue, "totalRevenue");
+
+  return {
+    totalCampaigns,
+    totalImpressions,
+    totalClicks,
+    totalConversions,
+    totalRevenue,
+    ctr:
+      totalImpressions === 0
+        ? 0
+        : Number(((totalClicks / totalImpressions) * 100).toFixed(2))
   };
 }
 

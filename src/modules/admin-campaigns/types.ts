@@ -35,6 +35,20 @@ export interface AdminCampaignsListResponse {
   total: number;
 }
 
+export interface AdminCampaignAnalyticsFilters {
+  from?: Date;
+  to?: Date;
+}
+
+export interface AdminCampaignAnalyticsResponse {
+  totalCampaigns: number;
+  totalImpressions: number;
+  totalClicks: number;
+  totalConversions: number;
+  totalRevenue: number;
+  ctr: number;
+}
+
 export interface AdminCampaignDetailsResponse {
   campaignId: string;
   username: string;

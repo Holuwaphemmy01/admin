@@ -965,6 +965,35 @@ export const swaggerSpec = {
           }
         }
       },
+      AdminCampaignAnalyticsResponse: {
+        type: "object",
+        properties: {
+          totalCampaigns: {
+            type: "integer",
+            example: 12
+          },
+          totalImpressions: {
+            type: "integer",
+            example: 1200
+          },
+          totalClicks: {
+            type: "integer",
+            example: 48
+          },
+          totalConversions: {
+            type: "integer",
+            example: 6
+          },
+          totalRevenue: {
+            type: "number",
+            example: 14500.5
+          },
+          ctr: {
+            type: "number",
+            example: 4
+          }
+        }
+      },
       AdminCampaignDetailsResponse: {
         type: "object",
         properties: {
@@ -3560,6 +3589,83 @@ export const swaggerSpec = {
           },
           "403": {
             description: "Authenticated admin is not allowed to list promoted campaigns",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/campaigns/analytics": {
+      get: {
+        tags: ["Ads & Promoted Posts"],
+        summary: "Platform-wide ads performance",
+        description:
+          "Returns aggregate promoted-post campaign performance metrics across the platform for authenticated super admin access, with optional date-range filtering.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "query",
+            name: "from",
+            required: false,
+            schema: {
+              type: "string",
+              format: "date-time"
+            },
+            description: "Inclusive start date for campaign analytics"
+          },
+          {
+            in: "query",
+            name: "to",
+            required: false,
+            schema: {
+              type: "string",
+              format: "date-time"
+            },
+            description: "Inclusive end date for campaign analytics"
+          }
+        ],
+        responses: {
+          "200": {
+            description: "Campaign analytics returned successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/AdminCampaignAnalyticsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid campaign analytics query filters",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/UnauthorizedErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to view campaign analytics",
             content: {
               "application/json": {
                 schema: {

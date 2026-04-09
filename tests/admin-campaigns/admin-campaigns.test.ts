@@ -9,6 +9,7 @@ import { AuthenticatedAdmin } from "../../src/modules/admin-auth/types";
 import { createAdminCampaignsRouter } from "../../src/modules/admin-campaigns/routes";
 import {
   AdminCampaignApprovalConflictError,
+  getAdminCampaignAnalytics,
   AdminCampaignNotFoundError,
   AdminCampaignPauseConflictError,
   AdminCampaignRejectionConflictError,
@@ -20,6 +21,7 @@ import {
   rejectAdminCampaign
 } from "../../src/modules/admin-campaigns/service";
 import {
+  AdminCampaignAnalyticsResponse,
   AdminCampaignDetailsResponse,
   AdminCampaignsListResponse,
   PauseAdminCampaignResponse,
@@ -230,6 +232,99 @@ test("listAdminCampaigns applies filters and rejects invalid filter values", asy
       limit: 20
     })
   ).rejects.toThrow("username must be a non-empty string when provided");
+});
+
+test("getAdminCampaignAnalytics aggregates platform metrics and derives ctr from filtered activity", async () => {
+  const from = new Date("2026-03-01T00:00:00.000Z");
+  const to = new Date("2026-03-31T23:59:59.000Z");
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await getAdminCampaignAnalytics(
+    {
+      from,
+      to
+    },
+    {
+      queryFn: async <T extends QueryResultRow = QueryResultRow>(
+        text: string,
+        params?: unknown[]
+      ): Promise<QueryResult<T>> => {
+        executedQueries.push({ text, params });
+
+        return createQueryResult([
+          {
+            totalCampaigns: "5",
+            totalImpressions: "200",
+            totalClicks: 25,
+            totalConversions: "6",
+            totalRevenue: "14500.50"
+          }
+        ]) as unknown as QueryResult<T>;
+      }
+    }
+  );
+
+  expect(executedQueries).toHaveLength(1);
+  expect(executedQueries[0]?.text).toContain("FROM public.promote_post_campaign ppc");
+  expect(executedQueries[0]?.text).toContain("FROM public.promote_post_impression ppi");
+  expect(executedQueries[0]?.text).toContain("FROM public.promote_post_click ppclick");
+  expect(executedQueries[0]?.text).toContain("FROM public.promote_post_engagement ppe");
+  expect(executedQueries[0]?.text).toContain("FROM public.promote_post_transaction ppt");
+  expect(executedQueries[0]?.params).toEqual([from, to]);
+  expect(response).toEqual({
+    totalCampaigns: 5,
+    totalImpressions: 200,
+    totalClicks: 25,
+    totalConversions: 6,
+    totalRevenue: 14500.5,
+    ctr: 12.5
+  });
+});
+
+test("getAdminCampaignAnalytics validates date filters and handles empty metric rows", async () => {
+  const response = await getAdminCampaignAnalytics(
+    {},
+    {
+      queryFn: async <T extends QueryResultRow = QueryResultRow>() =>
+        createQueryResult([
+          {
+            totalCampaigns: 0,
+            totalImpressions: 0,
+            totalClicks: 0,
+            totalConversions: 0,
+            totalRevenue: 0
+          }
+        ]) as unknown as QueryResult<T>
+    }
+  );
+
+  expect(response).toEqual({
+    totalCampaigns: 0,
+    totalImpressions: 0,
+    totalClicks: 0,
+    totalConversions: 0,
+    totalRevenue: 0,
+    ctr: 0
+  });
+
+  await expect(
+    getAdminCampaignAnalytics({
+      from: new Date("invalid")
+    })
+  ).rejects.toThrow("from must be a valid ISO 8601 datetime");
+
+  await expect(
+    getAdminCampaignAnalytics({
+      to: new Date("invalid")
+    })
+  ).rejects.toThrow("to must be a valid ISO 8601 datetime");
+
+  await expect(
+    getAdminCampaignAnalytics({
+      from: new Date("2026-04-01T00:00:00.000Z"),
+      to: new Date("2026-03-01T00:00:00.000Z")
+    })
+  ).rejects.toThrow("from must be less than or equal to to");
 });
 
 test("approveAdminCampaign activates a draft campaign and preserves an existing start date", async () => {
@@ -1594,6 +1689,171 @@ test("GET /admin/campaigns returns the paginated campaigns payload and passes tr
         }
       ],
       total: 1
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/campaigns/analytics returns 401 when the admin token is missing", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/campaigns",
+    createAdminCampaignsRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/campaigns/analytics`);
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/campaigns/analytics returns 403 for non-super-admins", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/campaigns",
+    createAdminCampaignsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "support"
+        })
+      ),
+      getAdminCampaignAnalyticsHandler: async () => {
+        throw new Error("This handler should not be called when access is forbidden");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/campaigns/analytics`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/campaigns/analytics validates date query filters and maps service validation errors", async () => {
+  let server;
+  const validationApplication = express();
+
+  validationApplication.use(
+    "/admin/campaigns",
+    createAdminCampaignsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getAdminCampaignAnalyticsHandler: async () => {
+        throw new AdminCampaignsValidationError("from must be less than or equal to to");
+      }
+    })
+  );
+
+  server = await startTestServer(validationApplication);
+
+  try {
+    let response = await fetch(`${server.baseUrl}/admin/campaigns/analytics?from=bad-date`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "from must be a valid ISO 8601 datetime"
+    });
+
+    response = await fetch(
+      `${server.baseUrl}/admin/campaigns/analytics?from=2026-04-01T00:00:00.000Z&to=2026-03-01T00:00:00.000Z`,
+      {
+        headers: {
+          Authorization: "Bearer any-token"
+        }
+      }
+    );
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "from must be less than or equal to to"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/campaigns/analytics`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "from must be less than or equal to to"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/campaigns/analytics returns the aggregate analytics payload and passes parsed dates", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/campaigns",
+    createAdminCampaignsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getAdminCampaignAnalyticsHandler: async (
+        filters
+      ): Promise<AdminCampaignAnalyticsResponse> => {
+        expect(filters).toEqual({
+          from: new Date("2026-03-01T00:00:00.000Z"),
+          to: new Date("2026-03-31T23:59:59.000Z")
+        });
+
+        return {
+          totalCampaigns: 5,
+          totalImpressions: 200,
+          totalClicks: 25,
+          totalConversions: 6,
+          totalRevenue: 14500.5,
+          ctr: 12.5
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(
+      `${server.baseUrl}/admin/campaigns/analytics?from=2026-03-01T00:00:00.000Z&to=2026-03-31T23:59:59.000Z`,
+      {
+        headers: {
+          Authorization: "Bearer any-token"
+        }
+      }
+    );
+
+    expect(response.status).toBe(200);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      totalCampaigns: 5,
+      totalImpressions: 200,
+      totalClicks: 25,
+      totalConversions: 6,
+      totalRevenue: 14500.5,
+      ctr: 12.5
     });
   } finally {
     await server.close();

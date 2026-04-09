@@ -2,6 +2,7 @@ import { Request, RequestHandler, Response, Router } from "express";
 
 import { authenticateAdmin, requireAdminRole } from "../admin-auth/middleware";
 import {
+  AdminCampaignAnalyticsFilters,
   DEFAULT_ADMIN_CAMPAIGNS_LIMIT,
   DEFAULT_ADMIN_CAMPAIGNS_PAGE,
   MAX_ADMIN_CAMPAIGNS_LIMIT,
@@ -15,6 +16,7 @@ import {
   AdminCampaignRejectionConflictError,
   AdminCampaignsValidationError,
   approveAdminCampaign,
+  getAdminCampaignAnalytics,
   getAdminCampaignDetails,
   listAdminCampaigns,
   pauseAdminCampaign,
@@ -23,6 +25,7 @@ import {
 
 interface AdminCampaignsRouterDependencies {
   approveAdminCampaignHandler?: typeof approveAdminCampaign;
+  getAdminCampaignAnalyticsHandler?: typeof getAdminCampaignAnalytics;
   getAdminCampaignDetailsHandler?: typeof getAdminCampaignDetails;
   listAdminCampaignsHandler?: typeof listAdminCampaigns;
   pauseAdminCampaignHandler?: typeof pauseAdminCampaign;
@@ -83,12 +86,24 @@ function parseCampaignStatus(value: string): AdminCampaignStatusFilter {
   return normalizedValue;
 }
 
+function parseIsoDate(value: string, fieldName: string): Date {
+  const parsedDate = new Date(value);
+
+  if (Number.isNaN(parsedDate.getTime())) {
+    throw new AdminCampaignsQueryValidationError(`${fieldName} must be a valid ISO 8601 datetime`);
+  }
+
+  return parsedDate;
+}
+
 export function createAdminCampaignsRouter(
   dependencies: AdminCampaignsRouterDependencies = {}
 ): Router {
   const adminCampaignsRouter = Router();
   const approveAdminCampaignHandler =
     dependencies.approveAdminCampaignHandler ?? approveAdminCampaign;
+  const getAdminCampaignAnalyticsHandler =
+    dependencies.getAdminCampaignAnalyticsHandler ?? getAdminCampaignAnalytics;
   const getAdminCampaignDetailsHandler =
     dependencies.getAdminCampaignDetailsHandler ?? getAdminCampaignDetails;
   const listAdminCampaignsHandler =
@@ -355,6 +370,53 @@ export function createAdminCampaignsRouter(
 
         if (error instanceof AdminCampaignRejectionConflictError) {
           response.status(409).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
+
+  adminCampaignsRouter.get(
+    "/analytics",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      try {
+        const fromQuery = readSingleQueryValue(request.query.from);
+        const toQuery = readSingleQueryValue(request.query.to);
+
+        const filters: AdminCampaignAnalyticsFilters = {};
+
+        if (typeof fromQuery === "string" && fromQuery !== "") {
+          filters.from = parseIsoDate(fromQuery, "from");
+        } else if (fromQuery === "") {
+          throw new AdminCampaignsQueryValidationError("from must be a valid ISO 8601 datetime");
+        }
+
+        if (typeof toQuery === "string" && toQuery !== "") {
+          filters.to = parseIsoDate(toQuery, "to");
+        } else if (toQuery === "") {
+          throw new AdminCampaignsQueryValidationError("to must be a valid ISO 8601 datetime");
+        }
+
+        if (filters.from && filters.to && filters.from > filters.to) {
+          throw new AdminCampaignsQueryValidationError("from must be less than or equal to to");
+        }
+
+        const analyticsResponse = await getAdminCampaignAnalyticsHandler(filters);
+
+        response.json(analyticsResponse);
+      } catch (error) {
+        if (
+          error instanceof AdminCampaignsQueryValidationError ||
+          error instanceof AdminCampaignsValidationError
+        ) {
+          response.status(400).json({
             message: error.message
           });
 
