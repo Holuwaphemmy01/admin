@@ -37,6 +37,10 @@ export interface UpdateAdminSubscriptionPlanRequestBody {
   features?: string[];
 }
 
+export interface DeleteAdminSubscriptionPlanRequestBody {
+  id: number;
+}
+
 export interface CreatedAdminSubscriptionPlan {
   id: number;
   name: string;
@@ -58,4 +62,8 @@ export interface CreateAdminSubscriptionPlanResponse {
 export interface UpdateAdminSubscriptionPlanResponse {
   message: string;
   plan: CreatedAdminSubscriptionPlan;
+}
+
+export interface DeleteAdminSubscriptionPlanResponse {
+  message: string;
 }

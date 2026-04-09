@@ -12,12 +12,14 @@ import {
   AdminSubscriptionNotFoundError,
   AdminSubscriptionValidationError,
   createAdminSubscriptionPlan,
+  deleteAdminSubscriptionPlan,
   listAdminSubscriptions,
   updateAdminSubscriptionPlan
 } from "../../src/modules/admin-subscriptions/service";
 import {
   AdminSubscriptionsResponse,
   CreateAdminSubscriptionPlanResponse,
+  DeleteAdminSubscriptionPlanResponse,
   UpdateAdminSubscriptionPlanResponse
 } from "../../src/modules/admin-subscriptions/types";
 
@@ -186,6 +188,7 @@ test("listAdminSubscriptions groups seller and logistic plans into the expected 
   expect(executedQueries).toHaveLength(1);
   expect(executedQueries[0]?.text).toContain("FROM public.subscription s");
   expect(executedQueries[0]?.text).toContain("WHERE s.type IN ('seller', 'logistic')");
+  expect(executedQueries[0]?.text).toContain("AND COALESCE(s.status, 1) = 1");
 });
 
 test("listAdminSubscriptions returns empty arrays when there are no matching subscription rows", async () => {
@@ -805,6 +808,60 @@ test("updateAdminSubscriptionPlan validates payloads and maps not found or dupli
 
           throw new Error(`Unexpected query: ${text}`);
         }
+      }
+    )
+  ).rejects.toThrow(AdminSubscriptionNotFoundError);
+});
+
+test("deleteAdminSubscriptionPlan marks an active subscription plan as removed", async () => {
+  const fixedNow = new Date("2026-04-09T16:00:00.000Z");
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await deleteAdminSubscriptionPlan(
+    {
+      id: 12
+    },
+    {
+      nowFactory: () => fixedNow,
+      queryFn: async <T extends QueryResultRow = QueryResultRow>(
+        text: string,
+        params?: unknown[]
+      ): Promise<QueryResult<T>> => {
+        executedQueries.push({ text, params });
+
+        return createQueryResult([
+          {
+            id: 12
+          }
+        ]) as unknown as QueryResult<T>;
+      }
+    }
+  );
+
+  expect(response).toEqual({
+    message: "Plan removed"
+  });
+  expect(executedQueries).toHaveLength(1);
+  expect(executedQueries[0]?.text).toContain("UPDATE public.subscription");
+  expect(executedQueries[0]?.text).toContain("COALESCE(status, 1) = 1");
+  expect(executedQueries[0]?.params).toEqual([fixedNow, 12]);
+});
+
+test("deleteAdminSubscriptionPlan validates the id and maps missing plans", async () => {
+  await expect(
+    deleteAdminSubscriptionPlan({
+      id: 0
+    })
+  ).rejects.toThrow(AdminSubscriptionValidationError);
+
+  await expect(
+    deleteAdminSubscriptionPlan(
+      {
+        id: 999
+      },
+      {
+        queryFn: async <T extends QueryResultRow = QueryResultRow>() =>
+          createQueryResult([]) as unknown as QueryResult<T>
       }
     )
   ).rejects.toThrow(AdminSubscriptionNotFoundError);
@@ -1510,6 +1567,167 @@ test("PUT /admin/subscriptions/plans/:id returns the success payload and passes 
         features: ["Priority support", "Weekend coverage"],
         status: 1
       }
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("DELETE /admin/subscriptions/plans/:id returns 401 when the admin token is missing", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/subscriptions",
+    createAdminSubscriptionsRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/subscriptions/plans/12`, {
+      method: "DELETE"
+    });
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("DELETE /admin/subscriptions/plans/:id returns 403 for non-super-admins", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/subscriptions",
+    createAdminSubscriptionsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "support"
+        })
+      ),
+      deleteAdminSubscriptionPlanHandler: async () => {
+        throw new Error("This handler should not be called when access is forbidden");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/subscriptions/plans/12`, {
+      method: "DELETE",
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("DELETE /admin/subscriptions/plans/:id validates the id and maps not found", async () => {
+  let server;
+  const validationApplication = express();
+  validationApplication.use(express.json());
+  validationApplication.use(
+    "/admin/subscriptions",
+    createAdminSubscriptionsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      deleteAdminSubscriptionPlanHandler: async () => {
+        throw new Error("This handler should not be called when validation fails");
+      }
+    })
+  );
+
+  server = await startTestServer(validationApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/subscriptions/plans/abc`, {
+      method: "DELETE",
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "id must be a positive integer"
+    });
+  } finally {
+    await server.close();
+  }
+
+  const notFoundApplication = express();
+  notFoundApplication.use(express.json());
+  notFoundApplication.use(
+    "/admin/subscriptions",
+    createAdminSubscriptionsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      deleteAdminSubscriptionPlanHandler: async () => {
+        throw new AdminSubscriptionNotFoundError("Subscription plan not found");
+      }
+    })
+  );
+
+  server = await startTestServer(notFoundApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/subscriptions/plans/12`, {
+      method: "DELETE",
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(404);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Subscription plan not found"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("DELETE /admin/subscriptions/plans/:id returns the success payload", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/subscriptions",
+    createAdminSubscriptionsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      deleteAdminSubscriptionPlanHandler: async (
+        payload
+      ): Promise<DeleteAdminSubscriptionPlanResponse> => {
+        expect(payload).toEqual({
+          id: 12
+        });
+
+        return {
+          message: "Plan removed"
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/subscriptions/plans/12`, {
+      method: "DELETE",
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Plan removed"
     });
   } finally {
     await server.close();

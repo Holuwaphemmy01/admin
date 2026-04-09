@@ -6,6 +6,7 @@ import {
   AdminSubscriptionNotFoundError,
   AdminSubscriptionValidationError,
   createAdminSubscriptionPlan,
+  deleteAdminSubscriptionPlan,
   listAdminSubscriptions,
   updateAdminSubscriptionPlan
 } from "./service";
@@ -13,6 +14,7 @@ import { AdminSubscriptionPlanType } from "./types";
 
 interface AdminSubscriptionsRouterDependencies {
   createAdminSubscriptionPlanHandler?: typeof createAdminSubscriptionPlan;
+  deleteAdminSubscriptionPlanHandler?: typeof deleteAdminSubscriptionPlan;
   listAdminSubscriptionsHandler?: typeof listAdminSubscriptions;
   updateAdminSubscriptionPlanHandler?: typeof updateAdminSubscriptionPlan;
   authenticateAdminMiddleware?: RequestHandler;
@@ -50,6 +52,8 @@ export function createAdminSubscriptionsRouter(
   const adminSubscriptionsRouter = Router();
   const createAdminSubscriptionPlanHandler =
     dependencies.createAdminSubscriptionPlanHandler ?? createAdminSubscriptionPlan;
+  const deleteAdminSubscriptionPlanHandler =
+    dependencies.deleteAdminSubscriptionPlanHandler ?? deleteAdminSubscriptionPlan;
   const listAdminSubscriptionsHandler =
     dependencies.listAdminSubscriptionsHandler ?? listAdminSubscriptions;
   const updateAdminSubscriptionPlanHandler =
@@ -325,6 +329,51 @@ export function createAdminSubscriptionsRouter(
 
         if (error instanceof AdminSubscriptionConflictError) {
           response.status(409).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
+
+  adminSubscriptionsRouter.delete(
+    "/plans/:id",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      const rawId = Array.isArray(request.params.id)
+        ? request.params.id[0] ?? ""
+        : request.params.id ?? "";
+
+      if (!isValidPositiveInteger(rawId)) {
+        response.status(400).json({
+          message: "id must be a positive integer"
+        });
+
+        return;
+      }
+
+      try {
+        const result = await deleteAdminSubscriptionPlanHandler({
+          id: Number(rawId)
+        });
+
+        response.json(result);
+      } catch (error) {
+        if (error instanceof AdminSubscriptionValidationError) {
+          response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof AdminSubscriptionNotFoundError) {
+          response.status(404).json({
             message: error.message
           });
 

@@ -849,6 +849,15 @@ export const swaggerSpec = {
           }
         }
       },
+      DeleteAdminSubscriptionPlanResponse: {
+        type: "object",
+        properties: {
+          message: {
+            type: "string",
+            example: "Plan removed"
+          }
+        }
+      },
       AdminSettlementItem: {
         type: "object",
         properties: {
@@ -2962,6 +2971,81 @@ export const swaggerSpec = {
           },
           "409": {
             description: "Subscription plan conflict",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      delete: {
+        tags: ["Subscriptions"],
+        summary: "Remove a subscription plan",
+        description:
+          "Removes an active subscription plan for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "path",
+            name: "id",
+            required: true,
+            schema: {
+              type: "integer",
+              minimum: 1
+            },
+            description: "Subscription plan identifier"
+          }
+        ],
+        responses: {
+          "200": {
+            description: "Subscription plan removed successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/DeleteAdminSubscriptionPlanResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid subscription-plan identifier",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/UnauthorizedErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to remove subscription plans",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "Subscription plan not found",
             content: {
               "application/json": {
                 schema: {

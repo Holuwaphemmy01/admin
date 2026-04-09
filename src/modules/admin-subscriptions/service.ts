@@ -8,6 +8,8 @@ import {
   AdminSubscriptionsResponse,
   CreateAdminSubscriptionPlanRequestBody,
   CreateAdminSubscriptionPlanResponse,
+  DeleteAdminSubscriptionPlanRequestBody,
+  DeleteAdminSubscriptionPlanResponse,
   UpdateAdminSubscriptionPlanRequestBody,
   UpdateAdminSubscriptionPlanResponse
 } from "./types";
@@ -53,6 +55,10 @@ interface CreatedSubscriptionPlanRow extends QueryResultRow {
   description: string | null;
   status: string | number | null;
   type: string | null;
+}
+
+interface DeletedSubscriptionPlanRow extends QueryResultRow {
+  id: string | number;
 }
 
 type MessageErrorConstructor = new (message: string) => Error;
@@ -389,6 +395,7 @@ export async function listAdminSubscriptions(
       "  s.status, s.type",
       "FROM public.subscription s",
       "WHERE s.type IN ('seller', 'logistic')",
+      "  AND COALESCE(s.status, 1) = 1",
       "ORDER BY s.type ASC, s.price ASC NULLS LAST, s.duration ASC NULLS LAST, s.id ASC"
     ].join("\n")
   );
@@ -555,6 +562,7 @@ export async function updateAdminSubscriptionPlan(
       '  s."maxMonthlyDelivery" AS "maxMonthlyDelivery"',
       "FROM public.subscription s",
       "WHERE s.id = $1",
+      "  AND COALESCE(s.status, 1) = 1",
       "LIMIT 1"
     ].join("\n"),
     [id]
@@ -672,4 +680,34 @@ export async function updateAdminSubscriptionPlan(
 
     throw error;
   }
+}
+
+export async function deleteAdminSubscriptionPlan(
+  payload: DeleteAdminSubscriptionPlanRequestBody,
+  dependencies: AdminSubscriptionsServiceDependencies = {}
+): Promise<DeleteAdminSubscriptionPlanResponse> {
+  const queryFn = getQueryFn(dependencies);
+  const now = getNowFactory(dependencies)();
+  const id = normalizeSubscriptionPlanId(payload.id, AdminSubscriptionValidationError);
+  const deletedPlanResult = await queryFn<DeletedSubscriptionPlanRow>(
+    [
+      "UPDATE public.subscription",
+      "SET",
+      "  status = 0,",
+      '  "updatedAt" = $1',
+      "WHERE id = $2",
+      "  AND COALESCE(status, 1) = 1",
+      "RETURNING id"
+    ].join("\n"),
+    [now, id]
+  );
+  const deletedPlan = deletedPlanResult.rows[0];
+
+  if (!deletedPlan) {
+    throw new AdminSubscriptionNotFoundError("Subscription plan not found");
+  }
+
+  return {
+    message: "Plan removed"
+  };
 }
