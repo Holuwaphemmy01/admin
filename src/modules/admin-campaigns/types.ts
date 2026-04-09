@@ -1,0 +1,36 @@
+export const DEFAULT_ADMIN_CAMPAIGNS_PAGE = 1;
+export const DEFAULT_ADMIN_CAMPAIGNS_LIMIT = 20;
+export const MAX_ADMIN_CAMPAIGNS_LIMIT = 100;
+
+export const ADMIN_CAMPAIGN_STATUS_FILTERS = [
+  "draft",
+  "pending_approval",
+  "active",
+  "paused",
+  "completed",
+  "rejected"
+] as const;
+
+export type AdminCampaignStatusFilter = (typeof ADMIN_CAMPAIGN_STATUS_FILTERS)[number];
+
+export interface AdminCampaignsListFilters {
+  status?: AdminCampaignStatusFilter;
+  username?: string;
+  page: number;
+  limit: number;
+}
+
+export interface AdminCampaignItem {
+  campaignId: string;
+  username: string;
+  goal: string;
+  status: string;
+  budget: number;
+  startDate: string | null;
+  endDate: string | null;
+}
+
+export interface AdminCampaignsListResponse {
+  campaigns: AdminCampaignItem[];
+  total: number;
+}

@@ -52,6 +52,10 @@ export const swaggerSpec = {
     {
       name: "Subscriptions",
       description: "Administrative subscription-plan listing endpoints"
+    },
+    {
+      name: "Ads & Promoted Posts",
+      description: "Administrative promoted-post campaign listing endpoints"
     }
   ],
   components: {
@@ -897,6 +901,67 @@ export const swaggerSpec = {
           message: {
             type: "string",
             example: "Subscription revoked"
+          }
+        }
+      },
+      AdminCampaignItem: {
+        type: "object",
+        properties: {
+          campaignId: {
+            type: "string",
+            example: "13"
+          },
+          username: {
+            type: "string",
+            example: "seller-one"
+          },
+          goal: {
+            type: "string",
+            enum: ["awareness", "engagement", "conversion"],
+            example: "engagement"
+          },
+          status: {
+            type: "string",
+            enum: [
+              "draft",
+              "pending_approval",
+              "active",
+              "paused",
+              "completed",
+              "rejected"
+            ],
+            example: "active"
+          },
+          budget: {
+            type: "number",
+            example: 5000
+          },
+          startDate: {
+            type: "string",
+            format: "date-time",
+            nullable: true,
+            example: "2026-03-08T23:12:00.000Z"
+          },
+          endDate: {
+            type: "string",
+            format: "date-time",
+            nullable: true,
+            example: "2026-03-23T23:12:00.000Z"
+          }
+        }
+      },
+      AdminCampaignsListResponse: {
+        type: "object",
+        properties: {
+          campaigns: {
+            type: "array",
+            items: {
+              $ref: "#/components/schemas/AdminCampaignItem"
+            }
+          },
+          total: {
+            type: "integer",
+            example: 13
           }
         }
       },
@@ -3283,6 +3348,112 @@ export const swaggerSpec = {
               "application/json": {
                 schema: {
                   $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/campaigns": {
+      get: {
+        tags: ["Ads & Promoted Posts"],
+        summary: "List all promoted post campaigns",
+        description:
+          "Returns promoted post campaigns with optional status, username, and pagination filters for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "query",
+            name: "status",
+            required: false,
+            schema: {
+              type: "string",
+              enum: [
+                "draft",
+                "pending_approval",
+                "active",
+                "paused",
+                "completed",
+                "rejected"
+              ]
+            },
+            description: "Optional campaign status filter"
+          },
+          {
+            in: "query",
+            name: "username",
+            required: false,
+            schema: {
+              type: "string"
+            },
+            description: "Case-insensitive campaign owner username filter"
+          },
+          {
+            in: "query",
+            name: "page",
+            required: false,
+            schema: {
+              type: "integer",
+              default: 1,
+              minimum: 1
+            },
+            description: "Pagination page number"
+          },
+          {
+            in: "query",
+            name: "limit",
+            required: false,
+            schema: {
+              type: "integer",
+              default: 20,
+              minimum: 1,
+              maximum: 100
+            },
+            description: "Pagination page size"
+          }
+        ],
+        responses: {
+          "200": {
+            description: "Promoted campaigns returned successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/AdminCampaignsListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid campaigns query filters",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/UnauthorizedErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to list promoted campaigns",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
                 }
               }
             }
