@@ -5,6 +5,8 @@ import { normalizeCredentialValue } from "../admin-auth/utils";
 import {
   CreateDeliveryPricingRequestBody,
   CreateDeliveryPricingResponse,
+  DeleteDeliveryPricingRequestBody,
+  DeleteDeliveryPricingResponse,
   DeliveryVehicleType,
   ListDeliveryPricingFilters,
   ListDeliveryPricingResponse,
@@ -351,6 +353,33 @@ export async function updateDeliveryPricing(
   return {
     message: "Delivery pricing updated successfully",
     data: mapDeliveryPricingRecord(updatedPricing)
+  };
+}
+
+export async function deleteDeliveryPricing(
+  payload: DeleteDeliveryPricingRequestBody,
+  dependencies: AdminDeliveryServiceDependencies = {}
+): Promise<DeleteDeliveryPricingResponse> {
+  const queryFn = getQueryFn(dependencies);
+  const id = normalizePricingId(payload.id, DeliveryPricingValidationError);
+
+  const deletedPricingResult = await queryFn<ExistingDeliveryPricingRow>(
+    [
+      "DELETE FROM public.delivery_pricings",
+      "WHERE id = $1",
+      "RETURNING id"
+    ].join("\n"),
+    [id]
+  );
+
+  const deletedPricing = deletedPricingResult.rows[0];
+
+  if (!deletedPricing) {
+    throw new DeliveryPricingNotFoundError("Delivery pricing not found");
+  }
+
+  return {
+    message: "Pricing rule removed"
   };
 }
 

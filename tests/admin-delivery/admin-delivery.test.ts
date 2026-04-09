@@ -9,6 +9,7 @@ import { AuthenticatedAdmin } from "../../src/modules/admin-auth/types";
 import { createAdminDeliveryRouter } from "../../src/modules/admin-delivery/routes";
 import {
   createDeliveryPricing,
+  deleteDeliveryPricing,
   listDeliveryPricing,
   DeliveryPricingConflictError,
   DeliveryPricingNotFoundError,
@@ -17,6 +18,7 @@ import {
 import { updateDeliveryPricing } from "../../src/modules/admin-delivery/service";
 import {
   CreateDeliveryPricingResponse,
+  DeleteDeliveryPricingResponse,
   ListDeliveryPricingResponse,
   UpdateDeliveryPricingResponse
 } from "../../src/modules/admin-delivery/types";
@@ -363,6 +365,55 @@ test("updateDeliveryPricing validates inputs and maps not-found or duplicate con
       }
     )
   ).rejects.toThrow(DeliveryPricingConflictError);
+});
+
+test("deleteDeliveryPricing removes a pricing rule and validates not-found inputs", async () => {
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await deleteDeliveryPricing(
+    {
+      id: 2
+    },
+    {
+      queryFn: async <T extends QueryResultRow = QueryResultRow>(
+        text: string,
+        params?: unknown[]
+      ): Promise<QueryResult<T>> => {
+        executedQueries.push({ text, params });
+
+        return createQueryResult([
+          {
+            id: 2
+          }
+        ]) as unknown as QueryResult<T>;
+      }
+    }
+  );
+
+  expect(response).toEqual({
+    message: "Pricing rule removed"
+  });
+  expect(executedQueries).toHaveLength(1);
+  expect(executedQueries[0]?.text).toContain("DELETE FROM public.delivery_pricings");
+  expect(executedQueries[0]?.params).toEqual([2]);
+
+  await expect(
+    deleteDeliveryPricing({
+      id: 0
+    })
+  ).rejects.toThrow(DeliveryPricingValidationError);
+
+  await expect(
+    deleteDeliveryPricing(
+      {
+        id: 99
+      },
+      {
+        queryFn: async <T extends QueryResultRow = QueryResultRow>() =>
+          createQueryResult([]) as unknown as QueryResult<T>
+      }
+    )
+  ).rejects.toThrow(DeliveryPricingNotFoundError);
 });
 
 test("listDeliveryPricing returns mapped pricing rules with stable ordering and optional filters", async () => {
@@ -926,6 +977,167 @@ test("PUT /admin/delivery/pricing/:id returns the success payload and passes tri
         vehicleType: "truck",
         baseFee: 1500
       }
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("DELETE /admin/delivery/pricing/:id returns 401 when the admin token is missing", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/delivery",
+    createAdminDeliveryRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/delivery/pricing/1`, {
+      method: "DELETE"
+    });
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("DELETE /admin/delivery/pricing/:id returns 403 for non-super-admins", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/delivery",
+    createAdminDeliveryRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "finance"
+        })
+      ),
+      deleteDeliveryPricingHandler: async () => {
+        throw new Error("This handler should not be called when access is forbidden");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/delivery/pricing/1`, {
+      method: "DELETE",
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("DELETE /admin/delivery/pricing/:id validates the pricing id and maps not found", async () => {
+  let server;
+  const validationApplication = express();
+  validationApplication.use(express.json());
+  validationApplication.use(
+    "/admin/delivery",
+    createAdminDeliveryRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      deleteDeliveryPricingHandler: async () => {
+        throw new Error("This handler should not be called when validation fails");
+      }
+    })
+  );
+
+  server = await startTestServer(validationApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/delivery/pricing/abc`, {
+      method: "DELETE",
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "id must be a positive integer"
+    });
+  } finally {
+    await server.close();
+  }
+
+  const notFoundApplication = express();
+  notFoundApplication.use(express.json());
+  notFoundApplication.use(
+    "/admin/delivery",
+    createAdminDeliveryRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      deleteDeliveryPricingHandler: async () => {
+        throw new DeliveryPricingNotFoundError("Delivery pricing not found");
+      }
+    })
+  );
+
+  server = await startTestServer(notFoundApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/delivery/pricing/4`, {
+      method: "DELETE",
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(404);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Delivery pricing not found"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("DELETE /admin/delivery/pricing/:id returns the success payload", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/delivery",
+    createAdminDeliveryRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      deleteDeliveryPricingHandler: async (
+        payload
+      ): Promise<DeleteDeliveryPricingResponse> => {
+        expect(payload).toEqual({
+          id: 3
+        });
+
+        return {
+          message: "Pricing rule removed"
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/delivery/pricing/3`, {
+      method: "DELETE",
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Pricing rule removed"
     });
   } finally {
     await server.close();

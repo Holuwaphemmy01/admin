@@ -3,6 +3,7 @@ import { Request, RequestHandler, Response, Router } from "express";
 import { authenticateAdmin, requireAdminRole } from "../admin-auth/middleware";
 import {
   createDeliveryPricing,
+  deleteDeliveryPricing,
   listDeliveryPricing,
   updateDeliveryPricing,
   DeliveryPricingConflictError,
@@ -13,6 +14,7 @@ import { DeliveryVehicleType } from "./types";
 
 interface AdminDeliveryRouterDependencies {
   createDeliveryPricingHandler?: typeof createDeliveryPricing;
+  deleteDeliveryPricingHandler?: typeof deleteDeliveryPricing;
   listDeliveryPricingHandler?: typeof listDeliveryPricing;
   updateDeliveryPricingHandler?: typeof updateDeliveryPricing;
   authenticateAdminMiddleware?: RequestHandler;
@@ -58,6 +60,8 @@ export function createAdminDeliveryRouter(
   const adminDeliveryRouter = Router();
   const createDeliveryPricingHandler =
     dependencies.createDeliveryPricingHandler ?? createDeliveryPricing;
+  const deleteDeliveryPricingHandler =
+    dependencies.deleteDeliveryPricingHandler ?? deleteDeliveryPricing;
   const listDeliveryPricingHandler =
     dependencies.listDeliveryPricingHandler ?? listDeliveryPricing;
   const updateDeliveryPricingHandler =
@@ -207,6 +211,53 @@ export function createAdminDeliveryRouter(
           console.warn(`Delivery pricing update conflict for "${rawId}".`);
 
           response.status(409).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
+
+  adminDeliveryRouter.delete(
+    "/pricing/:id",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      const rawId = Array.isArray(request.params.id)
+        ? request.params.id[0] ?? ""
+        : request.params.id ?? "";
+
+      if (!isValidPositiveInteger(rawId)) {
+        response.status(400).json({
+          message: "id must be a positive integer"
+        });
+
+        return;
+      }
+
+      try {
+        const result = await deleteDeliveryPricingHandler({
+          id: Number(rawId)
+        });
+
+        console.info(`Delivery pricing deleted: "${rawId}".`);
+
+        response.json(result);
+      } catch (error) {
+        if (error instanceof DeliveryPricingValidationError) {
+          response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof DeliveryPricingNotFoundError) {
+          response.status(404).json({
             message: error.message
           });
 

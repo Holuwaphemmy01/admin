@@ -65,6 +65,7 @@ This is a TypeScript Node.js and Express starter for the BrickPine admin API wit
 - `GET /admin/delivery/pricing`: Lists delivery pricing records with optional state and vehicle type filters for a super admin.
 - `POST /admin/delivery/pricing`: Creates a delivery pricing record for a state and vehicle type for a super admin.
 - `PUT /admin/delivery/pricing/:id`: Updates one or more fields on an existing delivery pricing record for a super admin.
+- `DELETE /admin/delivery/pricing/:id`: Removes an existing delivery pricing record for a super admin.
 - `GET /admin/transactions`: Lists platform wallet transactions with optional user, type, date, and pagination filters for a super admin.
 - `GET /admin/transactions/:transactionId`: Returns one platform wallet transaction by deterministic reference for a super admin, with a conflict response when the reference is ambiguous.
 - `GET /admin/wallet/platform`: Returns the platform wallet owner, wallet balances, commission totals, and recent platform wallet transactions for a super admin.

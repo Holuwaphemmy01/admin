@@ -554,6 +554,15 @@ export const swaggerSpec = {
           }
         }
       },
+      DeleteDeliveryPricingResponse: {
+        type: "object",
+        properties: {
+          message: {
+            type: "string",
+            example: "Pricing rule removed"
+          }
+        }
+      },
       DeliveryPricingListResponse: {
         type: "object",
         properties: {
@@ -2283,6 +2292,80 @@ export const swaggerSpec = {
               "application/json": {
                 schema: {
                   $ref: "#/components/schemas/ConflictErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      delete: {
+        tags: ["Delivery & Logistics"],
+        summary: "Remove a delivery pricing entry",
+        description:
+          "Deletes an existing delivery pricing record for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "path",
+            name: "id",
+            required: true,
+            schema: {
+              type: "integer"
+            },
+            description: "Delivery pricing record ID"
+          }
+        ],
+        responses: {
+          "200": {
+            description: "Delivery pricing removed successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/DeleteDeliveryPricingResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid delivery pricing delete request",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to delete delivery pricing",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "Delivery pricing record not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
                 }
               }
             }

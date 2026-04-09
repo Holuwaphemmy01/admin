@@ -30,6 +30,14 @@ export interface UpdateDeliveryPricingResponse {
   data: DeliveryPricingRecord;
 }
 
+export interface DeleteDeliveryPricingRequestBody {
+  id: number;
+}
+
+export interface DeleteDeliveryPricingResponse {
+  message: string;
+}
+
 export interface ListDeliveryPricingFilters {
   state?: string;
   vehicleType?: DeliveryVehicleType;
