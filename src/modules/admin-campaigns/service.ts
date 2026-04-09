@@ -1,13 +1,18 @@
+import { randomUUID } from "node:crypto";
+
 import { QueryResult, QueryResultRow } from "pg";
 
-import { query } from "../../config/db";
+import { query, withTransaction } from "../../config/db";
+import { normalizeCredentialValue } from "../admin-auth/utils";
 import {
   AdminCampaignStatusFilter,
   AdminCampaignDetailsResponse,
   AdminCampaignsListFilters,
   AdminCampaignsListResponse,
   ApproveAdminCampaignRequestBody,
-  ApproveAdminCampaignResponse
+  ApproveAdminCampaignResponse,
+  RejectAdminCampaignRequestBody,
+  RejectAdminCampaignResponse
 } from "./types";
 
 type QueryFunction = <T extends QueryResultRow = QueryResultRow>(
@@ -17,8 +22,19 @@ type QueryFunction = <T extends QueryResultRow = QueryResultRow>(
 
 interface AdminCampaignsServiceDependencies {
   queryFn?: QueryFunction;
+  runInTransaction?: RunInTransaction;
   nowFactory?: () => Date;
+  uuidFactory?: () => string;
 }
+
+interface TransactionClient {
+  query<T extends QueryResultRow = QueryResultRow>(
+    text: string,
+    params?: unknown[]
+  ): Promise<QueryResult<T>>;
+}
+
+type RunInTransaction = <T>(operation: (client: TransactionClient) => Promise<T>) => Promise<T>;
 
 interface AdminCampaignRow extends QueryResultRow {
   id: string | number;
@@ -56,6 +72,16 @@ interface ApprovedCampaignRow extends QueryResultRow {
   id: string | number;
 }
 
+interface CampaignForRejectionRow extends QueryResultRow {
+  id: string | number;
+  userId: string | number | null;
+  status: string | null;
+}
+
+interface RejectedCampaignRow extends QueryResultRow {
+  id: string | number;
+}
+
 export class AdminCampaignsValidationError extends Error {
   constructor(message: string) {
     super(message);
@@ -77,12 +103,42 @@ export class AdminCampaignApprovalConflictError extends Error {
   }
 }
 
+export class AdminCampaignRejectionConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AdminCampaignRejectionConflictError";
+  }
+}
+
 function getQueryFn(dependencies: AdminCampaignsServiceDependencies = {}): QueryFunction {
   return dependencies.queryFn ?? query;
 }
 
+function getRunInTransaction(
+  dependencies: AdminCampaignsServiceDependencies = {}
+): RunInTransaction {
+  if (dependencies.runInTransaction) {
+    return dependencies.runInTransaction;
+  }
+
+  const queryFn = getQueryFn(dependencies);
+
+  if (queryFn !== query) {
+    return async <T>(operation: (client: TransactionClient) => Promise<T>) =>
+      operation({
+        query: queryFn
+      });
+  }
+
+  return withTransaction;
+}
+
 function getNowFactory(dependencies: AdminCampaignsServiceDependencies = {}): () => Date {
   return dependencies.nowFactory ?? (() => new Date());
+}
+
+function getUuidFactory(dependencies: AdminCampaignsServiceDependencies = {}): () => string {
+  return dependencies.uuidFactory ?? randomUUID;
 }
 
 function normalizePositiveInteger(value: number, fieldName: string): number {
@@ -140,6 +196,24 @@ function normalizeOptionalTextField(value: string | undefined, fieldName: string
   if (normalizedValue === "") {
     throw new AdminCampaignsValidationError(
       `${fieldName} must be a non-empty string when provided`
+    );
+  }
+
+  return normalizedValue;
+}
+
+function normalizeRequiredTextField(value: string, fieldName: string): string {
+  if (typeof value !== "string") {
+    throw new AdminCampaignsValidationError(
+      `${fieldName} is required and must be a non-empty string`
+    );
+  }
+
+  const normalizedValue = value.trim();
+
+  if (normalizedValue === "") {
+    throw new AdminCampaignsValidationError(
+      `${fieldName} is required and must be a non-empty string`
     );
   }
 
@@ -467,7 +541,8 @@ export async function approveAdminCampaign(
   if (
     normalizedStatus === "paused" ||
     normalizedStatus === "cancelled" ||
-    normalizedStatus === "completed"
+    normalizedStatus === "completed" ||
+    normalizedStatus === "rejected"
   ) {
     throw new AdminCampaignApprovalConflictError(
       "Campaign cannot be approved from its current status"
@@ -494,4 +569,102 @@ export async function approveAdminCampaign(
   return {
     message: "Campaign approved and is now active"
   };
+}
+
+export async function rejectAdminCampaign(
+  campaignId: number,
+  payload: RejectAdminCampaignRequestBody,
+  dependencies: AdminCampaignsServiceDependencies = {}
+): Promise<RejectAdminCampaignResponse> {
+  const runInTransaction = getRunInTransaction(dependencies);
+  const now = getNowFactory(dependencies)();
+  const uuidFactory = getUuidFactory(dependencies);
+  const normalizedCampaignId = normalizePositiveInteger(campaignId, "campaignId");
+  const normalizedReason = normalizeRequiredTextField(payload.reason, "reason");
+  const actedByAdminUserId = normalizeCredentialValue(payload.actedByAdminUserId);
+
+  if (actedByAdminUserId === "") {
+    throw new AdminCampaignsValidationError("actedByAdminUserId is required");
+  }
+
+  return runInTransaction(async (client) => {
+    const campaignResult = await client.query<CampaignForRejectionRow>(
+      [
+        "SELECT",
+        "  ppc.id,",
+        '  ppc."userId" AS "userId",',
+        '  ppc.status::text AS status',
+        "FROM public.promote_post_campaign ppc",
+        "WHERE ppc.id = $1",
+        "LIMIT 1",
+        "FOR UPDATE"
+      ].join("\n"),
+      [normalizedCampaignId]
+    );
+    const campaign = campaignResult.rows[0];
+
+    if (!campaign) {
+      throw new AdminCampaignNotFoundError("Campaign not found");
+    }
+
+    const targetUserId = mapRequiredNonNegativeInteger(campaign.userId, "userId");
+    const normalizedStatus =
+      typeof campaign.status === "string" ? campaign.status.trim().toLowerCase() : "";
+
+    if (normalizedStatus === "rejected") {
+      throw new AdminCampaignRejectionConflictError("Campaign is already rejected");
+    }
+
+    if (
+      normalizedStatus === "active" ||
+      normalizedStatus === "paused" ||
+      normalizedStatus === "cancelled" ||
+      normalizedStatus === "completed"
+    ) {
+      throw new AdminCampaignRejectionConflictError(
+        "Campaign cannot be rejected from its current status"
+      );
+    }
+
+    const rejectedCampaignResult = await client.query<RejectedCampaignRow>(
+      [
+        "UPDATE public.promote_post_campaign",
+        "SET",
+        "  status = $1,",
+        '  "updatedAt" = $2',
+        "WHERE id = $3",
+        "RETURNING id"
+      ].join("\n"),
+      ["rejected", now, normalizedCampaignId]
+    );
+
+    if (!rejectedCampaignResult.rows[0]) {
+      throw new Error("Campaign rejection update did not return a row");
+    }
+
+    await client.query(
+      [
+        "INSERT INTO public.admin_campaign_rejection_audit_logs (",
+        '  id, "campaignId", "targetUserId", "actedByAdminUserId", reason,',
+        '  "previousStatus", "newStatus", "createdAt"',
+        ") VALUES (",
+        "  $1, $2, $3, $4, $5, $6, $7, $8",
+        ")"
+      ].join("\n"),
+      [
+        uuidFactory(),
+        normalizedCampaignId,
+        targetUserId,
+        actedByAdminUserId,
+        normalizedReason,
+        normalizedStatus,
+        "rejected",
+        now
+      ]
+    );
+
+    return {
+      message: "Campaign rejected"
+    };
+  });
 }

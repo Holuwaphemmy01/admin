@@ -10,14 +10,17 @@ import { createAdminCampaignsRouter } from "../../src/modules/admin-campaigns/ro
 import {
   AdminCampaignApprovalConflictError,
   AdminCampaignNotFoundError,
+  AdminCampaignRejectionConflictError,
   AdminCampaignsValidationError,
   approveAdminCampaign,
   getAdminCampaignDetails,
-  listAdminCampaigns
+  listAdminCampaigns,
+  rejectAdminCampaign
 } from "../../src/modules/admin-campaigns/service";
 import {
   AdminCampaignDetailsResponse,
-  AdminCampaignsListResponse
+  AdminCampaignsListResponse,
+  RejectAdminCampaignResponse
 } from "../../src/modules/admin-campaigns/types";
 
 async function startTestServer(application: ReturnType<typeof express>) {
@@ -354,6 +357,197 @@ test("approveAdminCampaign validates inputs and maps missing or invalid campaign
       }
     )
   ).rejects.toThrow("Campaign approval update did not return a row");
+});
+
+test("rejectAdminCampaign rejects a pre-live campaign and writes an audit log", async () => {
+  const fixedNow = new Date("2026-04-09T20:00:00.000Z");
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await rejectAdminCampaign(
+    13,
+    {
+      reason: " Budget claim does not match policy ",
+      actedByAdminUserId: "admin-user-id"
+    },
+    {
+      nowFactory: () => fixedNow,
+      uuidFactory: () => "campaign-rejection-audit-id",
+      runInTransaction: async (operation) =>
+        operation({
+          query: async <T extends QueryResultRow = QueryResultRow>(
+            text: string,
+            params?: unknown[]
+          ): Promise<QueryResult<T>> => {
+            executedQueries.push({ text, params });
+
+            if (executedQueries.length === 1) {
+              return createQueryResult([
+                {
+                  id: 13,
+                  userId: 127,
+                  status: "draft"
+                }
+              ]) as unknown as QueryResult<T>;
+            }
+
+            if (executedQueries.length === 2) {
+              return createQueryResult([
+                {
+                  id: 13
+                }
+              ]) as unknown as QueryResult<T>;
+            }
+
+            if (executedQueries.length === 3) {
+              return createQueryResult([]) as unknown as QueryResult<T>;
+            }
+
+            throw new Error(`Unexpected query: ${text}`);
+          }
+        })
+    }
+  );
+
+  expect(response).toEqual({
+    message: "Campaign rejected"
+  });
+  expect(executedQueries).toHaveLength(3);
+  expect(executedQueries[0]?.text).toContain("FROM public.promote_post_campaign ppc");
+  expect(executedQueries[0]?.text).toContain("FOR UPDATE");
+  expect(executedQueries[0]?.params).toEqual([13]);
+  expect(executedQueries[1]?.text).toContain("UPDATE public.promote_post_campaign");
+  expect(executedQueries[1]?.params).toEqual(["rejected", fixedNow, 13]);
+  expect(executedQueries[2]?.text).toContain("INSERT INTO public.admin_campaign_rejection_audit_logs");
+  expect(executedQueries[2]?.params).toEqual([
+    "campaign-rejection-audit-id",
+    13,
+    127,
+    "admin-user-id",
+    "Budget claim does not match policy",
+    "draft",
+    "rejected",
+    fixedNow
+  ]);
+});
+
+test("rejectAdminCampaign validates inputs and maps missing or invalid campaign states", async () => {
+  await expect(
+    rejectAdminCampaign(0, {
+      reason: "Reason",
+      actedByAdminUserId: "admin-user-id"
+    })
+  ).rejects.toThrow(AdminCampaignsValidationError);
+
+  await expect(
+    rejectAdminCampaign(13, {
+      reason: "   ",
+      actedByAdminUserId: "admin-user-id"
+    })
+  ).rejects.toThrow("reason is required and must be a non-empty string");
+
+  await expect(
+    rejectAdminCampaign(13, {
+      reason: "Reason",
+      actedByAdminUserId: "   "
+    })
+  ).rejects.toThrow("actedByAdminUserId is required");
+
+  await expect(
+    rejectAdminCampaign(
+      404,
+      {
+        reason: "Reason",
+        actedByAdminUserId: "admin-user-id"
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation({
+            query: async <T extends QueryResultRow = QueryResultRow>() =>
+              createQueryResult([]) as unknown as QueryResult<T>
+          })
+      }
+    )
+  ).rejects.toThrow(AdminCampaignNotFoundError);
+
+  await expect(
+    rejectAdminCampaign(
+      13,
+      {
+        reason: "Reason",
+        actedByAdminUserId: "admin-user-id"
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation({
+            query: async <T extends QueryResultRow = QueryResultRow>() =>
+              createQueryResult([
+                {
+                  id: 13,
+                  userId: 127,
+                  status: "rejected"
+                }
+              ]) as unknown as QueryResult<T>
+          })
+      }
+    )
+  ).rejects.toThrow("Campaign is already rejected");
+
+  await expect(
+    rejectAdminCampaign(
+      13,
+      {
+        reason: "Reason",
+        actedByAdminUserId: "admin-user-id"
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation({
+            query: async <T extends QueryResultRow = QueryResultRow>() =>
+              createQueryResult([
+                {
+                  id: 13,
+                  userId: 127,
+                  status: "active"
+                }
+              ]) as unknown as QueryResult<T>
+          })
+      }
+    )
+  ).rejects.toThrow("Campaign cannot be rejected from its current status");
+
+  await expect(
+    rejectAdminCampaign(
+      13,
+      {
+        reason: "Reason",
+        actedByAdminUserId: "admin-user-id"
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation({
+            query: async <T extends QueryResultRow = QueryResultRow>(
+              text: string
+            ): Promise<QueryResult<T>> => {
+              if (text.includes("FROM public.promote_post_campaign ppc")) {
+                return createQueryResult([
+                  {
+                    id: 13,
+                    userId: 127,
+                    status: "draft"
+                  }
+                ]) as unknown as QueryResult<T>;
+              }
+
+              if (text.includes("UPDATE public.promote_post_campaign")) {
+                return createQueryResult([]) as unknown as QueryResult<T>;
+              }
+
+              throw new Error(`Unexpected query: ${text}`);
+            }
+          })
+      }
+    )
+  ).rejects.toThrow("Campaign rejection update did not return a row");
 });
 
 test("getAdminCampaignDetails maps campaign metrics with stored-stat fallbacks", async () => {
@@ -722,6 +916,198 @@ test("PUT /admin/campaigns/:campaignId/approve maps 404 and 409 errors", async (
   }
 });
 
+test("PUT /admin/campaigns/:campaignId/reject returns 401 when the admin token is missing", async () => {
+  const application = express();
+  application.use(express.json());
+
+  application.use(
+    "/admin/campaigns",
+    createAdminCampaignsRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/campaigns/13/reject`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        reason: "Budget claim does not match policy"
+      })
+    });
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/campaigns/:campaignId/reject returns 403 for non-super-admins", async () => {
+  const application = express();
+  application.use(express.json());
+
+  application.use(
+    "/admin/campaigns",
+    createAdminCampaignsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "support"
+        })
+      ),
+      rejectAdminCampaignHandler: async () => {
+        throw new Error("This handler should not be called when access is forbidden");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/campaigns/13/reject`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        reason: "Budget claim does not match policy"
+      })
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/campaigns/:campaignId/reject validates the campaign identifier and required reason", async () => {
+  const application = express();
+  application.use(express.json());
+
+  application.use(
+    "/admin/campaigns",
+    createAdminCampaignsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      rejectAdminCampaignHandler: async () => {
+        throw new Error("This handler should not be called when validation fails");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    let response = await fetch(`${server.baseUrl}/admin/campaigns/abc/reject`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({})
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "campaignId must be a positive integer"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/campaigns/13/reject`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        reason: "   "
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "reason is required and must be a non-empty string"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/campaigns/:campaignId/reject maps 404 and 409 errors", async () => {
+  let server;
+  const notFoundApplication = express();
+  notFoundApplication.use(express.json());
+  notFoundApplication.use(
+    "/admin/campaigns",
+    createAdminCampaignsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      rejectAdminCampaignHandler: async () => {
+        throw new AdminCampaignNotFoundError("Campaign not found");
+      }
+    })
+  );
+
+  server = await startTestServer(notFoundApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/campaigns/13/reject`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        reason: "Budget claim does not match policy"
+      })
+    });
+
+    expect(response.status).toBe(404);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Campaign not found"
+    });
+  } finally {
+    await server.close();
+  }
+
+  const conflictApplication = express();
+  conflictApplication.use(express.json());
+  conflictApplication.use(
+    "/admin/campaigns",
+    createAdminCampaignsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      rejectAdminCampaignHandler: async () => {
+        throw new AdminCampaignRejectionConflictError("Campaign is already rejected");
+      }
+    })
+  );
+
+  server = await startTestServer(conflictApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/campaigns/13/reject`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        reason: "Budget claim does not match policy"
+      })
+    });
+
+    expect(response.status).toBe(409);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Campaign is already rejected"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
 test("GET /admin/campaigns/:campaignId returns 401 when the admin token is missing", async () => {
   const application = express();
 
@@ -1002,6 +1388,54 @@ test("PUT /admin/campaigns/:campaignId/approve returns the success payload and p
     expect(response.status).toBe(200);
     expect((await response.json()) as Record<string, unknown>).toEqual({
       message: "Campaign approved and is now active"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/campaigns/:campaignId/reject returns the success payload and passes trimmed values", async () => {
+  const application = express();
+  application.use(express.json());
+
+  application.use(
+    "/admin/campaigns",
+    createAdminCampaignsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      rejectAdminCampaignHandler: async (
+        campaignId,
+        payload
+      ): Promise<RejectAdminCampaignResponse> => {
+        expect(campaignId).toBe(13);
+        expect(payload).toEqual({
+          reason: "Budget claim does not match policy",
+          actedByAdminUserId: "admin-user-id"
+        });
+
+        return {
+          message: "Campaign rejected"
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/campaigns/%2013%20/reject`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        reason: " Budget claim does not match policy "
+      })
+    });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Campaign rejected"
     });
   } finally {
     await server.close();

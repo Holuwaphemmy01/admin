@@ -55,3 +55,12 @@ export interface ApproveAdminCampaignRequestBody {
 export interface ApproveAdminCampaignResponse {
   message: string;
 }
+
+export interface RejectAdminCampaignRequestBody {
+  reason: string;
+  actedByAdminUserId: string;
+}
+
+export interface RejectAdminCampaignResponse {
+  message: string;
+}

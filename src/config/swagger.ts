@@ -1038,6 +1038,25 @@ export const swaggerSpec = {
           }
         }
       },
+      RejectAdminCampaignRequest: {
+        type: "object",
+        required: ["reason"],
+        properties: {
+          reason: {
+            type: "string",
+            example: "Budget claim does not match policy"
+          }
+        }
+      },
+      RejectAdminCampaignResponse: {
+        type: "object",
+        properties: {
+          message: {
+            type: "string",
+            example: "Campaign rejected"
+          }
+        }
+      },
       AdminSettlementItem: {
         type: "object",
         properties: {
@@ -3694,6 +3713,102 @@ export const swaggerSpec = {
           },
           "409": {
             description: "Campaign cannot be approved in its current state",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/campaigns/{campaignId}/reject": {
+      put: {
+        tags: ["Ads & Promoted Posts"],
+        summary: "Reject a campaign",
+        description:
+          "Rejects a promoted post campaign and records the rejection reason for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "path",
+            name: "campaignId",
+            required: true,
+            schema: {
+              type: "integer"
+            },
+            description: "Promoted campaign identifier"
+          }
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/RejectAdminCampaignRequest"
+              }
+            }
+          }
+        },
+        responses: {
+          "200": {
+            description: "Campaign rejected successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/RejectAdminCampaignResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid campaign rejection payload",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/UnauthorizedErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to reject campaigns",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "Campaign not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            description: "Campaign cannot be rejected in its current state",
             content: {
               "application/json": {
                 schema: {
