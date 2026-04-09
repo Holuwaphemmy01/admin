@@ -524,6 +524,17 @@ export const swaggerSpec = {
           }
         }
       },
+      DeliveryPricingListResponse: {
+        type: "object",
+        properties: {
+          pricingRules: {
+            type: "array",
+            items: {
+              $ref: "#/components/schemas/DeliveryPricingRecord"
+            }
+          }
+        }
+      },
       AdminSettlementItem: {
         type: "object",
         properties: {
@@ -2005,6 +2016,80 @@ export const swaggerSpec = {
       }
     },
     "/admin/delivery/pricing": {
+      get: {
+        tags: ["Delivery & Logistics"],
+        summary: "List all delivery pricing configs",
+        description:
+          "Returns delivery pricing rules with optional state and vehicle-type filters for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "query",
+            name: "state",
+            required: false,
+            schema: {
+              type: "string"
+            },
+            description: "Filter by state"
+          },
+          {
+            in: "query",
+            name: "vehicleType",
+            required: false,
+            schema: {
+              type: "string",
+              enum: ["bike", "car", "truck"]
+            },
+            description: "Filter by vehicle type"
+          }
+        ],
+        responses: {
+          "200": {
+            description: "Delivery pricing configs retrieved successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/DeliveryPricingListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid delivery pricing query filters",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to view delivery pricing",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
       post: {
         tags: ["Delivery & Logistics"],
         summary: "Add delivery pricing (bike/car/truck per state)",

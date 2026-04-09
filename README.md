@@ -62,6 +62,7 @@ This is a TypeScript Node.js and Express starter for the BrickPine admin API wit
 - `POST /admin/auth/login`: Logs in an active admin account with a separate admin JWT.
 - `POST /admin/auth/invite`: Creates a pending admin invite and queues an invite email for a super admin.
 - `PUT /admin/auth/change_password`: Lets an authenticated admin change their own password.
+- `GET /admin/delivery/pricing`: Lists delivery pricing records with optional state and vehicle type filters for a super admin.
 - `POST /admin/delivery/pricing`: Creates a delivery pricing record for a state and vehicle type for a super admin.
 - `GET /admin/transactions`: Lists platform wallet transactions with optional user, type, date, and pagination filters for a super admin.
 - `GET /admin/transactions/:transactionId`: Returns one platform wallet transaction by deterministic reference for a super admin, with a conflict response when the reference is ambiguous.

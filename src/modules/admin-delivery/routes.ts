@@ -3,6 +3,7 @@ import { Request, RequestHandler, Response, Router } from "express";
 import { authenticateAdmin, requireAdminRole } from "../admin-auth/middleware";
 import {
   createDeliveryPricing,
+  listDeliveryPricing,
   DeliveryPricingConflictError,
   DeliveryPricingValidationError
 } from "./service";
@@ -10,6 +11,7 @@ import { DeliveryVehicleType } from "./types";
 
 interface AdminDeliveryRouterDependencies {
   createDeliveryPricingHandler?: typeof createDeliveryPricing;
+  listDeliveryPricingHandler?: typeof listDeliveryPricing;
   authenticateAdminMiddleware?: RequestHandler;
   requireSuperAdminMiddleware?: RequestHandler;
 }
@@ -31,16 +33,75 @@ function isValidBaseFee(value: unknown): value is number {
   );
 }
 
+function readSingleQueryValue(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return value.trim();
+  }
+
+  if (Array.isArray(value) && typeof value[0] === "string") {
+    return value[0].trim();
+  }
+
+  return undefined;
+}
+
 export function createAdminDeliveryRouter(
   dependencies: AdminDeliveryRouterDependencies = {}
 ): Router {
   const adminDeliveryRouter = Router();
   const createDeliveryPricingHandler =
     dependencies.createDeliveryPricingHandler ?? createDeliveryPricing;
+  const listDeliveryPricingHandler =
+    dependencies.listDeliveryPricingHandler ?? listDeliveryPricing;
   const authenticateAdminMiddleware =
     dependencies.authenticateAdminMiddleware ?? authenticateAdmin;
   const requireSuperAdminMiddleware =
     dependencies.requireSuperAdminMiddleware ?? requireAdminRole("super_admin");
+
+  adminDeliveryRouter.get(
+    "/pricing",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      const rawState = readSingleQueryValue(request.query.state);
+      const rawVehicleType = readSingleQueryValue(request.query.vehicleType);
+
+      if (rawState !== undefined && rawState === "") {
+        response.status(400).json({
+          message: "state must be a non-empty string when provided"
+        });
+
+        return;
+      }
+
+      if (rawVehicleType !== undefined && !isValidVehicleType(rawVehicleType)) {
+        response.status(400).json({
+          message: "vehicleType must be one of bike, car, truck when provided"
+        });
+
+        return;
+      }
+
+      try {
+        const result = await listDeliveryPricingHandler({
+          state: rawState,
+          vehicleType: rawVehicleType
+        });
+
+        response.json(result);
+      } catch (error) {
+        if (error instanceof DeliveryPricingValidationError) {
+          response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
 
   adminDeliveryRouter.post(
     "/pricing",

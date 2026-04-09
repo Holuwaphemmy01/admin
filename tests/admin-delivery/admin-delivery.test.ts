@@ -9,10 +9,14 @@ import { AuthenticatedAdmin } from "../../src/modules/admin-auth/types";
 import { createAdminDeliveryRouter } from "../../src/modules/admin-delivery/routes";
 import {
   createDeliveryPricing,
+  listDeliveryPricing,
   DeliveryPricingConflictError,
   DeliveryPricingValidationError
 } from "../../src/modules/admin-delivery/service";
-import { CreateDeliveryPricingResponse } from "../../src/modules/admin-delivery/types";
+import {
+  CreateDeliveryPricingResponse,
+  ListDeliveryPricingResponse
+} from "../../src/modules/admin-delivery/types";
 
 async function startTestServer(application: ReturnType<typeof express>) {
   const server = application.listen(0);
@@ -207,6 +211,87 @@ test("createDeliveryPricing fails cleanly when the insert does not return a crea
   ).rejects.toThrow("Delivery pricing insert did not return a row");
 });
 
+test("listDeliveryPricing returns mapped pricing rules with stable ordering and optional filters", async () => {
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await listDeliveryPricing(
+    {
+      state: " Lagos ",
+      vehicleType: "bike"
+    },
+    {
+      queryFn: async <T extends QueryResultRow = QueryResultRow>(
+        text: string,
+        params?: unknown[]
+      ): Promise<QueryResult<T>> => {
+        executedQueries.push({ text, params });
+
+        return createQueryResult([
+          {
+            id: 1,
+            state: "Lagos",
+            vehicleType: "bike",
+            baseFee: "500"
+          },
+          {
+            id: 2,
+            state: "Lagos",
+            vehicleType: "bike",
+            baseFee: 700
+          }
+        ]) as unknown as QueryResult<T>;
+      }
+    }
+  );
+
+  expect(response).toEqual({
+    pricingRules: [
+      {
+        id: 1,
+        state: "Lagos",
+        vehicleType: "bike",
+        baseFee: 500
+      },
+      {
+        id: 2,
+        state: "Lagos",
+        vehicleType: "bike",
+        baseFee: 700
+      }
+    ]
+  });
+  expect(executedQueries).toHaveLength(1);
+  expect(executedQueries[0]?.text).toContain("FROM public.delivery_pricings dp");
+  expect(executedQueries[0]?.text).toContain('ORDER BY LOWER(BTRIM(dp.state)) ASC');
+  expect(executedQueries[0]?.params).toEqual(["Lagos", "bike"]);
+});
+
+test("listDeliveryPricing validates optional filters and returns an empty array when nothing matches", async () => {
+  await expect(
+    listDeliveryPricing({
+      state: "   "
+    })
+  ).rejects.toThrow(DeliveryPricingValidationError);
+
+  await expect(
+    listDeliveryPricing({
+      vehicleType: "van" as never
+    })
+  ).rejects.toThrow(DeliveryPricingValidationError);
+
+  const response = await listDeliveryPricing(
+    {},
+    {
+      queryFn: async <T extends QueryResultRow = QueryResultRow>() =>
+        createQueryResult([]) as unknown as QueryResult<T>
+    }
+  );
+
+  expect(response).toEqual({
+    pricingRules: []
+  });
+});
+
 test("POST /admin/delivery/pricing returns 401 when the admin token is missing", async () => {
   const application = express();
   application.use(express.json());
@@ -235,6 +320,158 @@ test("POST /admin/delivery/pricing returns 401 when the admin token is missing",
     });
 
     expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/delivery/pricing returns 401 when the admin token is missing", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/delivery",
+    createAdminDeliveryRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/delivery/pricing`);
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/delivery/pricing returns 403 for non-super-admins", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/delivery",
+    createAdminDeliveryRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "support"
+        })
+      ),
+      listDeliveryPricingHandler: async () => {
+        throw new Error("This handler should not be called when access is forbidden");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/delivery/pricing`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/delivery/pricing validates query filters", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/delivery",
+    createAdminDeliveryRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      listDeliveryPricingHandler: async () => {
+        throw new Error("This handler should not be called when validation fails");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    let response = await fetch(`${server.baseUrl}/admin/delivery/pricing?state=%20%20`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "state must be a non-empty string when provided"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/delivery/pricing?vehicleType=van`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "vehicleType must be one of bike, car, truck when provided"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/delivery/pricing returns the success payload and passes trimmed filters", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/delivery",
+    createAdminDeliveryRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      listDeliveryPricingHandler: async (filters): Promise<ListDeliveryPricingResponse> => {
+        expect(filters).toEqual({
+          state: "Lagos",
+          vehicleType: "bike"
+        });
+
+        return {
+          pricingRules: [
+            {
+              id: 1,
+              state: "Lagos",
+              vehicleType: "bike",
+              baseFee: 500
+            }
+          ]
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(
+      `${server.baseUrl}/admin/delivery/pricing?state=%20Lagos%20&vehicleType=bike`,
+      {
+        headers: {
+          Authorization: "Bearer any-token"
+        }
+      }
+    );
+
+    expect(response.status).toBe(200);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      pricingRules: [
+        {
+          id: 1,
+          state: "Lagos",
+          vehicleType: "bike",
+          baseFee: 500
+        }
+      ]
+    });
   } finally {
     await server.close();
   }

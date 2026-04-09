@@ -5,7 +5,9 @@ import { normalizeCredentialValue } from "../admin-auth/utils";
 import {
   CreateDeliveryPricingRequestBody,
   CreateDeliveryPricingResponse,
-  DeliveryVehicleType
+  DeliveryVehicleType,
+  ListDeliveryPricingFilters,
+  ListDeliveryPricingResponse
 } from "./types";
 
 type QueryFunction = <T extends QueryResultRow = QueryResultRow>(
@@ -23,6 +25,13 @@ interface ExistingDeliveryPricingRow extends QueryResultRow {
 }
 
 interface CreatedDeliveryPricingRow extends QueryResultRow {
+  id: number;
+  state: string | null;
+  vehicleType: string | null;
+  baseFee: string | number | null;
+}
+
+interface DeliveryPricingListRow extends QueryResultRow {
   id: number;
   state: string | null;
   vehicleType: string | null;
@@ -71,6 +80,18 @@ function normalizeRequiredTextField(
   return normalizedValue;
 }
 
+function normalizeOptionalTextField(
+  value: string | undefined,
+  fieldName: string,
+  ErrorType: MessageErrorConstructor
+): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  return normalizeRequiredTextField(value, fieldName, ErrorType);
+}
+
 function normalizeVehicleType(
   value: DeliveryVehicleType,
   ErrorType: MessageErrorConstructor
@@ -80,6 +101,17 @@ function normalizeVehicleType(
   }
 
   return value;
+}
+
+function normalizeOptionalVehicleType(
+  value: DeliveryVehicleType | undefined,
+  ErrorType: MessageErrorConstructor
+): DeliveryVehicleType | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  return normalizeVehicleType(value, ErrorType);
 }
 
 function normalizeBaseFee(value: number, ErrorType: MessageErrorConstructor): number {
@@ -97,46 +129,96 @@ function normalizeBaseFee(value: number, ErrorType: MessageErrorConstructor): nu
   return value;
 }
 
-function mapRequiredInteger(value: string | number | null, fieldName: string): number {
+function mapPositiveInteger(value: string | number | null, fieldName: string): number {
   const numericValue = typeof value === "number" ? value : Number(value);
 
   if (!Number.isInteger(numericValue) || numericValue <= 0) {
-    throw new Error(`Created delivery pricing returned an invalid ${fieldName}`);
+    throw new Error(`Delivery pricing returned an invalid ${fieldName}`);
   }
 
   return numericValue;
 }
 
-function mapRequiredText(value: string | null, fieldName: string): string {
+function mapNormalizedText(value: string | null, fieldName: string): string {
   if (typeof value !== "string") {
-    throw new Error(`Created delivery pricing returned an invalid ${fieldName}`);
+    throw new Error(`Delivery pricing returned an invalid ${fieldName}`);
   }
 
   const normalizedValue = normalizeCredentialValue(value);
 
   if (normalizedValue === "") {
-    throw new Error(`Created delivery pricing returned an invalid ${fieldName}`);
+    throw new Error(`Delivery pricing returned an invalid ${fieldName}`);
   }
 
   return normalizedValue;
 }
 
-function mapRequiredVehicleType(value: string | null): DeliveryVehicleType {
+function mapDeliveryVehicleType(value: string | null): DeliveryVehicleType {
   if (value !== "bike" && value !== "car" && value !== "truck") {
-    throw new Error("Created delivery pricing returned an invalid vehicleType");
+    throw new Error("Delivery pricing returned an invalid vehicleType");
   }
 
   return value;
 }
 
-function mapRequiredNumber(value: string | number | null, fieldName: string): number {
+function mapFiniteNumber(value: string | number | null, fieldName: string): number {
   const numericValue = typeof value === "number" ? value : Number(value);
 
   if (!Number.isFinite(numericValue)) {
-    throw new Error(`Created delivery pricing returned an invalid ${fieldName}`);
+    throw new Error(`Delivery pricing returned an invalid ${fieldName}`);
   }
 
   return numericValue;
+}
+
+export async function listDeliveryPricing(
+  filters: ListDeliveryPricingFilters = {},
+  dependencies: AdminDeliveryServiceDependencies = {}
+): Promise<ListDeliveryPricingResponse> {
+  const queryFn = getQueryFn(dependencies);
+  const state = normalizeOptionalTextField(
+    filters.state,
+    "state",
+    DeliveryPricingValidationError
+  );
+  const vehicleType = normalizeOptionalVehicleType(
+    filters.vehicleType,
+    DeliveryPricingValidationError
+  );
+  const queryParams: unknown[] = [];
+  const whereClauses: string[] = [];
+
+  if (state !== undefined) {
+    queryParams.push(state);
+    whereClauses.push(`LOWER(BTRIM(dp.state)) = LOWER(BTRIM($${queryParams.length}))`);
+  }
+
+  if (vehicleType !== undefined) {
+    queryParams.push(vehicleType);
+    whereClauses.push(`dp."vehicleType"::text = $${queryParams.length}`);
+  }
+
+  const pricingResult = await queryFn<DeliveryPricingListRow>(
+    [
+      "SELECT",
+      '  dp.id, dp.state, dp."vehicleType"::text AS "vehicleType", dp."baseFee"',
+      "FROM public.delivery_pricings dp",
+      whereClauses.length > 0 ? `WHERE ${whereClauses.join("\n  AND ")}` : "",
+      'ORDER BY LOWER(BTRIM(dp.state)) ASC, dp."vehicleType"::text ASC, dp.id ASC'
+    ]
+      .filter((statementPart) => statementPart !== "")
+      .join("\n"),
+    queryParams
+  );
+
+  return {
+    pricingRules: pricingResult.rows.map((pricingRule) => ({
+      id: mapPositiveInteger(pricingRule.id, "id"),
+      state: mapNormalizedText(pricingRule.state, "state"),
+      vehicleType: mapDeliveryVehicleType(pricingRule.vehicleType),
+      baseFee: mapFiniteNumber(pricingRule.baseFee, "baseFee")
+    }))
+  };
 }
 
 export async function createDeliveryPricing(
@@ -196,10 +278,10 @@ export async function createDeliveryPricing(
   return {
     message: "Delivery pricing added successfully",
     data: {
-      id: mapRequiredInteger(createdPricing.id, "id"),
-      state: mapRequiredText(createdPricing.state, "state"),
-      vehicleType: mapRequiredVehicleType(createdPricing.vehicleType),
-      baseFee: mapRequiredNumber(createdPricing.baseFee, "baseFee")
+      id: mapPositiveInteger(createdPricing.id, "id"),
+      state: mapNormalizedText(createdPricing.state, "state"),
+      vehicleType: mapDeliveryVehicleType(createdPricing.vehicleType),
+      baseFee: mapFiniteNumber(createdPricing.baseFee, "baseFee")
     }
   };
 }

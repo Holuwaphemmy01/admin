@@ -17,3 +17,12 @@ export interface CreateDeliveryPricingResponse {
   message: string;
   data: DeliveryPricingRecord;
 }
+
+export interface ListDeliveryPricingFilters {
+  state?: string;
+  vehicleType?: DeliveryVehicleType;
+}
+
+export interface ListDeliveryPricingResponse {
+  pricingRules: DeliveryPricingRecord[];
+}
