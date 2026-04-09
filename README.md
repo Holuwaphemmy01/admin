@@ -70,6 +70,7 @@ This is a TypeScript Node.js and Express starter for the BrickPine admin API wit
 - `PUT /admin/subscriptions/plans/:id`: Updates one or more editable fields on an existing subscription plan for a super admin.
 - `DELETE /admin/subscriptions/plans/:id`: Removes an existing subscription plan for a super admin.
 - `PUT /admin/subscriptions/:username/grant`: Manually grants a subscription plan to a platform user for a super admin.
+- `PUT /admin/subscriptions/:username/revoke`: Revokes the active subscription for a platform user for a super admin.
 - `POST /admin/delivery/pricing`: Creates a delivery pricing record for a state and vehicle type for a super admin.
 - `PUT /admin/delivery/pricing/:id`: Updates one or more fields on an existing delivery pricing record for a super admin.
 - `DELETE /admin/delivery/pricing/:id`: Removes an existing delivery pricing record for a super admin.

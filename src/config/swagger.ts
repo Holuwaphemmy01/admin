@@ -882,6 +882,24 @@ export const swaggerSpec = {
           }
         }
       },
+      RevokeAdminSubscriptionRequest: {
+        type: "object",
+        properties: {
+          reason: {
+            type: "string",
+            example: "Manual adjustment"
+          }
+        }
+      },
+      RevokeAdminSubscriptionResponse: {
+        type: "object",
+        properties: {
+          message: {
+            type: "string",
+            example: "Subscription revoked"
+          }
+        }
+      },
       AdminSettlementItem: {
         type: "object",
         properties: {
@@ -3166,6 +3184,101 @@ export const swaggerSpec = {
           },
           "409": {
             description: "Subscription grant conflict",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/subscriptions/{username}/revoke": {
+      put: {
+        tags: ["Subscriptions"],
+        summary: "Revoke a user's subscription",
+        description:
+          "Moves any currently active subscription history rows for a platform user to inactive status for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "path",
+            name: "username",
+            required: true,
+            schema: {
+              type: "string"
+            },
+            description: "Target platform username"
+          }
+        ],
+        requestBody: {
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/RevokeAdminSubscriptionRequest"
+              }
+            }
+          }
+        },
+        responses: {
+          "200": {
+            description: "Subscription revoked successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/RevokeAdminSubscriptionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid subscription revoke payload",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/UnauthorizedErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to revoke subscriptions",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "Target user or active subscription not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            description: "Subscription revoke conflict",
             content: {
               "application/json": {
                 schema: {

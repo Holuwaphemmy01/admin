@@ -12,6 +12,8 @@ import {
   DeleteAdminSubscriptionPlanResponse,
   GrantAdminSubscriptionRequestBody,
   GrantAdminSubscriptionResponse,
+  RevokeAdminSubscriptionRequestBody,
+  RevokeAdminSubscriptionResponse,
   UpdateAdminSubscriptionPlanRequestBody,
   UpdateAdminSubscriptionPlanResponse
 } from "./types";
@@ -86,6 +88,10 @@ interface SubscriptionPlanForGrantRow extends QueryResultRow {
 }
 
 interface GrantedUserSubscriptionRow extends QueryResultRow {
+  id: string | number;
+}
+
+interface RevokedUserSubscriptionRow extends QueryResultRow {
   id: string | number;
 }
 
@@ -904,6 +910,71 @@ export async function grantAdminSubscriptionToUser(
 
     return {
       message: "Subscription granted"
+    };
+  });
+}
+
+export async function revokeAdminSubscriptionForUser(
+  payload: RevokeAdminSubscriptionRequestBody,
+  dependencies: AdminSubscriptionsServiceDependencies = {}
+): Promise<RevokeAdminSubscriptionResponse> {
+  const runInTransaction = getRunInTransaction(dependencies);
+  const revokedAt = getNowFactory(dependencies)();
+  const username = normalizeRequiredUsername(payload.username, AdminSubscriptionValidationError);
+
+  normalizeOptionalTextField(payload.reason, "reason", AdminSubscriptionValidationError);
+
+  return runInTransaction(async (client) => {
+    const userResult = await client.query<PlatformUserForGrantRow>(
+      [
+        "SELECT",
+        '  u.id, u.username, u."userTypeId"',
+        'FROM public."user" u',
+        'WHERE u."userTypeId" IN (1, 2, 3)',
+        "  AND u.username IS NOT NULL",
+        "  AND BTRIM(u.username) <> ''",
+        "  AND LOWER(u.username) = LOWER($1)",
+        'ORDER BY u."createdAt" DESC',
+        "LIMIT 2",
+        "FOR UPDATE"
+      ].join("\n"),
+      [username]
+    );
+
+    if ((userResult.rowCount ?? 0) === 0) {
+      throw new AdminSubscriptionNotFoundError("User account not found");
+    }
+
+    if ((userResult.rowCount ?? 0) > 1) {
+      throw new AdminSubscriptionConflictError("Multiple users match the provided username");
+    }
+
+    const targetUser = userResult.rows[0];
+
+    if (!targetUser) {
+      throw new AdminSubscriptionNotFoundError("User account not found");
+    }
+
+    const userId = mapRequiredPositiveInteger(targetUser.id, "user.id");
+    const revokedSubscriptionsResult = await client.query<RevokedUserSubscriptionRow>(
+      [
+        "UPDATE public.user_subscription",
+        "SET",
+        "  status = 0,",
+        '  "updatedAt" = $1',
+        'WHERE "userId" = $2',
+        "  AND COALESCE(status, 1) = 1",
+        "RETURNING id"
+      ].join("\n"),
+      [revokedAt, userId]
+    );
+
+    if ((revokedSubscriptionsResult.rowCount ?? 0) === 0) {
+      throw new AdminSubscriptionNotFoundError("User does not have an active subscription");
+    }
+
+    return {
+      message: "Subscription revoked"
     };
   });
 }

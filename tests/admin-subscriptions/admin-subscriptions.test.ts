@@ -15,6 +15,7 @@ import {
   deleteAdminSubscriptionPlan,
   grantAdminSubscriptionToUser,
   listAdminSubscriptions,
+  revokeAdminSubscriptionForUser,
   updateAdminSubscriptionPlan
 } from "../../src/modules/admin-subscriptions/service";
 import {
@@ -22,6 +23,7 @@ import {
   CreateAdminSubscriptionPlanResponse,
   DeleteAdminSubscriptionPlanResponse,
   GrantAdminSubscriptionResponse,
+  RevokeAdminSubscriptionResponse,
   UpdateAdminSubscriptionPlanResponse
 } from "../../src/modules/admin-subscriptions/types";
 
@@ -1177,6 +1179,152 @@ test("grantAdminSubscriptionToUser validates payloads and maps missing users, pl
   ).rejects.toThrow("Subscription grant insert did not return a row");
 });
 
+test("revokeAdminSubscriptionForUser deactivates a user's active subscriptions", async () => {
+  const fixedNow = new Date("2026-04-09T18:15:00.000Z");
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await revokeAdminSubscriptionForUser(
+    {
+      username: " seller-one ",
+      reason: " Manual adjustment "
+    },
+    {
+      nowFactory: () => fixedNow,
+      runInTransaction: async (operation) =>
+        operation({
+          query: async <T extends QueryResultRow = QueryResultRow>(
+            text: string,
+            params?: unknown[]
+          ): Promise<QueryResult<T>> => {
+            executedQueries.push({ text, params });
+
+            if (executedQueries.length === 1) {
+              return createQueryResult([
+                {
+                  id: 42,
+                  username: "seller-one",
+                  userTypeId: 2
+                }
+              ]) as unknown as QueryResult<T>;
+            }
+
+            if (executedQueries.length === 2) {
+              return createQueryResult([
+                {
+                  id: 81
+                },
+                {
+                  id: 82
+                }
+              ]) as unknown as QueryResult<T>;
+            }
+
+            throw new Error(`Unexpected query: ${text}`);
+          }
+        })
+    }
+  );
+
+  expect(response).toEqual({
+    message: "Subscription revoked"
+  });
+  expect(executedQueries).toHaveLength(2);
+  expect(executedQueries[0]?.text).toContain('FROM public."user" u');
+  expect(executedQueries[0]?.text).toContain("FOR UPDATE");
+  expect(executedQueries[0]?.params).toEqual(["seller-one"]);
+  expect(executedQueries[1]?.text).toContain("UPDATE public.user_subscription");
+  expect(executedQueries[1]?.text).toContain("RETURNING id");
+  expect(executedQueries[1]?.params).toEqual([fixedNow, 42]);
+});
+
+test("revokeAdminSubscriptionForUser validates payloads and maps missing users, missing active subscriptions, or ambiguous usernames", async () => {
+  await expect(
+    revokeAdminSubscriptionForUser({
+      username: "   "
+    })
+  ).rejects.toThrow(AdminSubscriptionValidationError);
+
+  await expect(
+    revokeAdminSubscriptionForUser({
+      username: "seller-one",
+      reason: "   "
+    })
+  ).rejects.toThrow(AdminSubscriptionValidationError);
+
+  await expect(
+    revokeAdminSubscriptionForUser(
+      {
+        username: "missing-user"
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation({
+            query: async <T extends QueryResultRow = QueryResultRow>() =>
+              createQueryResult([]) as unknown as QueryResult<T>
+          })
+      }
+    )
+  ).rejects.toThrow(AdminSubscriptionNotFoundError);
+
+  await expect(
+    revokeAdminSubscriptionForUser(
+      {
+        username: "duplicate-user"
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation({
+            query: async <T extends QueryResultRow = QueryResultRow>() =>
+              createQueryResult([
+                {
+                  id: 10,
+                  username: "duplicate-user",
+                  userTypeId: 2
+                },
+                {
+                  id: 11,
+                  username: "duplicate-user",
+                  userTypeId: 2
+                }
+              ]) as unknown as QueryResult<T>
+          })
+      }
+    )
+  ).rejects.toThrow(AdminSubscriptionConflictError);
+
+  await expect(
+    revokeAdminSubscriptionForUser(
+      {
+        username: "seller-one"
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation({
+            query: async <T extends QueryResultRow = QueryResultRow>(
+              text: string
+            ): Promise<QueryResult<T>> => {
+              if (text.includes('FROM public."user" u')) {
+                return createQueryResult([
+                  {
+                    id: 42,
+                    username: "seller-one",
+                    userTypeId: 2
+                  }
+                ]) as unknown as QueryResult<T>;
+              }
+
+              if (text.includes("UPDATE public.user_subscription")) {
+                return createQueryResult([]) as unknown as QueryResult<T>;
+              }
+
+              throw new Error(`Unexpected query: ${text}`);
+            }
+          })
+      }
+    )
+  ).rejects.toThrow(AdminSubscriptionNotFoundError);
+});
+
 test("GET /admin/subscriptions returns 401 when the admin token is missing", async () => {
   const application = express();
   application.use(express.json());
@@ -2307,6 +2455,240 @@ test("PUT /admin/subscriptions/:username/grant returns the success payload and p
     expect(response.status).toBe(200);
     expect((await response.json()) as Record<string, unknown>).toEqual({
       message: "Subscription granted"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/subscriptions/:username/revoke returns 401 when the admin token is missing", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/subscriptions",
+    createAdminSubscriptionsRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/subscriptions/seller-one/revoke`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        reason: "Manual adjustment"
+      })
+    });
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/subscriptions/:username/revoke returns 403 for non-super-admins", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/subscriptions",
+    createAdminSubscriptionsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "support"
+        })
+      ),
+      revokeAdminSubscriptionForUserHandler: async () => {
+        throw new Error("This handler should not be called when access is forbidden");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/subscriptions/seller-one/revoke`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        reason: "Manual adjustment"
+      })
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/subscriptions/:username/revoke validates the path and request body", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/subscriptions",
+    createAdminSubscriptionsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      revokeAdminSubscriptionForUserHandler: async () => {
+        throw new Error("This handler should not be called when validation fails");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    let response = await fetch(`${server.baseUrl}/admin/subscriptions/%20/revoke`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({})
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "username must be a non-empty string"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/subscriptions/seller-one/revoke`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        reason: "   "
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "reason must be a non-empty string when provided"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/subscriptions/:username/revoke maps 404 and 409 errors", async () => {
+  let server;
+  const notFoundApplication = express();
+  notFoundApplication.use(express.json());
+  notFoundApplication.use(
+    "/admin/subscriptions",
+    createAdminSubscriptionsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      revokeAdminSubscriptionForUserHandler: async () => {
+        throw new AdminSubscriptionNotFoundError("User does not have an active subscription");
+      }
+    })
+  );
+
+  server = await startTestServer(notFoundApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/subscriptions/seller-one/revoke`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        reason: "Manual adjustment"
+      })
+    });
+
+    expect(response.status).toBe(404);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "User does not have an active subscription"
+    });
+  } finally {
+    await server.close();
+  }
+
+  const conflictApplication = express();
+  conflictApplication.use(express.json());
+  conflictApplication.use(
+    "/admin/subscriptions",
+    createAdminSubscriptionsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      revokeAdminSubscriptionForUserHandler: async () => {
+        throw new AdminSubscriptionConflictError("Multiple users match the provided username");
+      }
+    })
+  );
+
+  server = await startTestServer(conflictApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/subscriptions/seller-one/revoke`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        reason: "Manual adjustment"
+      })
+    });
+
+    expect(response.status).toBe(409);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Multiple users match the provided username"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/subscriptions/:username/revoke returns the success payload and passes trimmed values", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/subscriptions",
+    createAdminSubscriptionsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      revokeAdminSubscriptionForUserHandler: async (
+        payload
+      ): Promise<RevokeAdminSubscriptionResponse> => {
+        expect(payload).toEqual({
+          username: "seller-one",
+          reason: "Manual adjustment"
+        });
+
+        return {
+          message: "Subscription revoked"
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/subscriptions/%20seller-one%20/revoke`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        reason: " Manual adjustment "
+      })
+    });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Subscription revoked"
     });
   } finally {
     await server.close();

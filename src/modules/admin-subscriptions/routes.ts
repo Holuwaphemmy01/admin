@@ -9,6 +9,7 @@ import {
   deleteAdminSubscriptionPlan,
   grantAdminSubscriptionToUser,
   listAdminSubscriptions,
+  revokeAdminSubscriptionForUser,
   updateAdminSubscriptionPlan
 } from "./service";
 import { AdminSubscriptionPlanType } from "./types";
@@ -18,6 +19,7 @@ interface AdminSubscriptionsRouterDependencies {
   deleteAdminSubscriptionPlanHandler?: typeof deleteAdminSubscriptionPlan;
   grantAdminSubscriptionToUserHandler?: typeof grantAdminSubscriptionToUser;
   listAdminSubscriptionsHandler?: typeof listAdminSubscriptions;
+  revokeAdminSubscriptionForUserHandler?: typeof revokeAdminSubscriptionForUser;
   updateAdminSubscriptionPlanHandler?: typeof updateAdminSubscriptionPlan;
   authenticateAdminMiddleware?: RequestHandler;
   requireSuperAdminMiddleware?: RequestHandler;
@@ -60,6 +62,8 @@ export function createAdminSubscriptionsRouter(
     dependencies.grantAdminSubscriptionToUserHandler ?? grantAdminSubscriptionToUser;
   const listAdminSubscriptionsHandler =
     dependencies.listAdminSubscriptionsHandler ?? listAdminSubscriptions;
+  const revokeAdminSubscriptionForUserHandler =
+    dependencies.revokeAdminSubscriptionForUserHandler ?? revokeAdminSubscriptionForUser;
   const updateAdminSubscriptionPlanHandler =
     dependencies.updateAdminSubscriptionPlanHandler ?? updateAdminSubscriptionPlan;
   const authenticateAdminMiddleware =
@@ -443,6 +447,72 @@ export function createAdminSubscriptionsRouter(
           username,
           subscriptionId: body.subscriptionId,
           ...(body.expiryDate !== undefined ? { expiryDate: body.expiryDate.trim() } : {})
+        });
+
+        response.json(result);
+      } catch (error) {
+        if (error instanceof AdminSubscriptionValidationError) {
+          response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof AdminSubscriptionNotFoundError) {
+          response.status(404).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof AdminSubscriptionConflictError) {
+          response.status(409).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
+
+  adminSubscriptionsRouter.put(
+    "/:username/revoke",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      const rawUsername = Array.isArray(request.params.username)
+        ? request.params.username[0] ?? ""
+        : request.params.username ?? "";
+      const username = rawUsername.trim();
+      const body = request.body as {
+        reason?: unknown;
+      };
+
+      if (username === "") {
+        response.status(400).json({
+          message: "username must be a non-empty string"
+        });
+
+        return;
+      }
+
+      if (body.reason !== undefined && !isNonEmptyString(body.reason)) {
+        response.status(400).json({
+          message: "reason must be a non-empty string when provided"
+        });
+
+        return;
+      }
+
+      try {
+        const result = await revokeAdminSubscriptionForUserHandler({
+          username,
+          ...(body.reason !== undefined ? { reason: body.reason.trim() } : {})
         });
 
         response.json(result);
