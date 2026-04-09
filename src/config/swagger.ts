@@ -48,6 +48,10 @@ export const swaggerSpec = {
     {
       name: "KYC Verification",
       description: "Administrative KYC review and verification endpoints"
+    },
+    {
+      name: "Subscriptions",
+      description: "Administrative subscription-plan listing endpoints"
     }
   ],
   components: {
@@ -625,6 +629,82 @@ export const swaggerSpec = {
             type: "array",
             items: {
               $ref: "#/components/schemas/DeliveryPricingRecord"
+            }
+          }
+        }
+      },
+      AdminSubscriptionPlan: {
+        type: "object",
+        properties: {
+          id: {
+            type: "integer",
+            example: 1
+          },
+          name: {
+            type: "string",
+            nullable: true,
+            example: "Basic"
+          },
+          description: {
+            type: "string",
+            nullable: true,
+            example: "Seller starter plan"
+          },
+          price: {
+            type: "number",
+            nullable: true,
+            example: 2500
+          },
+          currency: {
+            type: "string",
+            nullable: true,
+            example: "NGN"
+          },
+          duration: {
+            type: "integer",
+            nullable: true,
+            example: 1
+          },
+          maxProduct: {
+            type: "integer",
+            nullable: true,
+            example: 50
+          },
+          maxMonthlyOrder: {
+            type: "integer",
+            nullable: true,
+            example: 100
+          },
+          maxMonthlyDelivery: {
+            type: "integer",
+            nullable: true,
+            example: 0
+          },
+          maxSocialPosts: {
+            type: "integer",
+            nullable: true,
+            example: null
+          },
+          status: {
+            type: "integer",
+            nullable: true,
+            example: 1
+          }
+        }
+      },
+      AdminSubscriptionsResponse: {
+        type: "object",
+        properties: {
+          seller: {
+            type: "array",
+            items: {
+              $ref: "#/components/schemas/AdminSubscriptionPlan"
+            }
+          },
+          logistics: {
+            type: "array",
+            items: {
+              $ref: "#/components/schemas/AdminSubscriptionPlan"
             }
           }
         }
@@ -2529,6 +2609,51 @@ export const swaggerSpec = {
               "application/json": {
                 schema: {
                   $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/subscriptions": {
+      get: {
+        tags: ["Subscriptions"],
+        summary: "List all subscription plans",
+        description:
+          "Returns the current seller and logistics subscription plans grouped by plan type for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        responses: {
+          "200": {
+            description: "Subscription plans retrieved successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/AdminSubscriptionsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to view subscription plans",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
                 }
               }
             }
