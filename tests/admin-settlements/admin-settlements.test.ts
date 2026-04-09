@@ -11,11 +11,15 @@ import {
   approveAdminSettlement,
   AdminSettlementApprovalConflictError,
   AdminSettlementApprovalNotFoundError,
+  AdminSettlementRejectionConflictError,
+  AdminSettlementRejectionNotFoundError,
   AdminSettlementsValidationError,
+  rejectAdminSettlement,
   listAdminSettlements
 } from "../../src/modules/admin-settlements/service";
 import {
   AdminApproveSettlementResponse,
+  AdminRejectSettlementResponse,
   AdminSettlementsListResponse
 } from "../../src/modules/admin-settlements/types";
 
@@ -1125,6 +1129,382 @@ test("PUT /admin/settlements/:id/approve returns the success payload and passes 
     expect(response.status).toBe(200);
     expect((await response.json()) as Record<string, unknown>).toEqual({
       message: "Settlement successfully saved"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("rejectAdminSettlement rejects a pending settlement and writes a rejection audit row", async () => {
+  const fixedNow = new Date("2026-04-09T11:15:00.000Z");
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await rejectAdminSettlement(
+    1,
+    {
+      reason: " Invalid settlement account ",
+      actedByAdminUserId: "admin-user-id"
+    },
+    {
+      nowFactory: () => fixedNow,
+      uuidFactory: () => "8d242919-6b34-4b1c-b2f1-6bca619d15a2",
+      runInTransaction: async (operation) =>
+        operation({
+          query: async <T extends QueryResultRow = QueryResultRow>(
+            text: string,
+            params?: unknown[]
+          ): Promise<QueryResult<T>> => {
+            executedQueries.push({ text, params });
+
+            if (executedQueries.length === 1) {
+              return createQueryResult([
+                {
+                  id: 1,
+                  userId: 97,
+                  username: "seller-one",
+                  status: 1
+                }
+              ]) as unknown as QueryResult<T>;
+            }
+
+            if (executedQueries.length === 2) {
+              return createQueryResult([]) as unknown as QueryResult<T>;
+            }
+
+            if (executedQueries.length === 3) {
+              return createQueryResult([]) as unknown as QueryResult<T>;
+            }
+
+            throw new Error(`Unexpected query: ${text}`);
+          }
+        })
+    }
+  );
+
+  expect(response).toEqual({
+    message: "Settlement rejected"
+  });
+  expect(executedQueries).toHaveLength(3);
+  expect(executedQueries[0]?.text).toContain("FROM public.settlement s");
+  expect(executedQueries[0]?.text).toContain("FOR UPDATE");
+  expect(executedQueries[0]?.params).toEqual([1]);
+  expect(executedQueries[1]?.text).toContain("UPDATE public.settlement");
+  expect(executedQueries[1]?.params).toEqual([3, fixedNow, 1]);
+  expect(executedQueries[2]?.text).toContain("INSERT INTO public.admin_settlement_rejection_audit_logs");
+  expect(executedQueries[2]?.params).toEqual([
+    "8d242919-6b34-4b1c-b2f1-6bca619d15a2",
+    1,
+    97,
+    "admin-user-id",
+    "Invalid settlement account",
+    1,
+    3,
+    fixedNow
+  ]);
+});
+
+test("rejectAdminSettlement validates payloads and rejects invalid settlement state", async () => {
+  await expect(
+    rejectAdminSettlement(0, {
+      reason: "Invalid account",
+      actedByAdminUserId: "admin-user-id"
+    })
+  ).rejects.toThrow(AdminSettlementsValidationError);
+
+  await expect(
+    rejectAdminSettlement(1, {
+      reason: "   ",
+      actedByAdminUserId: "admin-user-id"
+    })
+  ).rejects.toThrow(AdminSettlementsValidationError);
+
+  await expect(
+    rejectAdminSettlement(
+      1,
+      {
+        reason: "Invalid account",
+        actedByAdminUserId: "admin-user-id"
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation({
+            query: async <T extends QueryResultRow = QueryResultRow>() =>
+              createQueryResult([]) as unknown as QueryResult<T>
+          })
+      }
+    )
+  ).rejects.toThrow(AdminSettlementRejectionNotFoundError);
+
+  await expect(
+    rejectAdminSettlement(
+      1,
+      {
+        reason: "Invalid account",
+        actedByAdminUserId: "admin-user-id"
+      },
+      {
+        runInTransaction: async (operation) =>
+          operation({
+            query: async <T extends QueryResultRow = QueryResultRow>(
+              text: string
+            ): Promise<QueryResult<T>> => {
+              if (text.includes("FROM public.settlement s")) {
+                return createQueryResult([
+                  {
+                    id: 1,
+                    userId: 97,
+                    username: "seller-one",
+                    status: 2
+                  }
+                ]) as unknown as QueryResult<T>;
+              }
+
+              throw new Error(`Unexpected query: ${text}`);
+            }
+          })
+      }
+    )
+  ).rejects.toThrow(AdminSettlementRejectionConflictError);
+});
+
+test("PUT /admin/settlements/:id/reject returns 401 when the admin token is missing", async () => {
+  const application = express();
+  application.use(express.json());
+
+  application.use(
+    "/admin/settlements",
+    createAdminSettlementsRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/settlements/1/reject`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        reason: "Invalid settlement account"
+      })
+    });
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/settlements/:id/reject returns 403 for non-super-admins", async () => {
+  const application = express();
+  application.use(express.json());
+
+  application.use(
+    "/admin/settlements",
+    createAdminSettlementsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "finance"
+        })
+      ),
+      rejectAdminSettlementHandler: async () => {
+        throw new Error("This handler should not be called when access is forbidden");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/settlements/1/reject`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        reason: "Invalid settlement account"
+      })
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/settlements/:id/reject validates the path and body", async () => {
+  const application = express();
+  application.use(express.json());
+
+  application.use(
+    "/admin/settlements",
+    createAdminSettlementsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      rejectAdminSettlementHandler: async () => {
+        throw new Error("This handler should not be called when validation fails");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    let response = await fetch(`${server.baseUrl}/admin/settlements/abc/reject`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        reason: "Invalid settlement account"
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "id must be a positive integer"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/settlements/1/reject`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        reason: "   "
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "reason must be a non-empty string"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/settlements/:id/reject maps 404 and 409 errors", async () => {
+  let server;
+  const notFoundApplication = express();
+  notFoundApplication.use(express.json());
+
+  notFoundApplication.use(
+    "/admin/settlements",
+    createAdminSettlementsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      rejectAdminSettlementHandler: async () => {
+        throw new AdminSettlementRejectionNotFoundError("Settlement request not found");
+      }
+    })
+  );
+
+  server = await startTestServer(notFoundApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/settlements/1/reject`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        reason: "Invalid settlement account"
+      })
+    });
+
+    expect(response.status).toBe(404);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Settlement request not found"
+    });
+  } finally {
+    await server.close();
+  }
+
+  const conflictApplication = express();
+  conflictApplication.use(express.json());
+
+  conflictApplication.use(
+    "/admin/settlements",
+    createAdminSettlementsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      rejectAdminSettlementHandler: async () => {
+        throw new AdminSettlementRejectionConflictError("Settlement request is not pending");
+      }
+    })
+  );
+
+  server = await startTestServer(conflictApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/settlements/1/reject`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        reason: "Invalid settlement account"
+      })
+    });
+
+    expect(response.status).toBe(409);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Settlement request is not pending"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/settlements/:id/reject returns the success payload and passes trimmed values", async () => {
+  const application = express();
+  application.use(express.json());
+
+  application.use(
+    "/admin/settlements",
+    createAdminSettlementsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      rejectAdminSettlementHandler: async (
+        settlementId,
+        payload
+      ): Promise<AdminRejectSettlementResponse> => {
+        expect(settlementId).toBe(1);
+        expect(payload).toEqual({
+          reason: "Invalid settlement account",
+          actedByAdminUserId: "admin-user-id"
+        });
+
+        return {
+          message: "Settlement rejected"
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/settlements/1/reject`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        reason: " Invalid settlement account "
+      })
+    });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Settlement rejected"
     });
   } finally {
     await server.close();

@@ -7,6 +7,8 @@ import { normalizeCredentialValue } from "../admin-auth/utils";
 import {
   AdminApproveSettlementRequestBody,
   AdminApproveSettlementResponse,
+  AdminRejectSettlementRequestBody,
+  AdminRejectSettlementResponse,
   AdminSettlementStatus,
   AdminSettlementsListFilters,
   AdminSettlementsListResponse
@@ -89,6 +91,20 @@ export class AdminSettlementApprovalConflictError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "AdminSettlementApprovalConflictError";
+  }
+}
+
+export class AdminSettlementRejectionNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AdminSettlementRejectionNotFoundError";
+  }
+}
+
+export class AdminSettlementRejectionConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AdminSettlementRejectionConflictError";
   }
 }
 
@@ -249,6 +265,16 @@ function normalizeRequiredDescription(value: string): string {
 
   if (normalizedValue === "") {
     throw new AdminSettlementsValidationError("description must be a non-empty string");
+  }
+
+  return normalizedValue;
+}
+
+function normalizeRequiredReason(value: string): string {
+  const normalizedValue = normalizeCredentialValue(value);
+
+  if (normalizedValue === "") {
+    throw new AdminSettlementsValidationError("reason must be a non-empty string");
   }
 
   return normalizedValue;
@@ -594,6 +620,90 @@ export async function approveAdminSettlement(
 
     return {
       message: "Settlement successfully saved"
+    };
+  });
+}
+
+export async function rejectAdminSettlement(
+  settlementId: number,
+  payload: AdminRejectSettlementRequestBody & { actedByAdminUserId: string },
+  dependencies: AdminSettlementsServiceDependencies = {}
+): Promise<AdminRejectSettlementResponse> {
+  const runInTransaction = getRunInTransaction(dependencies);
+  const nowFactory = getNowFactory(dependencies);
+  const uuidFactory = getUuidFactory(dependencies);
+  const normalizedSettlementId = normalizePositiveInteger(settlementId, "id");
+  const normalizedReason = normalizeRequiredReason(payload.reason);
+  const actedByAdminUserId = normalizeCredentialValue(payload.actedByAdminUserId);
+
+  if (actedByAdminUserId === "") {
+    throw new AdminSettlementsValidationError("actedByAdminUserId is required");
+  }
+
+  return runInTransaction(async (client) => {
+    const settlementResult = await client.query<SettlementForApprovalRow>(
+      [
+        "SELECT",
+        '  s.id, s."userId", u.username, s.status',
+        "FROM public.settlement s",
+        'INNER JOIN public."user" u ON u.id = s."userId"',
+        "WHERE s.id = $1",
+        "FOR UPDATE"
+      ].join("\n"),
+      [normalizedSettlementId]
+    );
+
+    const settlement = settlementResult.rows[0];
+
+    if (!settlement) {
+      throw new AdminSettlementRejectionNotFoundError("Settlement request not found");
+    }
+
+    const beneficiaryUserId = mapRequiredInteger(settlement.userId, "settlement.userId");
+    const settlementStatusCode =
+      settlement.status === null || settlement.status === undefined
+        ? null
+        : typeof settlement.status === "number"
+          ? settlement.status
+          : Number(settlement.status);
+
+    if (settlementStatusCode !== 1) {
+      throw new AdminSettlementRejectionConflictError("Settlement request is not pending");
+    }
+
+    const now = nowFactory();
+
+    await client.query(
+      [
+        "UPDATE public.settlement",
+        "SET status = $1,",
+        '    "updatedAt" = $2',
+        "WHERE id = $3"
+      ].join("\n"),
+      [3, now, normalizedSettlementId]
+    );
+
+    await client.query(
+      [
+        "INSERT INTO public.admin_settlement_rejection_audit_logs (",
+        '  id, "settlementId", "targetUserId", "actedByAdminUserId", reason,',
+        '  "previousStatus", "newStatus", "createdAt"',
+        ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+      ].join("\n"),
+      [
+        uuidFactory(),
+        normalizedSettlementId,
+        beneficiaryUserId,
+        actedByAdminUserId,
+        normalizedReason,
+        1,
+        3,
+        now
+      ]
+    );
+
+    return {
+      message: "Settlement rejected"
     };
   });
 }

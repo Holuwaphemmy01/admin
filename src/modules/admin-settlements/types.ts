@@ -37,3 +37,11 @@ export interface AdminApproveSettlementRequestBody {
 export interface AdminApproveSettlementResponse {
   message: string;
 }
+
+export interface AdminRejectSettlementRequestBody {
+  reason: string;
+}
+
+export interface AdminRejectSettlementResponse {
+  message: string;
+}

@@ -1161,6 +1161,7 @@ test("GET /docs.json exposes the swagger specification for the API", async () =>
     expect(payload.paths?.["/admin/transactions/{transactionId}"]).toBeDefined();
     expect(payload.paths?.["/admin/settlements"]).toBeDefined();
     expect(payload.paths?.["/admin/settlements/{id}/approve"]).toBeDefined();
+    expect(payload.paths?.["/admin/settlements/{id}/reject"]).toBeDefined();
     expect(payload.paths?.["/admin/wallet/platform"]).toBeDefined();
     expect(payload.paths?.["/admin/wallet/manual_credit"]).toBeDefined();
     expect(payload.paths?.["/admin/wallet/manual_debit"]).toBeDefined();

@@ -550,6 +550,25 @@ export const swaggerSpec = {
           }
         }
       },
+      AdminRejectSettlementRequest: {
+        type: "object",
+        required: ["reason"],
+        properties: {
+          reason: {
+            type: "string",
+            example: "Settlement account details are invalid"
+          }
+        }
+      },
+      AdminRejectSettlementResponse: {
+        type: "object",
+        properties: {
+          message: {
+            type: "string",
+            example: "Settlement rejected"
+          }
+        }
+      },
       AdminTransactionItem: {
         type: "object",
         properties: {
@@ -2088,6 +2107,103 @@ export const swaggerSpec = {
           },
           "409": {
             description: "Settlement request cannot be approved in its current state",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ConflictErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/settlements/{id}/reject": {
+      put: {
+        tags: ["Settlements"],
+        summary: "Reject a settlement with reason",
+        description:
+          "Rejects a pending settlement request and writes an admin rejection audit record for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "path",
+            name: "id",
+            required: true,
+            schema: {
+              type: "integer",
+              minimum: 1
+            },
+            description: "Settlement request ID"
+          }
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/AdminRejectSettlementRequest"
+              }
+            }
+          }
+        },
+        responses: {
+          "200": {
+            description: "Settlement rejected successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/AdminRejectSettlementResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid settlement-rejection request payload",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to reject settlements",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "Settlement request not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            description: "Settlement request cannot be rejected in its current state",
             content: {
               "application/json": {
                 schema: {

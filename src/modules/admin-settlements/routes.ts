@@ -11,13 +11,17 @@ import {
 import {
   AdminSettlementApprovalConflictError,
   AdminSettlementApprovalNotFoundError,
+  AdminSettlementRejectionConflictError,
+  AdminSettlementRejectionNotFoundError,
   AdminSettlementsValidationError,
   approveAdminSettlement,
+  rejectAdminSettlement,
   listAdminSettlements
 } from "./service";
 
 interface AdminSettlementsRouterDependencies {
   approveAdminSettlementHandler?: typeof approveAdminSettlement;
+  rejectAdminSettlementHandler?: typeof rejectAdminSettlement;
   listAdminSettlementsHandler?: typeof listAdminSettlements;
   authenticateAdminMiddleware?: RequestHandler;
   requireSuperAdminMiddleware?: RequestHandler;
@@ -78,6 +82,8 @@ export function createAdminSettlementsRouter(
   const adminSettlementsRouter = Router();
   const approveAdminSettlementHandler =
     dependencies.approveAdminSettlementHandler ?? approveAdminSettlement;
+  const rejectAdminSettlementHandler =
+    dependencies.rejectAdminSettlementHandler ?? rejectAdminSettlement;
   const listAdminSettlementsHandler =
     dependencies.listAdminSettlementsHandler ?? listAdminSettlements;
   const authenticateAdminMiddleware =
@@ -245,6 +251,72 @@ export function createAdminSettlementsRouter(
         }
 
         if (error instanceof AdminSettlementApprovalConflictError) {
+          response.status(409).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
+
+  adminSettlementsRouter.put(
+    "/:id/reject",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      const rawId = request.params.id;
+      const idText = (Array.isArray(rawId) ? rawId[0] ?? "" : rawId ?? "").trim();
+
+      if (!/^\d+$/.test(idText)) {
+        response.status(400).json({
+          message: "id must be a positive integer"
+        });
+
+        return;
+      }
+
+      const body = request.body as {
+        reason?: unknown;
+      };
+      const rawReason = typeof body.reason === "string" ? body.reason.trim() : "";
+
+      if (rawReason === "") {
+        response.status(400).json({
+          message: "reason must be a non-empty string"
+        });
+
+        return;
+      }
+
+      try {
+        const settlementResponse = await rejectAdminSettlementHandler(Number(idText), {
+          reason: rawReason,
+          actedByAdminUserId: request.admin?.sub ?? ""
+        });
+
+        response.json(settlementResponse);
+      } catch (error) {
+        if (error instanceof AdminSettlementsValidationError) {
+          response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof AdminSettlementRejectionNotFoundError) {
+          response.status(404).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof AdminSettlementRejectionConflictError) {
           response.status(409).json({
             message: error.message
           });
