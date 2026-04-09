@@ -7,7 +7,9 @@ import {
   AdminSubscriptionPlanType,
   AdminSubscriptionsResponse,
   CreateAdminSubscriptionPlanRequestBody,
-  CreateAdminSubscriptionPlanResponse
+  CreateAdminSubscriptionPlanResponse,
+  UpdateAdminSubscriptionPlanRequestBody,
+  UpdateAdminSubscriptionPlanResponse
 } from "./types";
 
 type QueryFunction = <T extends QueryResultRow = QueryResultRow>(
@@ -69,6 +71,13 @@ export class AdminSubscriptionConflictError extends Error {
   }
 }
 
+export class AdminSubscriptionNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AdminSubscriptionNotFoundError";
+  }
+}
+
 function getQueryFn(dependencies: AdminSubscriptionsServiceDependencies = {}): QueryFunction {
   return dependencies.queryFn ?? query;
 }
@@ -104,6 +113,28 @@ function normalizeRequiredTextField(
   return normalizedValue;
 }
 
+function normalizeOptionalTextField(
+  value: string | undefined,
+  fieldName: string,
+  ErrorType: MessageErrorConstructor
+): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== "string") {
+    throw new ErrorType(`${fieldName} must be a non-empty string when provided`);
+  }
+
+  const normalizedValue = normalizeCredentialValue(value);
+
+  if (normalizedValue === "") {
+    throw new ErrorType(`${fieldName} must be a non-empty string when provided`);
+  }
+
+  return normalizedValue;
+}
+
 function normalizePlanType(
   value: AdminSubscriptionPlanType,
   ErrorType: MessageErrorConstructor
@@ -134,6 +165,28 @@ function normalizePrice(value: number, ErrorType: MessageErrorConstructor): numb
   return value;
 }
 
+function normalizeOptionalPrice(
+  value: number | undefined,
+  ErrorType: MessageErrorConstructor
+): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    value < 0 ||
+    Math.abs(value - Number(value.toFixed(2))) > Number.EPSILON
+  ) {
+    throw new ErrorType(
+      "price must be a non-negative finite number with at most 2 decimal places when provided"
+    );
+  }
+
+  return value;
+}
+
 function normalizeOptionalNonNegativeInteger(
   value: number | undefined,
   fieldName: string,
@@ -145,6 +198,17 @@ function normalizeOptionalNonNegativeInteger(
 
   if (!Number.isInteger(value) || value < 0) {
     throw new ErrorType(`${fieldName} must be a non-negative integer when provided`);
+  }
+
+  return value;
+}
+
+function normalizeSubscriptionPlanId(
+  value: number,
+  ErrorType: MessageErrorConstructor
+): number {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new ErrorType("id must be a positive integer");
   }
 
   return value;
@@ -438,6 +502,171 @@ export async function createAdminSubscriptionPlan(
     if (isPostgresErrorWithCode(error, "23505")) {
       throw new AdminSubscriptionConflictError(
         "An active annual subscription plan with this name and type already exists"
+      );
+    }
+
+    throw error;
+  }
+}
+
+export async function updateAdminSubscriptionPlan(
+  payload: UpdateAdminSubscriptionPlanRequestBody,
+  dependencies: AdminSubscriptionsServiceDependencies = {}
+): Promise<UpdateAdminSubscriptionPlanResponse> {
+  const queryFn = getQueryFn(dependencies);
+  const now = getNowFactory(dependencies)();
+  const id = normalizeSubscriptionPlanId(payload.id, AdminSubscriptionValidationError);
+  const name = normalizeOptionalTextField(
+    payload.name,
+    "name",
+    AdminSubscriptionValidationError
+  );
+  const price = normalizeOptionalPrice(payload.price, AdminSubscriptionValidationError);
+  const productLimit = normalizeOptionalNonNegativeInteger(
+    payload.productLimit,
+    "productLimit",
+    AdminSubscriptionValidationError
+  );
+  const monthlyOrderLimit = normalizeOptionalNonNegativeInteger(
+    payload.monthlyOrderLimit,
+    "monthlyOrderLimit",
+    AdminSubscriptionValidationError
+  );
+  const features = normalizeFeatures(payload.features, AdminSubscriptionValidationError);
+
+  if (
+    name === undefined &&
+    price === undefined &&
+    productLimit === undefined &&
+    monthlyOrderLimit === undefined &&
+    features === undefined
+  ) {
+    throw new AdminSubscriptionValidationError(
+      "At least one subscription plan field must be provided for update"
+    );
+  }
+
+  const existingPlanResult = await queryFn<CreatedSubscriptionPlanRow>(
+    [
+      "SELECT",
+      '  s.id, s.name, s.description, s.price, s.currency, s.duration, s.status, s.type,',
+      '  s."maxProduct" AS "maxProduct",',
+      '  s."maxMonthlyOrder" AS "maxMonthlyOrder",',
+      '  s."maxMonthlyDelivery" AS "maxMonthlyDelivery"',
+      "FROM public.subscription s",
+      "WHERE s.id = $1",
+      "LIMIT 1"
+    ].join("\n"),
+    [id]
+  );
+  const existingPlan = existingPlanResult.rows[0];
+
+  if (!existingPlan) {
+    throw new AdminSubscriptionNotFoundError("Subscription plan not found");
+  }
+
+  const existingType = mapRequiredType(existingPlan.type);
+  const dbType = existingType === "logistics" ? "logistic" : "seller";
+  const existingDuration = mapNullableInteger(existingPlan.duration, "duration");
+
+  if (existingDuration === null) {
+    throw new Error("Subscription query returned an invalid duration");
+  }
+
+  const existingPrice = mapNullableNumber(existingPlan.price, "price");
+
+  if (existingPrice === null) {
+    throw new Error("Subscription query returned an invalid price");
+  }
+
+  const existingMaxProduct = mapNullableInteger(existingPlan.maxProduct, "maxProduct");
+  const existingMaxMonthlyOrder = mapNullableInteger(
+    existingPlan.maxMonthlyOrder,
+    "maxMonthlyOrder"
+  );
+  const existingMaxMonthlyDelivery = mapNullableInteger(
+    existingPlan.maxMonthlyDelivery,
+    "maxMonthlyDelivery"
+  );
+  const currentStatus = mapNullableInteger(existingPlan.status, "status") ?? 1;
+  const resolvedName = name ?? mapRequiredText(existingPlan.name, "name");
+  const resolvedDescription =
+    features === undefined ? existingPlan.description : JSON.stringify(features);
+  const resolvedPrice = price ?? existingPrice;
+  const resolvedMaxProduct = productLimit ?? existingMaxProduct;
+  const resolvedMaxMonthlyOrder =
+    dbType === "seller"
+      ? monthlyOrderLimit ?? existingMaxMonthlyOrder
+      : existingMaxMonthlyOrder;
+  const resolvedMaxMonthlyDelivery =
+    dbType === "logistic"
+      ? monthlyOrderLimit ?? existingMaxMonthlyDelivery
+      : existingMaxMonthlyDelivery;
+
+  if (name !== undefined && currentStatus === 1) {
+    const duplicatePlanResult = await queryFn<ExistingSubscriptionPlanRow>(
+      [
+        "SELECT s.id",
+        "FROM public.subscription s",
+        "WHERE LOWER(BTRIM(s.name)) = LOWER(BTRIM($1))",
+        "  AND s.type = $2",
+        "  AND s.duration = $3",
+        "  AND s.id <> $4",
+        "  AND COALESCE(s.status, 1) = 1",
+        "LIMIT 1"
+      ].join("\n"),
+      [resolvedName, dbType, existingDuration, id]
+    );
+
+    if ((duplicatePlanResult.rowCount ?? 0) > 0) {
+      throw new AdminSubscriptionConflictError(
+        "An active subscription plan with this name, type, and duration already exists"
+      );
+    }
+  }
+
+  try {
+    const updatedPlanResult = await queryFn<CreatedSubscriptionPlanRow>(
+      [
+        "UPDATE public.subscription",
+        "SET",
+        "  name = $1,",
+        "  description = $2,",
+        "  price = $3,",
+        '  "maxProduct" = $4,',
+        '  "maxMonthlyOrder" = $5,',
+        '  "maxMonthlyDelivery" = $6,',
+        '  "updatedAt" = $7',
+        "WHERE id = $8",
+        'RETURNING id, name, description, price, currency, duration, "maxProduct" AS "maxProduct",',
+        '  "maxMonthlyOrder" AS "maxMonthlyOrder", "maxMonthlyDelivery" AS "maxMonthlyDelivery",',
+        "  status, type"
+      ].join("\n"),
+      [
+        resolvedName,
+        resolvedDescription,
+        resolvedPrice,
+        resolvedMaxProduct,
+        resolvedMaxMonthlyOrder,
+        resolvedMaxMonthlyDelivery,
+        now,
+        id
+      ]
+    );
+    const updatedPlan = updatedPlanResult.rows[0];
+
+    if (!updatedPlan) {
+      throw new AdminSubscriptionNotFoundError("Subscription plan not found");
+    }
+
+    return {
+      message: "Plan updated",
+      plan: mapCreatedSubscriptionPlan(updatedPlan)
+    };
+  } catch (error) {
+    if (isPostgresErrorWithCode(error, "23505")) {
+      throw new AdminSubscriptionConflictError(
+        "An active subscription plan with this name, type, and duration already exists"
       );
     }
 

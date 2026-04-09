@@ -28,6 +28,15 @@ export interface CreateAdminSubscriptionPlanRequestBody {
   features?: string[];
 }
 
+export interface UpdateAdminSubscriptionPlanRequestBody {
+  id: number;
+  name?: string;
+  price?: number;
+  productLimit?: number;
+  monthlyOrderLimit?: number;
+  features?: string[];
+}
+
 export interface CreatedAdminSubscriptionPlan {
   id: number;
   name: string;
@@ -42,6 +51,11 @@ export interface CreatedAdminSubscriptionPlan {
 }
 
 export interface CreateAdminSubscriptionPlanResponse {
+  message: string;
+  plan: CreatedAdminSubscriptionPlan;
+}
+
+export interface UpdateAdminSubscriptionPlanResponse {
   message: string;
   plan: CreatedAdminSubscriptionPlan;
 }

@@ -9,13 +9,16 @@ import { AuthenticatedAdmin } from "../../src/modules/admin-auth/types";
 import { createAdminSubscriptionsRouter } from "../../src/modules/admin-subscriptions/routes";
 import {
   AdminSubscriptionConflictError,
+  AdminSubscriptionNotFoundError,
   AdminSubscriptionValidationError,
   createAdminSubscriptionPlan,
-  listAdminSubscriptions
+  listAdminSubscriptions,
+  updateAdminSubscriptionPlan
 } from "../../src/modules/admin-subscriptions/service";
 import {
   AdminSubscriptionsResponse,
-  CreateAdminSubscriptionPlanResponse
+  CreateAdminSubscriptionPlanResponse,
+  UpdateAdminSubscriptionPlanResponse
 } from "../../src/modules/admin-subscriptions/types";
 
 async function startTestServer(application: ReturnType<typeof express>) {
@@ -442,6 +445,371 @@ test("createAdminSubscriptionPlan validates payloads, rejects duplicates, and ha
   ).rejects.toThrow("Subscription plan insert did not return a row");
 });
 
+test("updateAdminSubscriptionPlan updates the provided fields and preserves the existing plan duration", async () => {
+  const fixedNow = new Date("2026-04-09T15:00:00.000Z");
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await updateAdminSubscriptionPlan(
+    {
+      id: 4,
+      name: " Standard Plus ",
+      price: 18000,
+      features: [" Priority support ", "Dedicated onboarding"]
+    },
+    {
+      nowFactory: () => fixedNow,
+      queryFn: async <T extends QueryResultRow = QueryResultRow>(
+        text: string,
+        params?: unknown[]
+      ): Promise<QueryResult<T>> => {
+        executedQueries.push({ text, params });
+
+        if (executedQueries.length === 1) {
+          return createQueryResult([
+            {
+              id: 4,
+              name: "Standard",
+              description: JSON.stringify(["Priority support"]),
+              price: "15000",
+              currency: "NGN",
+              duration: 1,
+              maxProduct: 100,
+              maxMonthlyOrder: 250,
+              maxMonthlyDelivery: null,
+              status: 1,
+              type: "seller"
+            }
+          ]) as unknown as QueryResult<T>;
+        }
+
+        if (executedQueries.length === 2) {
+          return createQueryResult([]) as unknown as QueryResult<T>;
+        }
+
+        if (executedQueries.length === 3) {
+          return createQueryResult([
+            {
+              id: 4,
+              name: "Standard Plus",
+              description: JSON.stringify(["Priority support", "Dedicated onboarding"]),
+              price: "18000",
+              currency: "NGN",
+              duration: 1,
+              maxProduct: 100,
+              maxMonthlyOrder: 250,
+              maxMonthlyDelivery: null,
+              status: 1,
+              type: "seller"
+            }
+          ]) as unknown as QueryResult<T>;
+        }
+
+        throw new Error(`Unexpected query: ${text}`);
+      }
+    }
+  );
+
+  expect(response).toEqual({
+    message: "Plan updated",
+    plan: {
+      id: 4,
+      name: "Standard Plus",
+      type: "seller",
+      price: 18000,
+      currency: "NGN",
+      duration: 1,
+      productLimit: 100,
+      monthlyOrderLimit: 250,
+      features: ["Priority support", "Dedicated onboarding"],
+      status: 1
+    }
+  });
+  expect(executedQueries).toHaveLength(3);
+  expect(executedQueries[0]?.text).toContain("WHERE s.id = $1");
+  expect(executedQueries[0]?.params).toEqual([4]);
+  expect(executedQueries[1]?.text).toContain("AND s.id <> $4");
+  expect(executedQueries[1]?.params).toEqual(["Standard Plus", "seller", 1, 4]);
+  expect(executedQueries[2]?.text).toContain("UPDATE public.subscription");
+  expect(executedQueries[2]?.params).toEqual([
+    "Standard Plus",
+    JSON.stringify(["Priority support", "Dedicated onboarding"]),
+    18000,
+    100,
+    250,
+    null,
+    fixedNow,
+    4
+  ]);
+});
+
+test("updateAdminSubscriptionPlan maps logistics monthly order limits onto the delivery column", async () => {
+  const fixedNow = new Date("2026-04-09T15:30:00.000Z");
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await updateAdminSubscriptionPlan(
+    {
+      id: 9,
+      productLimit: 0,
+      monthlyOrderLimit: 180
+    },
+    {
+      nowFactory: () => fixedNow,
+      queryFn: async <T extends QueryResultRow = QueryResultRow>(
+        text: string,
+        params?: unknown[]
+      ): Promise<QueryResult<T>> => {
+        executedQueries.push({ text, params });
+
+        if (executedQueries.length === 1) {
+          return createQueryResult([
+            {
+              id: 9,
+              name: "Logistics Standard",
+              description: JSON.stringify(["Assigned dispatch priority"]),
+              price: "50000",
+              currency: "NGN",
+              duration: 12,
+              maxProduct: null,
+              maxMonthlyOrder: null,
+              maxMonthlyDelivery: 120,
+              status: 1,
+              type: "logistic"
+            }
+          ]) as unknown as QueryResult<T>;
+        }
+
+        if (executedQueries.length === 2) {
+          return createQueryResult([
+            {
+              id: 9,
+              name: "Logistics Standard",
+              description: JSON.stringify(["Assigned dispatch priority"]),
+              price: "50000",
+              currency: "NGN",
+              duration: 12,
+              maxProduct: 0,
+              maxMonthlyOrder: null,
+              maxMonthlyDelivery: 180,
+              status: 1,
+              type: "logistic"
+            }
+          ]) as unknown as QueryResult<T>;
+        }
+
+        throw new Error(`Unexpected query: ${text}`);
+      }
+    }
+  );
+
+  expect(response).toEqual({
+    message: "Plan updated",
+    plan: {
+      id: 9,
+      name: "Logistics Standard",
+      type: "logistics",
+      price: 50000,
+      currency: "NGN",
+      duration: 12,
+      productLimit: 0,
+      monthlyOrderLimit: 180,
+      features: ["Assigned dispatch priority"],
+      status: 1
+    }
+  });
+  expect(executedQueries).toHaveLength(2);
+  expect(executedQueries[0]?.text).toContain("WHERE s.id = $1");
+  expect(executedQueries[1]?.text).toContain("UPDATE public.subscription");
+  expect(executedQueries[1]?.params).toEqual([
+    "Logistics Standard",
+    JSON.stringify(["Assigned dispatch priority"]),
+    50000,
+    0,
+    null,
+    180,
+    fixedNow,
+    9
+  ]);
+});
+
+test("updateAdminSubscriptionPlan validates payloads and maps not found or duplicate conflicts", async () => {
+  await expect(
+    updateAdminSubscriptionPlan({
+      id: 0,
+      price: 50000
+    })
+  ).rejects.toThrow(AdminSubscriptionValidationError);
+
+  await expect(
+    updateAdminSubscriptionPlan({
+      id: 1
+    })
+  ).rejects.toThrow(AdminSubscriptionValidationError);
+
+  await expect(
+    updateAdminSubscriptionPlan({
+      id: 1,
+      name: "   "
+    })
+  ).rejects.toThrow(AdminSubscriptionValidationError);
+
+  await expect(
+    updateAdminSubscriptionPlan({
+      id: 1,
+      price: 1000.001
+    })
+  ).rejects.toThrow(AdminSubscriptionValidationError);
+
+  await expect(
+    updateAdminSubscriptionPlan({
+      id: 1,
+      productLimit: -1
+    })
+  ).rejects.toThrow(AdminSubscriptionValidationError);
+
+  await expect(
+    updateAdminSubscriptionPlan({
+      id: 1,
+      monthlyOrderLimit: -1
+    })
+  ).rejects.toThrow(AdminSubscriptionValidationError);
+
+  await expect(
+    updateAdminSubscriptionPlan({
+      id: 1,
+      features: ["Valid", "   "]
+    })
+  ).rejects.toThrow(AdminSubscriptionValidationError);
+
+  await expect(
+    updateAdminSubscriptionPlan(
+      {
+        id: 99,
+        price: 50000
+      },
+      {
+        queryFn: async <T extends QueryResultRow = QueryResultRow>() =>
+          createQueryResult([]) as unknown as QueryResult<T>
+      }
+    )
+  ).rejects.toThrow(AdminSubscriptionNotFoundError);
+
+  await expect(
+    updateAdminSubscriptionPlan(
+      {
+        id: 4,
+        name: "Premium"
+      },
+      {
+        queryFn: async <T extends QueryResultRow = QueryResultRow>(
+          text: string
+        ): Promise<QueryResult<T>> => {
+          if (text.includes("WHERE s.id = $1")) {
+            return createQueryResult([
+              {
+                id: 4,
+                name: "Standard",
+                description: JSON.stringify(["Priority support"]),
+                price: 15000,
+                currency: "NGN",
+                duration: 1,
+                maxProduct: 100,
+                maxMonthlyOrder: 250,
+                maxMonthlyDelivery: null,
+                status: 1,
+                type: "seller"
+              }
+            ]) as unknown as QueryResult<T>;
+          }
+
+          if (text.includes("AND s.id <> $4")) {
+            return createQueryResult([{ id: 3 }]) as unknown as QueryResult<T>;
+          }
+
+          throw new Error(`Unexpected query: ${text}`);
+        }
+      }
+    )
+  ).rejects.toThrow(AdminSubscriptionConflictError);
+
+  await expect(
+    updateAdminSubscriptionPlan(
+      {
+        id: 4,
+        name: "Premium"
+      },
+      {
+        queryFn: async <T extends QueryResultRow = QueryResultRow>(
+          text: string
+        ): Promise<QueryResult<T>> => {
+          if (text.includes("WHERE s.id = $1")) {
+            return createQueryResult([
+              {
+                id: 4,
+                name: "Standard",
+                description: JSON.stringify(["Priority support"]),
+                price: 15000,
+                currency: "NGN",
+                duration: 1,
+                maxProduct: 100,
+                maxMonthlyOrder: 250,
+                maxMonthlyDelivery: null,
+                status: 1,
+                type: "seller"
+              }
+            ]) as unknown as QueryResult<T>;
+          }
+
+          if (text.includes("AND s.id <> $4")) {
+            return createQueryResult([]) as unknown as QueryResult<T>;
+          }
+
+          const error = new Error("duplicate key") as Error & { code?: string };
+          error.code = "23505";
+          throw error;
+        }
+      }
+    )
+  ).rejects.toThrow(AdminSubscriptionConflictError);
+
+  await expect(
+    updateAdminSubscriptionPlan(
+      {
+        id: 4,
+        price: 17000
+      },
+      {
+        queryFn: async <T extends QueryResultRow = QueryResultRow>(
+          text: string
+        ): Promise<QueryResult<T>> => {
+          if (text.includes("WHERE s.id = $1")) {
+            return createQueryResult([
+              {
+                id: 4,
+                name: "Standard",
+                description: JSON.stringify(["Priority support"]),
+                price: 15000,
+                currency: "NGN",
+                duration: 1,
+                maxProduct: 100,
+                maxMonthlyOrder: 250,
+                maxMonthlyDelivery: null,
+                status: 1,
+                type: "seller"
+              }
+            ]) as unknown as QueryResult<T>;
+          }
+
+          if (text.includes("UPDATE public.subscription")) {
+            return createQueryResult([]) as unknown as QueryResult<T>;
+          }
+
+          throw new Error(`Unexpected query: ${text}`);
+        }
+      }
+    )
+  ).rejects.toThrow(AdminSubscriptionNotFoundError);
+});
+
 test("GET /admin/subscriptions returns 401 when the admin token is missing", async () => {
   const application = express();
   application.use(express.json());
@@ -791,6 +1159,355 @@ test("POST /admin/subscriptions/plans returns the success payload and passes tri
         productLimit: 0,
         monthlyOrderLimit: 100,
         features: ["Assigned dispatch priority", "Weekend coverage"],
+        status: 1
+      }
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/subscriptions/plans/:id returns 401 when the admin token is missing", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/subscriptions",
+    createAdminSubscriptionsRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/subscriptions/plans/5`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        price: 50000
+      })
+    });
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/subscriptions/plans/:id returns 403 for non-super-admins", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/subscriptions",
+    createAdminSubscriptionsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "support"
+        })
+      ),
+      updateAdminSubscriptionPlanHandler: async () => {
+        throw new Error("This handler should not be called when access is forbidden");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/subscriptions/plans/5`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        price: 50000
+      })
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/subscriptions/plans/:id validates the path and request body", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/subscriptions",
+    createAdminSubscriptionsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      updateAdminSubscriptionPlanHandler: async () => {
+        throw new Error("This handler should not be called when validation fails");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    let response = await fetch(`${server.baseUrl}/admin/subscriptions/plans/abc`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        price: 50000
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "id must be a positive integer"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/subscriptions/plans/5`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({})
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "At least one subscription plan field must be provided for update"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/subscriptions/plans/5`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        name: "   "
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "name must be a non-empty string when provided"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/subscriptions/plans/5`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        price: 50000.001
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message:
+        "price must be a non-negative finite number with at most 2 decimal places when provided"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/subscriptions/plans/5`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        productLimit: -1
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "productLimit must be a non-negative integer when provided"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/subscriptions/plans/5`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        monthlyOrderLimit: -1
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "monthlyOrderLimit must be a non-negative integer when provided"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/subscriptions/plans/5`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        features: ["Priority support", "   "]
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "features must be an array of non-empty strings when provided"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/subscriptions/plans/:id maps 404 and 409 errors", async () => {
+  let server;
+  const notFoundApplication = express();
+  notFoundApplication.use(express.json());
+  notFoundApplication.use(
+    "/admin/subscriptions",
+    createAdminSubscriptionsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      updateAdminSubscriptionPlanHandler: async () => {
+        throw new AdminSubscriptionNotFoundError("Subscription plan not found");
+      }
+    })
+  );
+
+  server = await startTestServer(notFoundApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/subscriptions/plans/5`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        price: 50000
+      })
+    });
+
+    expect(response.status).toBe(404);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Subscription plan not found"
+    });
+  } finally {
+    await server.close();
+  }
+
+  const conflictApplication = express();
+  conflictApplication.use(express.json());
+  conflictApplication.use(
+    "/admin/subscriptions",
+    createAdminSubscriptionsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      updateAdminSubscriptionPlanHandler: async () => {
+        throw new AdminSubscriptionConflictError(
+          "An active subscription plan with this name, type, and duration already exists"
+        );
+      }
+    })
+  );
+
+  server = await startTestServer(conflictApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/subscriptions/plans/5`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        name: "Premium"
+      })
+    });
+
+    expect(response.status).toBe(409);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "An active subscription plan with this name, type, and duration already exists"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/subscriptions/plans/:id returns the success payload and passes trimmed values", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/subscriptions",
+    createAdminSubscriptionsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      updateAdminSubscriptionPlanHandler: async (
+        payload
+      ): Promise<UpdateAdminSubscriptionPlanResponse> => {
+        expect(payload).toEqual({
+          id: 12,
+          name: "Premium Plus",
+          price: 150000,
+          productLimit: 600,
+          monthlyOrderLimit: 6000,
+          features: ["Priority support", "Weekend coverage"]
+        });
+
+        return {
+          message: "Plan updated",
+          plan: {
+            id: 12,
+            name: "Premium Plus",
+            type: "seller",
+            price: 150000,
+            currency: "NGN",
+            duration: 12,
+            productLimit: 600,
+            monthlyOrderLimit: 6000,
+            features: ["Priority support", "Weekend coverage"],
+            status: 1
+          }
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/subscriptions/plans/12`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        name: " Premium Plus ",
+        price: 150000,
+        productLimit: 600,
+        monthlyOrderLimit: 6000,
+        features: [" Priority support ", "Weekend coverage"]
+      })
+    });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Plan updated",
+      plan: {
+        id: 12,
+        name: "Premium Plus",
+        type: "seller",
+        price: 150000,
+        currency: "NGN",
+        duration: 12,
+        productLimit: 600,
+        monthlyOrderLimit: 6000,
+        features: ["Priority support", "Weekend coverage"],
         status: 1
       }
     });

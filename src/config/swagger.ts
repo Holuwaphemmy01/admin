@@ -808,6 +808,47 @@ export const swaggerSpec = {
           }
         }
       },
+      UpdateAdminSubscriptionPlanRequest: {
+        type: "object",
+        properties: {
+          name: {
+            type: "string",
+            example: "Premium Plus"
+          },
+          price: {
+            type: "number",
+            format: "float",
+            example: 150000
+          },
+          productLimit: {
+            type: "integer",
+            example: 600
+          },
+          monthlyOrderLimit: {
+            type: "integer",
+            example: 6000
+          },
+          features: {
+            type: "array",
+            items: {
+              type: "string"
+            },
+            example: ["Priority support", "Weekend coverage"]
+          }
+        }
+      },
+      UpdateAdminSubscriptionPlanResponse: {
+        type: "object",
+        properties: {
+          message: {
+            type: "string",
+            example: "Plan updated"
+          },
+          plan: {
+            $ref: "#/components/schemas/CreatedAdminSubscriptionPlan"
+          }
+        }
+      },
       AdminSettlementItem: {
         type: "object",
         properties: {
@@ -2828,6 +2869,103 @@ export const swaggerSpec = {
               "application/json": {
                 schema: {
                   $ref: "#/components/schemas/ConflictErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/subscriptions/plans/{id}": {
+      put: {
+        tags: ["Subscriptions"],
+        summary: "Update a subscription plan",
+        description:
+          "Updates one or more editable fields on an existing subscription plan for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "path",
+            name: "id",
+            required: true,
+            schema: {
+              type: "integer",
+              minimum: 1
+            },
+            description: "Subscription plan identifier"
+          }
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/UpdateAdminSubscriptionPlanRequest"
+              }
+            }
+          }
+        },
+        responses: {
+          "200": {
+            description: "Subscription plan updated successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/UpdateAdminSubscriptionPlanResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid subscription-plan update payload",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/UnauthorizedErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to update subscription plans",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "Subscription plan not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            description: "Subscription plan conflict",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
                 }
               }
             }
