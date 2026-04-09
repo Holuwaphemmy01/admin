@@ -26,6 +26,10 @@ export const swaggerSpec = {
       description: "Administrative platform wallet overview and recent transaction endpoints"
     },
     {
+      name: "Settlements",
+      description: "Administrative settlement-listing endpoints"
+    },
+    {
       name: "Product Management",
       description: "Administrative product and product-category management endpoints"
     },
@@ -460,6 +464,58 @@ export const swaggerSpec = {
           newBalance: {
             type: "number",
             example: 1500
+          }
+        }
+      },
+      AdminSettlementItem: {
+        type: "object",
+        properties: {
+          id: {
+            type: "integer",
+            example: 1
+          },
+          username: {
+            type: "string",
+            example: "seller-one"
+          },
+          amount: {
+            type: "number",
+            example: 100.5
+          },
+          status: {
+            type: "string",
+            enum: ["pending", "approved", "rejected"],
+            example: "pending"
+          },
+          description: {
+            type: "string",
+            nullable: true,
+            example: "payment description"
+          },
+          createdAt: {
+            type: "string",
+            format: "date-time",
+            example: "2026-01-22T09:22:34.000Z"
+          },
+          settlementAccountId: {
+            type: "integer",
+            nullable: true,
+            example: 1
+          }
+        }
+      },
+      AdminSettlementsListResponse: {
+        type: "object",
+        properties: {
+          settlements: {
+            type: "array",
+            items: {
+              $ref: "#/components/schemas/AdminSettlementItem"
+            }
+          },
+          total: {
+            type: "integer",
+            example: 1
           }
         }
       },
@@ -1809,6 +1865,105 @@ export const swaggerSpec = {
               "application/json": {
                 schema: {
                   $ref: "#/components/schemas/ConflictErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/settlements": {
+      get: {
+        tags: ["Settlements"],
+        summary: "List all settlement requests",
+        description:
+          "Returns paginated settlement requests with optional status and username filters for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "query",
+            name: "status",
+            required: false,
+            schema: {
+              type: "string",
+              enum: ["pending", "approved", "rejected"]
+            },
+            description: "Filter by settlement status"
+          },
+          {
+            in: "query",
+            name: "username",
+            required: false,
+            schema: {
+              type: "string"
+            },
+            description: "Filter by user username"
+          },
+          {
+            in: "query",
+            name: "page",
+            required: false,
+            schema: {
+              type: "integer",
+              minimum: 1,
+              default: 1
+            },
+            description: "Pagination page number"
+          },
+          {
+            in: "query",
+            name: "limit",
+            required: false,
+            schema: {
+              type: "integer",
+              minimum: 1,
+              maximum: 100,
+              default: 20
+            },
+            description: "Results per page"
+          }
+        ],
+        responses: {
+          "200": {
+            description: "Settlement requests retrieved successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/AdminSettlementsListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid settlement-list query parameters",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to list settlement requests",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
                 }
               }
             }

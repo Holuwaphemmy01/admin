@@ -68,6 +68,7 @@ This is a TypeScript Node.js and Express starter for the BrickPine admin API wit
 - `POST /admin/wallet/manual_credit`: Credits a customer user's wallet, records the wallet transaction, and writes an admin wallet audit row for a super admin.
 - `POST /admin/wallet/manual_debit`: Debits a customer user's wallet, records the wallet transaction, and writes an admin wallet audit row for a super admin.
 - `GET /admin/wallet/:username`: Returns a customer user's wallet balances and currency for a super admin.
+- `GET /admin/settlements`: Lists settlement requests with optional status, username, and pagination filters for a super admin.
 - `POST /admin/product/categories`: Creates an active product category with required description and commission VAT tiers for a super admin.
 - `PUT /admin/product/categories/:id`: Updates one or more fields on an existing product category for a super admin.
 - `DELETE /admin/product/categories/:id`: Deletes a product category for a super admin when no linked products or category commissions still reference it.
