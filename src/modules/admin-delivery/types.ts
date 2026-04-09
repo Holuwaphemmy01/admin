@@ -38,6 +38,13 @@ export interface DeleteDeliveryPricingResponse {
   message: string;
 }
 
+export interface DeliverySurgeOverviewResponse {
+  surgeFactor: number;
+  fuelSurcharge: number;
+  reason: string | null;
+  updatedAt: string | null;
+}
+
 export interface ListDeliveryPricingFilters {
   state?: string;
   vehicleType?: DeliveryVehicleType;

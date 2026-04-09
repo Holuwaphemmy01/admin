@@ -563,6 +563,30 @@ export const swaggerSpec = {
           }
         }
       },
+      DeliverySurgeOverviewResponse: {
+        type: "object",
+        properties: {
+          surgeFactor: {
+            type: "number",
+            example: 1.4
+          },
+          fuelSurcharge: {
+            type: "number",
+            example: 2.64
+          },
+          reason: {
+            type: "string",
+            nullable: true,
+            example: "publicHoliday"
+          },
+          updatedAt: {
+            type: "string",
+            format: "date-time",
+            nullable: true,
+            example: "2026-04-09T11:00:00.000Z"
+          }
+        }
+      },
       DeliveryPricingListResponse: {
         type: "object",
         properties: {
@@ -2196,6 +2220,51 @@ export const swaggerSpec = {
               "application/json": {
                 schema: {
                   $ref: "#/components/schemas/ConflictErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/delivery/surge": {
+      get: {
+        tags: ["Delivery & Logistics"],
+        summary: "View current surge pricing factors",
+        description:
+          "Returns the current delivery surge overview, including the strongest active general surge factor, derived fuel surcharge, active reason when available, and the latest relevant update time for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        responses: {
+          "200": {
+            description: "Delivery surge overview retrieved successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/DeliverySurgeOverviewResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to view delivery surge settings",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
                 }
               }
             }

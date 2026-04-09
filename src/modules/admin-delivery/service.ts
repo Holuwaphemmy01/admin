@@ -7,6 +7,7 @@ import {
   CreateDeliveryPricingResponse,
   DeleteDeliveryPricingRequestBody,
   DeleteDeliveryPricingResponse,
+  DeliverySurgeOverviewResponse,
   DeliveryVehicleType,
   ListDeliveryPricingFilters,
   ListDeliveryPricingResponse,
@@ -47,6 +48,17 @@ interface DeliveryPricingForUpdateRow extends QueryResultRow {
   state: string | null;
   vehicleType: string | null;
   baseFee: string | number | null;
+}
+
+interface DeliveryGeneralSurgeRow extends QueryResultRow {
+  rate: string | number | null;
+  condition: string | null;
+  updatedAt: Date | null;
+}
+
+interface DeliveryFuelSurgeRow extends QueryResultRow {
+  fuelSurcharge: string | number | null;
+  updatedAt: Date | null;
 }
 
 type MessageErrorConstructor = new (message: string) => Error;
@@ -206,6 +218,76 @@ function mapFiniteNumber(value: string | number | null, fieldName: string): numb
   }
 
   return numericValue;
+}
+
+function mapDateOrNull(value: Date | null): string | null {
+  if (value === null) {
+    return null;
+  }
+
+  if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
+    throw new Error("Delivery surge returned an invalid updatedAt value");
+  }
+
+  return value.toISOString();
+}
+
+export async function getDeliverySurgeOverview(
+  dependencies: AdminDeliveryServiceDependencies = {}
+): Promise<DeliverySurgeOverviewResponse> {
+  const queryFn = getQueryFn(dependencies);
+  const [generalResult, fuelResult] = await Promise.all([
+    queryFn<DeliveryGeneralSurgeRow>(
+      [
+        "SELECT",
+        '  dgs.condition, dgs.rate, dgs."updatedAt"',
+        "FROM public.delivery_general_surge_surcharge dgs",
+        "WHERE COALESCE(dgs.status, 1) = 1",
+        "ORDER BY dgs.rate DESC NULLS LAST, dgs.\"updatedAt\" DESC NULLS LAST, dgs.id DESC",
+        "LIMIT 1"
+      ].join("\n")
+    ),
+    queryFn<DeliveryFuelSurgeRow>(
+      [
+        "SELECT",
+        '  GREATEST(dfs.\"currentFuelPrice\" - dfs.\"baseFuelPrice\", 0) * dfs.\"consumptionRates\" AS \"fuelSurcharge\",',
+        '  dfs."updatedAt"',
+        "FROM public.delivery_fuel_surge_surcharge dfs",
+        "WHERE COALESCE(dfs.status, 1) = 1",
+        'ORDER BY "fuelSurcharge" DESC NULLS LAST, dfs."updatedAt" DESC NULLS LAST, dfs.id DESC',
+        "LIMIT 1"
+      ].join("\n")
+    )
+  ]);
+
+  const generalRow = generalResult.rows[0];
+  const fuelRow = fuelResult.rows[0];
+  const surgeFactor = generalRow?.rate === null || generalRow?.rate === undefined
+    ? 1
+    : mapFiniteNumber(generalRow.rate, "surgeFactor");
+  const fuelSurchargeRaw =
+    fuelRow?.fuelSurcharge === null || fuelRow?.fuelSurcharge === undefined
+      ? 0
+      : mapFiniteNumber(fuelRow.fuelSurcharge, "fuelSurcharge");
+  const fuelSurcharge = Number(fuelSurchargeRaw.toFixed(2));
+  const generalUpdatedAt = mapDateOrNull(generalRow?.updatedAt ?? null);
+  const fuelUpdatedAt = mapDateOrNull(fuelRow?.updatedAt ?? null);
+  const updatedAtCandidates = [generalUpdatedAt, fuelUpdatedAt]
+    .filter((value): value is string => typeof value === "string")
+    .sort();
+  const latestUpdatedAt =
+    updatedAtCandidates.length > 0 ? updatedAtCandidates[updatedAtCandidates.length - 1] : null;
+  const normalizedReason =
+    typeof generalRow?.condition === "string" && normalizeCredentialValue(generalRow.condition) !== ""
+      ? normalizeCredentialValue(generalRow.condition)
+      : null;
+
+  return {
+    surgeFactor,
+    fuelSurcharge,
+    reason: surgeFactor > 1 ? normalizedReason : null,
+    updatedAt: latestUpdatedAt
+  };
 }
 
 function mapDeliveryPricingRecord(

@@ -4,6 +4,7 @@ import { authenticateAdmin, requireAdminRole } from "../admin-auth/middleware";
 import {
   createDeliveryPricing,
   deleteDeliveryPricing,
+  getDeliverySurgeOverview,
   listDeliveryPricing,
   updateDeliveryPricing,
   DeliveryPricingConflictError,
@@ -15,6 +16,7 @@ import { DeliveryVehicleType } from "./types";
 interface AdminDeliveryRouterDependencies {
   createDeliveryPricingHandler?: typeof createDeliveryPricing;
   deleteDeliveryPricingHandler?: typeof deleteDeliveryPricing;
+  getDeliverySurgeOverviewHandler?: typeof getDeliverySurgeOverview;
   listDeliveryPricingHandler?: typeof listDeliveryPricing;
   updateDeliveryPricingHandler?: typeof updateDeliveryPricing;
   authenticateAdminMiddleware?: RequestHandler;
@@ -62,6 +64,8 @@ export function createAdminDeliveryRouter(
     dependencies.createDeliveryPricingHandler ?? createDeliveryPricing;
   const deleteDeliveryPricingHandler =
     dependencies.deleteDeliveryPricingHandler ?? deleteDeliveryPricing;
+  const getDeliverySurgeOverviewHandler =
+    dependencies.getDeliverySurgeOverviewHandler ?? getDeliverySurgeOverview;
   const listDeliveryPricingHandler =
     dependencies.listDeliveryPricingHandler ?? listDeliveryPricing;
   const updateDeliveryPricingHandler =
@@ -70,6 +74,21 @@ export function createAdminDeliveryRouter(
     dependencies.authenticateAdminMiddleware ?? authenticateAdmin;
   const requireSuperAdminMiddleware =
     dependencies.requireSuperAdminMiddleware ?? requireAdminRole("super_admin");
+
+  adminDeliveryRouter.get(
+    "/surge",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (_request: Request, response: Response, next) => {
+      try {
+        const result = await getDeliverySurgeOverviewHandler();
+
+        response.json(result);
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
 
   adminDeliveryRouter.get(
     "/pricing",

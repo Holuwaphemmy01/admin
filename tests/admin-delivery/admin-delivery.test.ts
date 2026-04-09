@@ -10,6 +10,7 @@ import { createAdminDeliveryRouter } from "../../src/modules/admin-delivery/rout
 import {
   createDeliveryPricing,
   deleteDeliveryPricing,
+  getDeliverySurgeOverview,
   listDeliveryPricing,
   DeliveryPricingConflictError,
   DeliveryPricingNotFoundError,
@@ -19,6 +20,7 @@ import { updateDeliveryPricing } from "../../src/modules/admin-delivery/service"
 import {
   CreateDeliveryPricingResponse,
   DeleteDeliveryPricingResponse,
+  DeliverySurgeOverviewResponse,
   ListDeliveryPricingResponse,
   UpdateDeliveryPricingResponse
 } from "../../src/modules/admin-delivery/types";
@@ -416,6 +418,64 @@ test("deleteDeliveryPricing removes a pricing rule and validates not-found input
   ).rejects.toThrow(DeliveryPricingNotFoundError);
 });
 
+test("getDeliverySurgeOverview returns the strongest active surge factor, fuel surcharge, and latest update time", async () => {
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await getDeliverySurgeOverview({
+    queryFn: async <T extends QueryResultRow = QueryResultRow>(
+      text: string,
+      params?: unknown[]
+    ): Promise<QueryResult<T>> => {
+      executedQueries.push({ text, params });
+
+      if (text.includes("FROM public.delivery_general_surge_surcharge dgs")) {
+        return createQueryResult([
+          {
+            condition: "publicHoliday",
+            rate: "1.25",
+            updatedAt: new Date("2026-04-09T09:00:00.000Z")
+          }
+        ]) as unknown as QueryResult<T>;
+      }
+
+      if (text.includes("FROM public.delivery_fuel_surge_surcharge dfs")) {
+        return createQueryResult([
+          {
+            fuelSurcharge: "6.40",
+            updatedAt: new Date("2026-04-09T10:00:00.000Z")
+          }
+        ]) as unknown as QueryResult<T>;
+      }
+
+      throw new Error(`Unexpected query: ${text}`);
+    }
+  });
+
+  expect(response).toEqual({
+    surgeFactor: 1.25,
+    fuelSurcharge: 6.4,
+    reason: "publicHoliday",
+    updatedAt: "2026-04-09T10:00:00.000Z"
+  });
+  expect(executedQueries).toHaveLength(2);
+  expect(executedQueries[0]?.text).toContain("FROM public.delivery_general_surge_surcharge dgs");
+  expect(executedQueries[1]?.text).toContain("FROM public.delivery_fuel_surge_surcharge dfs");
+});
+
+test("getDeliverySurgeOverview returns defaults when no active surge config exists", async () => {
+  const response = await getDeliverySurgeOverview({
+    queryFn: async <T extends QueryResultRow = QueryResultRow>() =>
+      createQueryResult([]) as unknown as QueryResult<T>
+  });
+
+  expect(response).toEqual({
+    surgeFactor: 1,
+    fuelSurcharge: 0,
+    reason: null,
+    updatedAt: null
+  });
+});
+
 test("listDeliveryPricing returns mapped pricing rules with stable ordering and optional filters", async () => {
   const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
 
@@ -548,6 +608,98 @@ test("GET /admin/delivery/pricing returns 401 when the admin token is missing", 
     const response = await fetch(`${server.baseUrl}/admin/delivery/pricing`);
 
     expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/delivery/surge returns 401 when the admin token is missing", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/delivery",
+    createAdminDeliveryRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/delivery/surge`);
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/delivery/surge returns 403 for non-super-admins", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/delivery",
+    createAdminDeliveryRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "support"
+        })
+      ),
+      getDeliverySurgeOverviewHandler: async () => {
+        throw new Error("This handler should not be called when access is forbidden");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/delivery/surge`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/delivery/surge returns the current surge overview payload", async () => {
+  const application = express();
+  application.use(express.json());
+  application.use(
+    "/admin/delivery",
+    createAdminDeliveryRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getDeliverySurgeOverviewHandler: async (): Promise<DeliverySurgeOverviewResponse> => ({
+        surgeFactor: 1.4,
+        fuelSurcharge: 2.64,
+        reason: "feastivePeaks",
+        updatedAt: "2026-04-09T11:00:00.000Z"
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/delivery/surge`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      surgeFactor: 1.4,
+      fuelSurcharge: 2.64,
+      reason: "feastivePeaks",
+      updatedAt: "2026-04-09T11:00:00.000Z"
+    });
   } finally {
     await server.close();
   }
