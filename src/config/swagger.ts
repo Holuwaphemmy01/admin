@@ -1180,6 +1180,39 @@ export const swaggerSpec = {
           }
         }
       },
+      AdminAnalyticsUsersGrowthPoint: {
+        type: "object",
+        properties: {
+          date: {
+            type: "string",
+            format: "date",
+            example: "2026-04-01"
+          },
+          count: {
+            type: "integer",
+            example: 42
+          }
+        }
+      },
+      AdminAnalyticsUsersGrowthResponse: {
+        type: "object",
+        properties: {
+          newUsers: {
+            type: "array",
+            items: {
+              $ref: "#/components/schemas/AdminAnalyticsUsersGrowthPoint"
+            }
+          },
+          retentionRate: {
+            type: "number",
+            example: 81.25
+          },
+          churnRate: {
+            type: "number",
+            example: 18.75
+          }
+        }
+      },
       AdminSupportTicketItem: {
         type: "object",
         properties: {
@@ -4385,6 +4418,93 @@ export const swaggerSpec = {
           },
           "403": {
             description: "Authenticated admin is not allowed to view top products analytics",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/analytics/users/growth": {
+      get: {
+        tags: ["Platform Analytics & Reports"],
+        summary: "User acquisition and retention trends",
+        description:
+          "Returns date-bucketed new-user registrations together with retention and churn percentages for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "query",
+            name: "period",
+            required: false,
+            schema: {
+              type: "string",
+              enum: ["daily", "weekly", "monthly"]
+            },
+            description: "Optional date bucketing period. Defaults to monthly"
+          },
+          {
+            in: "query",
+            name: "from",
+            required: false,
+            schema: {
+              type: "string",
+              format: "date-time"
+            },
+            description: "Optional inclusive start date for the user-growth window"
+          },
+          {
+            in: "query",
+            name: "to",
+            required: false,
+            schema: {
+              type: "string",
+              format: "date-time"
+            },
+            description: "Optional inclusive end date for the user-growth window"
+          }
+        ],
+        responses: {
+          "200": {
+            description: "User growth analytics returned successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/AdminAnalyticsUsersGrowthResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid user-growth analytics query filters",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/UnauthorizedErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to view user growth analytics",
             content: {
               "application/json": {
                 schema: {

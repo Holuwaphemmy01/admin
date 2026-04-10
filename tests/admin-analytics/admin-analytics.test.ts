@@ -8,10 +8,12 @@ import { createAuthenticateAdminMiddleware } from "../../src/modules/admin-auth/
 import { AuthenticatedAdmin } from "../../src/modules/admin-auth/types";
 import { createAdminAnalyticsRouter } from "../../src/modules/admin-analytics/routes";
 import {
+  AdminAnalyticsUsersGrowthValidationError,
   AdminAnalyticsTopProductsValidationError,
   AdminAnalyticsRevenueValidationError,
   AdminAnalyticsTopSellersValidationError,
   AdminAnalyticsOverviewValidationError,
+  getAdminAnalyticsUsersGrowth,
   getAdminAnalyticsTopProducts,
   getAdminAnalyticsRevenue,
   getAdminAnalyticsTopSellers,
@@ -19,6 +21,7 @@ import {
 } from "../../src/modules/admin-analytics/service";
 import {
   AdminAnalyticsOverviewResponse,
+  AdminAnalyticsUsersGrowthResponse,
   AdminAnalyticsTopProductsResponse,
   AdminAnalyticsRevenueResponse,
   AdminAnalyticsTopSellersResponse
@@ -532,6 +535,127 @@ test("getAdminAnalyticsTopProducts defaults to monthly and validates unsupported
       categoryId: 0
     })
   ).rejects.toThrow("categoryId must be a positive integer");
+});
+
+test("getAdminAnalyticsUsersGrowth returns trend points and cohort retention metrics", async () => {
+  const fixedNow = new Date("2026-04-10T20:00:00.000Z");
+  const from = new Date("2026-03-01T00:00:00.000Z");
+  const to = new Date("2026-04-10T23:59:59.999Z");
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await getAdminAnalyticsUsersGrowth(
+    {
+      period: "weekly",
+      from,
+      to
+    },
+    {
+      nowFactory: () => fixedNow,
+      queryFn: async <T extends QueryResultRow = QueryResultRow>(
+        text: string,
+        params?: unknown[]
+      ): Promise<QueryResult<T>> => {
+        executedQueries.push({ text, params });
+
+        if (executedQueries.length === 1) {
+          return createQueryResult([
+            {
+              totalUsers: "20",
+              retainedUsers: "15",
+              churnedUsers: "5"
+            }
+          ]) as unknown as QueryResult<T>;
+        }
+
+        if (executedQueries.length === 2) {
+          return createQueryResult([
+            {
+              date: new Date("2026-03-02T00:00:00.000Z"),
+              newUsers: "3"
+            },
+            {
+              date: new Date("2026-03-09T00:00:00.000Z"),
+              newUsers: "5"
+            }
+          ]) as unknown as QueryResult<T>;
+        }
+
+        throw new Error(`Unexpected query: ${text}`);
+      }
+    }
+  );
+
+  expect(response).toEqual({
+    newUsers: [
+      {
+        date: "2026-03-02",
+        count: 3
+      },
+      {
+        date: "2026-03-09",
+        count: 5
+      }
+    ],
+    retentionRate: 75,
+    churnRate: 25
+  });
+  expect(executedQueries).toHaveLength(2);
+  expect(executedQueries[0]?.text).toContain('COUNT(*) FILTER (WHERE u.status = 1)::int AS "retainedUsers"');
+  expect(executedQueries[0]?.params).toEqual([from, to]);
+  expect(executedQueries[1]?.text).toContain("date_trunc('week', $1::timestamptz)");
+  expect(executedQueries[1]?.params).toEqual([from, to]);
+});
+
+test("getAdminAnalyticsUsersGrowth defaults to monthly and validates unsupported filters", async () => {
+  const fixedNow = new Date("2026-04-10T20:30:00.000Z");
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await getAdminAnalyticsUsersGrowth(
+    {},
+    {
+      nowFactory: () => fixedNow,
+      queryFn: async <T extends QueryResultRow = QueryResultRow>(
+        text: string,
+        params?: unknown[]
+      ): Promise<QueryResult<T>> => {
+        executedQueries.push({ text, params });
+
+        if (executedQueries.length === 1) {
+          return createQueryResult([
+            {
+              totalUsers: 0,
+              retainedUsers: 0,
+              churnedUsers: 0
+            }
+          ]) as unknown as QueryResult<T>;
+        }
+
+        return createQueryResult([]) as unknown as QueryResult<T>;
+      }
+    }
+  );
+
+  expect(response).toEqual({
+    newUsers: [],
+    retentionRate: 0,
+    churnRate: 0
+  });
+  expect(executedQueries).toHaveLength(2);
+  expect(executedQueries[0]?.params).toHaveLength(2);
+  expect(executedQueries[1]?.text).toContain("date_trunc('month', $1::timestamptz)");
+
+  await expect(
+    getAdminAnalyticsUsersGrowth({
+      period: "yearly" as never
+    })
+  ).rejects.toThrow(AdminAnalyticsUsersGrowthValidationError);
+
+  await expect(
+    getAdminAnalyticsUsersGrowth({
+      from: new Date("2026-04-10T23:59:59.999Z"),
+      to: new Date("2026-03-01T00:00:00.000Z")
+    })
+  ).rejects.toThrow("from must be less than or equal to to");
 });
 
 test("GET /admin/analytics/overview returns 401 when the admin token is missing", async () => {
@@ -1298,6 +1422,207 @@ test("GET /admin/analytics/top_products parses filters and returns the product r
           seller: "hinocag"
         }
       ]
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/analytics/users/growth returns 401 when the admin token is missing", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/analytics",
+    createAdminAnalyticsRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/analytics/users/growth`);
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/analytics/users/growth returns 403 for non-super-admins", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/analytics",
+    createAdminAnalyticsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "support"
+        })
+      ),
+      getAdminAnalyticsUsersGrowthHandler: async () => {
+        throw new Error("This handler should not be called when access is forbidden");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/analytics/users/growth`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/analytics/users/growth validates query filters and maps service validation errors", async () => {
+  let server;
+  const validationApplication = express();
+
+  validationApplication.use(
+    "/admin/analytics",
+    createAdminAnalyticsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getAdminAnalyticsUsersGrowthHandler: async () => {
+        throw new Error("This handler should not be called when query validation fails");
+      }
+    })
+  );
+
+  server = await startTestServer(validationApplication);
+
+  try {
+    let response = await fetch(`${server.baseUrl}/admin/analytics/users/growth?period=yearly`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "period must be one of daily, weekly, monthly"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/analytics/users/growth?from=%20%20`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "from must be a valid ISO 8601 datetime"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/analytics/users/growth?to=not-a-date`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "to must be a valid ISO 8601 datetime"
+    });
+  } finally {
+    await server.close();
+  }
+
+  const serviceValidationApplication = express();
+
+  serviceValidationApplication.use(
+    "/admin/analytics",
+    createAdminAnalyticsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getAdminAnalyticsUsersGrowthHandler: async () => {
+        throw new AdminAnalyticsUsersGrowthValidationError(
+          "from must be less than or equal to to"
+        );
+      }
+    })
+  );
+
+  server = await startTestServer(serviceValidationApplication);
+
+  try {
+    const response = await fetch(
+      `${server.baseUrl}/admin/analytics/users/growth?from=2026-04-10T23:59:59.999Z&to=2026-03-01T00:00:00.000Z`,
+      {
+        headers: {
+          Authorization: "Bearer any-token"
+        }
+      }
+    );
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "from must be less than or equal to to"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/analytics/users/growth parses filters and returns the growth payload", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/analytics",
+    createAdminAnalyticsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getAdminAnalyticsUsersGrowthHandler: async (
+        filters
+      ): Promise<AdminAnalyticsUsersGrowthResponse> => {
+        expect(filters).toEqual({
+          period: "daily",
+          from: new Date("2026-04-01T00:00:00.000Z"),
+          to: new Date("2026-04-10T23:59:59.999Z")
+        });
+
+        return {
+          newUsers: [
+            {
+              date: "2026-04-01",
+              count: 4
+            }
+          ],
+          retentionRate: 80,
+          churnRate: 20
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(
+      `${server.baseUrl}/admin/analytics/users/growth?period=daily&from=2026-04-01T00:00:00.000Z&to=2026-04-10T23:59:59.999Z`,
+      {
+        headers: {
+          Authorization: "Bearer any-token"
+        }
+      }
+    );
+
+    expect(response.status).toBe(200);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      newUsers: [
+        {
+          date: "2026-04-01",
+          count: 4
+        }
+      ],
+      retentionRate: 80,
+      churnRate: 20
     });
   } finally {
     await server.close();

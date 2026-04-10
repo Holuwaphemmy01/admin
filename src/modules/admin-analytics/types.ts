@@ -28,6 +28,12 @@ export const ADMIN_ANALYTICS_TOP_PRODUCTS_PERIODS = [
 export const DEFAULT_ADMIN_ANALYTICS_TOP_PRODUCTS_PERIOD = "monthly";
 export const DEFAULT_ADMIN_ANALYTICS_TOP_PRODUCTS_LIMIT = 10;
 export const MAX_ADMIN_ANALYTICS_TOP_PRODUCTS_LIMIT = 100;
+export const ADMIN_ANALYTICS_USERS_GROWTH_PERIODS = [
+  "daily",
+  "weekly",
+  "monthly"
+] as const;
+export const DEFAULT_ADMIN_ANALYTICS_USERS_GROWTH_PERIOD = "monthly";
 
 export type AdminAnalyticsOverviewPeriod =
   (typeof ADMIN_ANALYTICS_OVERVIEW_PERIODS)[number];
@@ -37,6 +43,8 @@ export type AdminAnalyticsTopSellersPeriod =
   (typeof ADMIN_ANALYTICS_TOP_SELLERS_PERIODS)[number];
 export type AdminAnalyticsTopProductsPeriod =
   (typeof ADMIN_ANALYTICS_TOP_PRODUCTS_PERIODS)[number];
+export type AdminAnalyticsUsersGrowthPeriod =
+  (typeof ADMIN_ANALYTICS_USERS_GROWTH_PERIODS)[number];
 
 export interface AdminAnalyticsOverviewResponse {
   totalUsers: number;
@@ -114,4 +122,21 @@ export interface AdminAnalyticsTopProductItem {
 
 export interface AdminAnalyticsTopProductsResponse {
   products: AdminAnalyticsTopProductItem[];
+}
+
+export interface AdminAnalyticsUsersGrowthFilters {
+  period?: AdminAnalyticsUsersGrowthPeriod;
+  from?: Date;
+  to?: Date;
+}
+
+export interface AdminAnalyticsUsersGrowthPoint {
+  date: string;
+  count: number;
+}
+
+export interface AdminAnalyticsUsersGrowthResponse {
+  newUsers: AdminAnalyticsUsersGrowthPoint[];
+  retentionRate: number;
+  churnRate: number;
 }

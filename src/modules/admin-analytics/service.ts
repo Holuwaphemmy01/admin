@@ -13,9 +13,13 @@ import {
   AdminAnalyticsTopProductsFilters,
   AdminAnalyticsTopProductsPeriod,
   AdminAnalyticsTopProductsResponse,
+  AdminAnalyticsUsersGrowthFilters,
+  AdminAnalyticsUsersGrowthPeriod,
+  AdminAnalyticsUsersGrowthResponse,
   AdminAnalyticsTopSellersFilters,
   AdminAnalyticsTopSellersPeriod,
   AdminAnalyticsTopSellersResponse,
+  DEFAULT_ADMIN_ANALYTICS_USERS_GROWTH_PERIOD,
   DEFAULT_ADMIN_ANALYTICS_OVERVIEW_PERIOD,
   DEFAULT_ADMIN_ANALYTICS_TOP_PRODUCTS_LIMIT,
   DEFAULT_ADMIN_ANALYTICS_TOP_PRODUCTS_PERIOD,
@@ -83,6 +87,17 @@ interface AdminAnalyticsTopProductRow extends QueryResultRow {
   seller: string | null;
 }
 
+interface AdminAnalyticsUsersGrowthSummaryRow extends QueryResultRow {
+  totalUsers: string | number | null;
+  retainedUsers: string | number | null;
+  churnedUsers: string | number | null;
+}
+
+interface AdminAnalyticsUsersGrowthTrendRow extends QueryResultRow {
+  date: Date;
+  newUsers: string | number | null;
+}
+
 export class AdminAnalyticsOverviewValidationError extends Error {
   constructor(message: string) {
     super(message);
@@ -108,6 +123,13 @@ export class AdminAnalyticsTopProductsValidationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "AdminAnalyticsTopProductsValidationError";
+  }
+}
+
+export class AdminAnalyticsUsersGrowthValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AdminAnalyticsUsersGrowthValidationError";
   }
 }
 
@@ -312,6 +334,133 @@ function normalizeTopProductsFilters(
     limit: normalizeTopProductsLimit(filters.limit),
     categoryId: normalizeTopProductsCategoryId(filters.categoryId),
     period: normalizeTopProductsPeriod(filters.period)
+  };
+}
+
+function normalizeUsersGrowthPeriod(
+  period: string | undefined
+): AdminAnalyticsUsersGrowthPeriod {
+  if (period === undefined) {
+    return DEFAULT_ADMIN_ANALYTICS_USERS_GROWTH_PERIOD;
+  }
+
+  const normalizedPeriod = period.trim().toLowerCase();
+
+  if (
+    normalizedPeriod !== "daily" &&
+    normalizedPeriod !== "weekly" &&
+    normalizedPeriod !== "monthly"
+  ) {
+    throw new AdminAnalyticsUsersGrowthValidationError(
+      "period must be one of daily, weekly, monthly"
+    );
+  }
+
+  return normalizedPeriod;
+}
+
+function startOfUtcDay(value: Date): Date {
+  return new Date(
+    Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate(), 0, 0, 0, 0)
+  );
+}
+
+function startOfUtcWeek(value: Date): Date {
+  const startOfDay = startOfUtcDay(value);
+  const weekDay = startOfDay.getUTCDay();
+  const daysFromMonday = (weekDay + 6) % 7;
+  const startOfWeek = new Date(startOfDay.getTime());
+  startOfWeek.setUTCDate(startOfWeek.getUTCDate() - daysFromMonday);
+
+  return startOfWeek;
+}
+
+function startOfUtcMonth(value: Date): Date {
+  return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), 1, 0, 0, 0, 0));
+}
+
+function addUtcDays(value: Date, days: number): Date {
+  const result = new Date(value.getTime());
+  result.setUTCDate(result.getUTCDate() + days);
+
+  return result;
+}
+
+function addUtcWeeks(value: Date, weeks: number): Date {
+  return addUtcDays(value, weeks * 7);
+}
+
+function addUtcMonths(value: Date, months: number): Date {
+  return new Date(
+    Date.UTC(
+      value.getUTCFullYear(),
+      value.getUTCMonth() + months,
+      value.getUTCDate(),
+      value.getUTCHours(),
+      value.getUTCMinutes(),
+      value.getUTCSeconds(),
+      value.getUTCMilliseconds()
+    )
+  );
+}
+
+function getDefaultUsersGrowthRange(
+  period: AdminAnalyticsUsersGrowthPeriod,
+  now: Date
+): {
+  from: Date;
+  to: Date;
+} {
+  switch (period) {
+    case "daily": {
+      const endExclusive = addUtcDays(startOfUtcDay(now), 1);
+
+      return {
+        from: addUtcDays(endExclusive, -7),
+        to: new Date(endExclusive.getTime() - 1)
+      };
+    }
+    case "weekly": {
+      const endExclusive = addUtcWeeks(startOfUtcWeek(now), 1);
+
+      return {
+        from: addUtcWeeks(endExclusive, -8),
+        to: new Date(endExclusive.getTime() - 1)
+      };
+    }
+    case "monthly":
+    default: {
+      const endExclusive = addUtcMonths(startOfUtcMonth(now), 1);
+
+      return {
+        from: addUtcMonths(endExclusive, -12),
+        to: new Date(endExclusive.getTime() - 1)
+      };
+    }
+  }
+}
+
+function normalizeUsersGrowthFilters(
+  filters: AdminAnalyticsUsersGrowthFilters = {},
+  now: Date
+): {
+  period: AdminAnalyticsUsersGrowthPeriod;
+  from: Date;
+  to: Date;
+} {
+  const period = normalizeUsersGrowthPeriod(filters.period);
+  const defaultRange = getDefaultUsersGrowthRange(period, now);
+  const from = normalizeOptionalDate(filters.from, "from") ?? defaultRange.from;
+  const to = normalizeOptionalDate(filters.to, "to") ?? defaultRange.to;
+
+  if (from > to) {
+    throw new AdminAnalyticsUsersGrowthValidationError("from must be less than or equal to to");
+  }
+
+  return {
+    period,
+    from,
+    to
   };
 }
 
@@ -794,5 +943,131 @@ export async function getAdminAnalyticsTopProducts(
       revenue: mapRequiredNumber(product.revenue, "revenue"),
       seller: mapRequiredText(product.seller, "seller")
     }))
+  };
+}
+
+function buildUsersGrowthTrendQuery(period: AdminAnalyticsUsersGrowthPeriod): string {
+  switch (period) {
+    case "daily":
+      return [
+        "WITH series AS (",
+        "  SELECT generate_series(",
+        "    date_trunc('day', $1::timestamptz),",
+        "    date_trunc('day', $2::timestamptz),",
+        "    INTERVAL '1 day'",
+        '  ) AS "date"',
+        "), user_counts AS (",
+        "  SELECT",
+        '    date_trunc(\'day\', u."createdAt") AS "date",',
+        '    COUNT(*)::int AS "newUsers"',
+        '  FROM public."user" u',
+        '  WHERE u."userTypeId" IN (1, 2, 3)',
+        '    AND u."createdAt" >= $1',
+        '    AND u."createdAt" <= $2',
+        '  GROUP BY "date"',
+        ")",
+        "SELECT",
+        '  series."date",',
+        '  COALESCE(user_counts."newUsers", 0)::int AS "newUsers"',
+        "FROM series",
+        'LEFT JOIN user_counts ON user_counts."date" = series."date"',
+        'ORDER BY series."date" ASC'
+      ].join("\n");
+    case "weekly":
+      return [
+        "WITH series AS (",
+        "  SELECT generate_series(",
+        "    date_trunc('week', $1::timestamptz),",
+        "    date_trunc('week', $2::timestamptz),",
+        "    INTERVAL '1 week'",
+        '  ) AS "date"',
+        "), user_counts AS (",
+        "  SELECT",
+        '    date_trunc(\'week\', u."createdAt") AS "date",',
+        '    COUNT(*)::int AS "newUsers"',
+        '  FROM public."user" u',
+        '  WHERE u."userTypeId" IN (1, 2, 3)',
+        '    AND u."createdAt" >= $1',
+        '    AND u."createdAt" <= $2',
+        '  GROUP BY "date"',
+        ")",
+        "SELECT",
+        '  series."date",',
+        '  COALESCE(user_counts."newUsers", 0)::int AS "newUsers"',
+        "FROM series",
+        'LEFT JOIN user_counts ON user_counts."date" = series."date"',
+        'ORDER BY series."date" ASC'
+      ].join("\n");
+    case "monthly":
+    default:
+      return [
+        "WITH series AS (",
+        "  SELECT generate_series(",
+        "    date_trunc('month', $1::timestamptz),",
+        "    date_trunc('month', $2::timestamptz),",
+        "    INTERVAL '1 month'",
+        '  ) AS "date"',
+        "), user_counts AS (",
+        "  SELECT",
+        '    date_trunc(\'month\', u."createdAt") AS "date",',
+        '    COUNT(*)::int AS "newUsers"',
+        '  FROM public."user" u',
+        '  WHERE u."userTypeId" IN (1, 2, 3)',
+        '    AND u."createdAt" >= $1',
+        '    AND u."createdAt" <= $2',
+        '  GROUP BY "date"',
+        ")",
+        "SELECT",
+        '  series."date",',
+        '  COALESCE(user_counts."newUsers", 0)::int AS "newUsers"',
+        "FROM series",
+        'LEFT JOIN user_counts ON user_counts."date" = series."date"',
+        'ORDER BY series."date" ASC'
+      ].join("\n");
+  }
+}
+
+export async function getAdminAnalyticsUsersGrowth(
+  filters: AdminAnalyticsUsersGrowthFilters = {},
+  dependencies: AdminAnalyticsServiceDependencies = {}
+): Promise<AdminAnalyticsUsersGrowthResponse> {
+  const queryFn = getQueryFn(dependencies);
+  const now = getNowFactory(dependencies)();
+  const normalizedFilters = normalizeUsersGrowthFilters(filters, now);
+  const params = [normalizedFilters.from, normalizedFilters.to];
+  const summaryResult = await queryFn<AdminAnalyticsUsersGrowthSummaryRow>(
+    [
+      "SELECT",
+      '  COUNT(*)::int AS "totalUsers",',
+      '  COUNT(*) FILTER (WHERE u.status = 1)::int AS "retainedUsers",',
+      '  COUNT(*) FILTER (WHERE u.status = 2)::int AS "churnedUsers"',
+      'FROM public."user" u',
+      'WHERE u."userTypeId" IN (1, 2, 3)',
+      '  AND u."createdAt" >= $1',
+      '  AND u."createdAt" <= $2'
+    ].join("\n"),
+    params
+  );
+  const trendResult = await queryFn<AdminAnalyticsUsersGrowthTrendRow>(
+    buildUsersGrowthTrendQuery(normalizedFilters.period),
+    params
+  );
+  const summary = summaryResult.rows[0];
+  const totalUsers = mapRequiredNonNegativeInteger(summary?.totalUsers, "totalUsers");
+  const retainedUsers = mapRequiredNonNegativeInteger(
+    summary?.retainedUsers,
+    "retainedUsers"
+  );
+  const churnedUsers = mapRequiredNonNegativeInteger(summary?.churnedUsers, "churnedUsers");
+
+  return {
+    newUsers: trendResult.rows.map((point) => ({
+      date: point.date.toISOString().slice(0, 10),
+      count: mapRequiredNonNegativeInteger(point.newUsers, "newUsers")
+    })),
+    retentionRate:
+      totalUsers === 0 ? 0 : Number(((retainedUsers / totalUsers) * 100).toFixed(2)),
+    churnRate:
+      totalUsers === 0 ? 0 : Number(((churnedUsers / totalUsers) * 100).toFixed(2))
   };
 }

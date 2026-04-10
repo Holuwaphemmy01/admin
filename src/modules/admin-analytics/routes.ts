@@ -2,6 +2,8 @@ import { Request, RequestHandler, Response, Router } from "express";
 
 import { authenticateAdmin, requireAdminRole } from "../admin-auth/middleware";
 import {
+  getAdminAnalyticsUsersGrowth,
+  AdminAnalyticsUsersGrowthValidationError,
   getAdminAnalyticsTopProducts,
   AdminAnalyticsTopProductsValidationError,
   getAdminAnalyticsTopSellers,
@@ -16,6 +18,9 @@ import {
   AdminAnalyticsRevenueFilters,
   AdminAnalyticsRevenueGroupBy,
   AdminAnalyticsRevenueResponse,
+  AdminAnalyticsUsersGrowthFilters,
+  AdminAnalyticsUsersGrowthPeriod,
+  AdminAnalyticsUsersGrowthResponse,
   AdminAnalyticsTopProductsFilters,
   AdminAnalyticsTopProductsPeriod,
   AdminAnalyticsTopProductsResponse,
@@ -25,6 +30,7 @@ import {
 } from "./types";
 
 interface AdminAnalyticsRouterDependencies {
+  getAdminAnalyticsUsersGrowthHandler?: typeof getAdminAnalyticsUsersGrowth;
   getAdminAnalyticsTopProductsHandler?: typeof getAdminAnalyticsTopProducts;
   getAdminAnalyticsTopSellersHandler?: typeof getAdminAnalyticsTopSellers;
   getAdminAnalyticsRevenueHandler?: typeof getAdminAnalyticsRevenue;
@@ -117,6 +123,22 @@ function parseTopProductsPeriod(value: string): AdminAnalyticsTopProductsPeriod 
   return normalizedValue;
 }
 
+function parseUsersGrowthPeriod(value: string): AdminAnalyticsUsersGrowthPeriod {
+  const normalizedValue = value.trim().toLowerCase();
+
+  if (
+    normalizedValue !== "daily" &&
+    normalizedValue !== "weekly" &&
+    normalizedValue !== "monthly"
+  ) {
+    throw new AdminAnalyticsQueryValidationError(
+      "period must be one of daily, weekly, monthly"
+    );
+  }
+
+  return normalizedValue;
+}
+
 function parsePositiveInteger(value: string, fieldName: string): number {
   if (!/^\d+$/.test(value)) {
     throw new AdminAnalyticsQueryValidationError(`${fieldName} must be a positive integer`);
@@ -147,6 +169,8 @@ export function createAdminAnalyticsRouter(
   dependencies: AdminAnalyticsRouterDependencies = {}
 ): Router {
   const adminAnalyticsRouter = Router();
+  const getAdminAnalyticsUsersGrowthHandler =
+    dependencies.getAdminAnalyticsUsersGrowthHandler ?? getAdminAnalyticsUsersGrowth;
   const getAdminAnalyticsTopProductsHandler =
     dependencies.getAdminAnalyticsTopProductsHandler ?? getAdminAnalyticsTopProducts;
   const getAdminAnalyticsTopSellersHandler =
@@ -184,6 +208,62 @@ export function createAdminAnalyticsRouter(
         if (
           error instanceof AdminAnalyticsQueryValidationError ||
           error instanceof AdminAnalyticsOverviewValidationError
+        ) {
+          response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
+
+  adminAnalyticsRouter.get(
+    "/users/growth",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      try {
+        const periodQuery = readSingleQueryValue(request.query.period);
+        const fromQuery = readSingleQueryValue(request.query.from);
+        const toQuery = readSingleQueryValue(request.query.to);
+        const filters: AdminAnalyticsUsersGrowthFilters = {};
+
+        if (typeof periodQuery === "string" && periodQuery !== "") {
+          filters.period = parseUsersGrowthPeriod(periodQuery);
+        } else if (periodQuery === "") {
+          throw new AdminAnalyticsQueryValidationError(
+            "period must be one of daily, weekly, monthly"
+          );
+        }
+
+        if (typeof fromQuery === "string" && fromQuery !== "") {
+          filters.from = parseIsoDate(fromQuery, "from");
+        } else if (fromQuery === "") {
+          throw new AdminAnalyticsQueryValidationError(
+            "from must be a valid ISO 8601 datetime"
+          );
+        }
+
+        if (typeof toQuery === "string" && toQuery !== "") {
+          filters.to = parseIsoDate(toQuery, "to");
+        } else if (toQuery === "") {
+          throw new AdminAnalyticsQueryValidationError(
+            "to must be a valid ISO 8601 datetime"
+          );
+        }
+
+        const usersGrowthResponse: AdminAnalyticsUsersGrowthResponse =
+          await getAdminAnalyticsUsersGrowthHandler(filters);
+
+        response.json(usersGrowthResponse);
+      } catch (error) {
+        if (
+          error instanceof AdminAnalyticsQueryValidationError ||
+          error instanceof AdminAnalyticsUsersGrowthValidationError
         ) {
           response.status(400).json({
             message: error.message

@@ -72,6 +72,7 @@ This is a TypeScript Node.js and Express starter for the BrickPine admin API wit
 - `GET /admin/analytics/revenue`: Returns platform revenue totals with optional date filters and a grouped breakdown by revenue category, subscription tier, or calendar month for a super admin.
 - `GET /admin/analytics/top_sellers`: Returns the best-performing sellers with optional limit and daily, weekly, or monthly ranking windows for a super admin.
 - `GET /admin/analytics/top_products`: Returns the best-selling products platform-wide with optional limit, category, and daily, weekly, or monthly ranking filters for a super admin.
+- `GET /admin/analytics/users/growth`: Returns new-user trend buckets plus retention and churn percentages with optional date-range and daily, weekly, or monthly grouping filters for a super admin.
 - `GET /admin/support/tickets`: Lists support tickets across platform users with optional status, username, category, and pagination filters for a super admin.
 - `POST /admin/support/categories`: Creates a support category and returns the updated support-category list for a super admin.
 - `GET /admin/support/tickets/:ticketId`: Returns one support ticket with its reconstructed conversation thread for a super admin.

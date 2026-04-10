@@ -1183,6 +1183,7 @@ test("GET /docs.json exposes the swagger specification for the API", async () =>
     expect(payload.paths?.["/admin/analytics/revenue"]).toBeDefined();
     expect(payload.paths?.["/admin/analytics/top_sellers"]).toBeDefined();
     expect(payload.paths?.["/admin/analytics/top_products"]).toBeDefined();
+    expect(payload.paths?.["/admin/analytics/users/growth"]).toBeDefined();
     expect(payload.paths?.["/admin/support/categories"]).toBeDefined();
     expect(payload.paths?.["/admin/support/tickets"]).toBeDefined();
     expect(payload.paths?.["/admin/support/tickets/{ticketId}"]).toBeDefined();
