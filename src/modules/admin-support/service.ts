@@ -1,0 +1,237 @@
+import { QueryResult, QueryResultRow } from "pg";
+
+import { query } from "../../config/db";
+import {
+  AdminSupportTicketStatusFilter,
+  AdminSupportTicketsListFilters,
+  AdminSupportTicketsListResponse
+} from "./types";
+
+type QueryFunction = <T extends QueryResultRow = QueryResultRow>(
+  text: string,
+  params?: unknown[]
+) => Promise<QueryResult<T>>;
+
+interface AdminSupportServiceDependencies {
+  queryFn?: QueryFunction;
+}
+
+interface AdminSupportTicketRow extends QueryResultRow {
+  id: string | number;
+  username: string | null;
+  subject: string | null;
+  status: string | number | null;
+  createdAt: Date;
+}
+
+interface TotalCountRow extends QueryResultRow {
+  total: number;
+}
+
+export class AdminSupportTicketsValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AdminSupportTicketsValidationError";
+  }
+}
+
+function getQueryFn(dependencies: AdminSupportServiceDependencies = {}): QueryFunction {
+  return dependencies.queryFn ?? query;
+}
+
+function normalizePositiveInteger(value: number, fieldName: string): number {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new AdminSupportTicketsValidationError(`${fieldName} must be a positive integer`);
+  }
+
+  return value;
+}
+
+function normalizeOptionalStatus(
+  value: string | undefined
+): AdminSupportTicketStatusFilter | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (value !== "open" && value !== "closed" && value !== "pending") {
+    throw new AdminSupportTicketsValidationError(
+      "status must be one of open, closed, pending"
+    );
+  }
+
+  return value;
+}
+
+function normalizeOptionalUsername(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const normalizedValue = value.trim();
+
+  if (normalizedValue === "") {
+    throw new AdminSupportTicketsValidationError(
+      "username must be a non-empty string when provided"
+    );
+  }
+
+  return normalizedValue;
+}
+
+function mapRequiredInteger(value: string | number | null, fieldName: string): number {
+  const numericValue = typeof value === "number" ? value : Number(value);
+
+  if (!Number.isInteger(numericValue) || numericValue < 0) {
+    throw new Error(`Admin support tickets query returned an invalid ${fieldName} value`);
+  }
+
+  return numericValue;
+}
+
+function mapRequiredText(value: string | null | undefined, fieldName: string): string {
+  if (typeof value !== "string") {
+    throw new Error(`Admin support tickets query returned an invalid ${fieldName} value`);
+  }
+
+  const normalizedValue = value.trim();
+
+  if (normalizedValue === "") {
+    throw new Error(`Admin support tickets query returned an invalid ${fieldName} value`);
+  }
+
+  return normalizedValue;
+}
+
+function mapRequiredDate(value: Date, fieldName: string): string {
+  if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
+    throw new Error(`Admin support tickets query returned an invalid ${fieldName} value`);
+  }
+
+  return value.toISOString();
+}
+
+function mapTicketStatus(
+  value: string | number | null | undefined
+): AdminSupportTicketStatusFilter {
+  const numericValue =
+    value === null || value === undefined
+      ? null
+      : typeof value === "number"
+        ? value
+        : Number(value);
+
+  if (numericValue === 1) {
+    return "open";
+  }
+
+  if (numericValue === 2) {
+    return "pending";
+  }
+
+  return "closed";
+}
+
+function buildSupportTicketFilters(filters: AdminSupportTicketsListFilters): {
+  whereSql: string;
+  params: unknown[];
+} {
+  const clauses = ["1 = 1"];
+  const params: unknown[] = [];
+  const usernameSql = `COALESCE(NULLIF(BTRIM(u.username), ''), NULLIF(BTRIM(st.owner), ''))`;
+
+  if (typeof filters.status === "string") {
+    if (filters.status === "open") {
+      params.push(1);
+      clauses.push(`COALESCE(st.status, 1) = $${params.length}`);
+    } else if (filters.status === "pending") {
+      params.push(2);
+      clauses.push(`COALESCE(st.status, 1) = $${params.length}`);
+    } else {
+      clauses.push("COALESCE(st.status, 1) <> 1");
+      clauses.push("COALESCE(st.status, 1) <> 2");
+    }
+  }
+
+  if (typeof filters.username === "string") {
+    params.push(filters.username);
+    clauses.push(`${usernameSql} IS NOT NULL`);
+    clauses.push(`LOWER(${usernameSql}) = LOWER($${params.length})`);
+  }
+
+  if (typeof filters.categoryId === "number") {
+    params.push(filters.categoryId);
+    clauses.push(`st."ticketCategoryId" = $${params.length}`);
+  }
+
+  return {
+    whereSql: `WHERE ${clauses.join(" AND ")}`,
+    params
+  };
+}
+
+export async function listAdminSupportTickets(
+  filters: AdminSupportTicketsListFilters,
+  dependencies: AdminSupportServiceDependencies = {}
+): Promise<AdminSupportTicketsListResponse> {
+  const queryFn = getQueryFn(dependencies);
+  const normalizedFilters: AdminSupportTicketsListFilters = {
+    page: normalizePositiveInteger(filters.page, "page"),
+    limit: normalizePositiveInteger(filters.limit, "limit"),
+    ...(filters.status !== undefined
+      ? { status: normalizeOptionalStatus(filters.status) }
+      : {}),
+    ...(filters.username !== undefined
+      ? { username: normalizeOptionalUsername(filters.username) }
+      : {}),
+    ...(filters.categoryId !== undefined
+      ? { categoryId: normalizePositiveInteger(filters.categoryId, "categoryId") }
+      : {})
+  };
+  const { whereSql, params } = buildSupportTicketFilters(normalizedFilters);
+  const paginationParams = [
+    ...params,
+    normalizedFilters.limit,
+    (normalizedFilters.page - 1) * normalizedFilters.limit
+  ];
+
+  const ticketsResult = await queryFn<AdminSupportTicketRow>(
+    [
+      "SELECT",
+      "  st.id,",
+      `  COALESCE(NULLIF(BTRIM(u.username), ''), NULLIF(BTRIM(st.owner), '')) AS username,`,
+      "  st.subject,",
+      "  st.status,",
+      '  st."createdAt" AS "createdAt"',
+      "FROM public.support_ticket st",
+      'LEFT JOIN public."user" u ON u.id = st."userId"',
+      whereSql,
+      'ORDER BY st."createdAt" DESC, st.id DESC',
+      `LIMIT $${params.length + 1}`,
+      `OFFSET $${params.length + 2}`
+    ].join("\n"),
+    paginationParams
+  );
+
+  const totalResult = await queryFn<TotalCountRow>(
+    [
+      "SELECT",
+      "  COUNT(*)::int AS total",
+      "FROM public.support_ticket st",
+      'LEFT JOIN public."user" u ON u.id = st."userId"',
+      whereSql
+    ].join("\n"),
+    params
+  );
+
+  return {
+    tickets: ticketsResult.rows.map((ticket) => ({
+      id: mapRequiredInteger(ticket.id, "id"),
+      username: mapRequiredText(ticket.username, "username"),
+      subject: mapRequiredText(ticket.subject, "subject"),
+      status: mapTicketStatus(ticket.status),
+      createdAt: mapRequiredDate(ticket.createdAt, "createdAt")
+    })),
+    total: Number(totalResult.rows[0]?.total ?? 0)
+  };
+}

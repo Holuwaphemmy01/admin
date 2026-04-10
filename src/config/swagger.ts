@@ -56,6 +56,10 @@ export const swaggerSpec = {
     {
       name: "Ads & Promoted Posts",
       description: "Administrative promoted-post campaign listing endpoints"
+    },
+    {
+      name: "Support & Tickets",
+      description: "Administrative support-ticket listing endpoints"
     }
   ],
   components: {
@@ -991,6 +995,48 @@ export const swaggerSpec = {
           ctr: {
             type: "number",
             example: 4
+          }
+        }
+      },
+      AdminSupportTicketItem: {
+        type: "object",
+        properties: {
+          id: {
+            type: "integer",
+            example: 12
+          },
+          username: {
+            type: "string",
+            example: "mendes"
+          },
+          subject: {
+            type: "string",
+            example: "Payment not processed"
+          },
+          status: {
+            type: "string",
+            enum: ["open", "closed", "pending"],
+            example: "open"
+          },
+          createdAt: {
+            type: "string",
+            format: "date-time",
+            example: "2025-10-30T15:00:23.000Z"
+          }
+        }
+      },
+      AdminSupportTicketsListResponse: {
+        type: "object",
+        properties: {
+          tickets: {
+            type: "array",
+            items: {
+              $ref: "#/components/schemas/AdminSupportTicketItem"
+            }
+          },
+          total: {
+            type: "integer",
+            example: 12
           }
         }
       },
@@ -3666,6 +3712,115 @@ export const swaggerSpec = {
           },
           "403": {
             description: "Authenticated admin is not allowed to view campaign analytics",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/support/tickets": {
+      get: {
+        tags: ["Support & Tickets"],
+        summary: "List all support tickets (all users)",
+        description:
+          "Returns support tickets across all platform users with optional status, username, support-category, and pagination filters for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "query",
+            name: "status",
+            required: false,
+            schema: {
+              type: "string",
+              enum: ["open", "closed", "pending"]
+            },
+            description: "Optional support-ticket status filter"
+          },
+          {
+            in: "query",
+            name: "username",
+            required: false,
+            schema: {
+              type: "string"
+            },
+            description: "Case-insensitive ticket-owner username filter"
+          },
+          {
+            in: "query",
+            name: "categoryId",
+            required: false,
+            schema: {
+              type: "integer",
+              minimum: 1
+            },
+            description: "Filter by support ticket category identifier"
+          },
+          {
+            in: "query",
+            name: "page",
+            required: false,
+            schema: {
+              type: "integer",
+              default: 1,
+              minimum: 1
+            },
+            description: "Pagination page number"
+          },
+          {
+            in: "query",
+            name: "limit",
+            required: false,
+            schema: {
+              type: "integer",
+              default: 20,
+              minimum: 1,
+              maximum: 100
+            },
+            description: "Pagination page size"
+          }
+        ],
+        responses: {
+          "200": {
+            description: "Support tickets returned successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/AdminSupportTicketsListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid support-ticket query filters",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/UnauthorizedErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to list support tickets",
             content: {
               "application/json": {
                 schema: {
