@@ -8,6 +8,7 @@ import { createAuthenticateAdminMiddleware } from "../../src/modules/admin-auth/
 import { AuthenticatedAdmin } from "../../src/modules/admin-auth/types";
 import { createAdminSupportRouter } from "../../src/modules/admin-support/routes";
 import {
+  closeAdminSupportTicket,
   AdminSupportTicketNotFoundError,
   AdminSupportTicketsValidationError,
   getAdminSupportTicketDetails,
@@ -15,6 +16,7 @@ import {
   replyToAdminSupportTicket
 } from "../../src/modules/admin-support/service";
 import {
+  CloseAdminSupportTicketResponse,
   AdminSupportTicketDetailsResponse,
   AdminSupportTicketsListResponse,
   ReplyToAdminSupportTicketResponse
@@ -1283,6 +1285,444 @@ test("POST /admin/support/tickets/:ticketId/reply returns signed params and pass
           "Content-Type": "image/png"
         }
       }
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("closeAdminSupportTicket closes the matching thread and persists an optional resolution note", async () => {
+  const fixedNow = new Date("2026-04-10T12:00:00.000Z");
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await closeAdminSupportTicket(
+    {
+      ticketId: 2,
+      resolution: " Issue resolved and confirmed "
+    },
+    {
+      nowFactory: () => fixedNow,
+      queryFn: async <T extends QueryResultRow = QueryResultRow>(
+        text: string,
+        params?: unknown[]
+      ): Promise<QueryResult<T>> => {
+        executedQueries.push({ text, params });
+
+        if (executedQueries.length === 1) {
+          return createQueryResult([
+            {
+              id: 2,
+              userId: 3,
+              ticketCategoryId: 4,
+              username: "mendes",
+              owner: "mendes",
+              subject: null,
+              message: "Still waiting for my payment",
+              attachment: null,
+              attachmentFileType: null,
+              reply: true,
+              status: 1,
+              createdAt: new Date("2026-04-10T10:00:00.000Z")
+            }
+          ]) as unknown as QueryResult<T>;
+        }
+
+        if (executedQueries.length === 2) {
+          return createQueryResult([
+            {
+              id: 1,
+              userId: 3,
+              ticketCategoryId: 4,
+              username: "mendes",
+              owner: "mendes",
+              subject: "Payment not processed",
+              message: "Still waiting for my payment",
+              attachment: null,
+              attachmentFileType: null,
+              reply: false,
+              status: 1,
+              createdAt: new Date("2026-04-10T09:45:00.000Z")
+            },
+            {
+              id: 2,
+              userId: 3,
+              ticketCategoryId: 4,
+              username: "mendes",
+              owner: "mendes",
+              subject: null,
+              message: "Still waiting for my payment",
+              attachment: null,
+              attachmentFileType: null,
+              reply: true,
+              status: 1,
+              createdAt: new Date("2026-04-10T10:00:00.000Z")
+            },
+            {
+              id: 3,
+              userId: 3,
+              ticketCategoryId: 4,
+              username: "mendes",
+              owner: "mendes",
+              subject: "Payment not processed",
+              message: "Any update on this issue?",
+              attachment: null,
+              attachmentFileType: null,
+              reply: false,
+              status: 2,
+              createdAt: new Date("2026-04-10T10:15:00.000Z")
+            },
+            {
+              id: 4,
+              userId: 3,
+              ticketCategoryId: 4,
+              username: "mendes",
+              owner: "mendes",
+              subject: "Different issue",
+              message: "Separate thread",
+              attachment: null,
+              attachmentFileType: null,
+              reply: false,
+              status: 1,
+              createdAt: new Date("2026-04-10T11:00:00.000Z")
+            }
+          ]) as unknown as QueryResult<T>;
+        }
+
+        if (executedQueries.length === 3) {
+          return createQueryResult([
+            {
+              id: 1
+            },
+            {
+              id: 2
+            },
+            {
+              id: 3
+            }
+          ]) as unknown as QueryResult<T>;
+        }
+
+        if (executedQueries.length === 4) {
+          return createQueryResult([
+            {
+              id: 8
+            }
+          ]) as unknown as QueryResult<T>;
+        }
+
+        throw new Error(`Unexpected query: ${text}`);
+      }
+    }
+  );
+
+  expect(response).toEqual({
+    message: "Ticket closed successfully"
+  });
+  expect(executedQueries).toHaveLength(4);
+  expect(executedQueries[0]?.text).toContain("WHERE st.id = $1");
+  expect(executedQueries[0]?.params).toEqual([2]);
+  expect(executedQueries[1]?.text).toContain('WHERE st."userId" = $1');
+  expect(executedQueries[1]?.params).toEqual([3]);
+  expect(executedQueries[2]?.text).toContain("UPDATE public.support_ticket");
+  expect(executedQueries[2]?.text).toContain("WHERE id = ANY($3::int[])");
+  expect(executedQueries[2]?.params).toEqual([0, fixedNow, [1, 2, 3]]);
+  expect(executedQueries[3]?.text).toContain("INSERT INTO public.support_ticket");
+  expect(executedQueries[3]?.params).toEqual([
+    3,
+    4,
+    "Payment not processed",
+    "Issue resolved and confirmed",
+    null,
+    null,
+    "mendes",
+    true,
+    0,
+    fixedNow,
+    fixedNow
+  ]);
+});
+
+test("closeAdminSupportTicket validates the payload, maps missing tickets, and no-ops already closed threads", async () => {
+  await expect(
+    closeAdminSupportTicket({
+      ticketId: 0
+    })
+  ).rejects.toThrow(AdminSupportTicketsValidationError);
+
+  await expect(
+    closeAdminSupportTicket({
+      ticketId: 2,
+      resolution: "   "
+    })
+  ).rejects.toThrow(AdminSupportTicketsValidationError);
+
+  await expect(
+    closeAdminSupportTicket(
+      {
+        ticketId: 404
+      },
+      {
+        queryFn: async <T extends QueryResultRow = QueryResultRow>() =>
+          createQueryResult([]) as unknown as QueryResult<T>
+      }
+    )
+  ).rejects.toThrow(AdminSupportTicketNotFoundError);
+
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+  const response = await closeAdminSupportTicket(
+    {
+      ticketId: 5,
+      resolution: "Resolved"
+    },
+    {
+      queryFn: async <T extends QueryResultRow = QueryResultRow>(
+        text: string,
+        params?: unknown[]
+      ): Promise<QueryResult<T>> => {
+        executedQueries.push({ text, params });
+
+        if (executedQueries.length === 1) {
+          return createQueryResult([
+            {
+              id: 5,
+              userId: null,
+              ticketCategoryId: 2,
+              username: "owner-fallback",
+              owner: "owner-fallback",
+              subject: "Need help with refund",
+              message: "Refund has been delayed",
+              attachment: null,
+              attachmentFileType: null,
+              reply: false,
+              status: 0,
+              createdAt: new Date("2026-04-10T08:00:00.000Z")
+            }
+          ]) as unknown as QueryResult<T>;
+        }
+
+        if (executedQueries.length === 2) {
+          return createQueryResult([
+            {
+              id: 5,
+              userId: null,
+              ticketCategoryId: 2,
+              username: "owner-fallback",
+              owner: "owner-fallback",
+              subject: "Need help with refund",
+              message: "Refund has been delayed",
+              attachment: null,
+              attachmentFileType: null,
+              reply: false,
+              status: 0,
+              createdAt: new Date("2026-04-10T08:00:00.000Z")
+            }
+          ]) as unknown as QueryResult<T>;
+        }
+
+        throw new Error(`Unexpected query: ${text}`);
+      }
+    }
+  );
+
+  expect(response).toEqual({
+    message: "Ticket closed successfully"
+  });
+  expect(executedQueries).toHaveLength(2);
+  expect(executedQueries[1]?.text).toContain("WHERE LOWER(BTRIM(st.owner)) = LOWER($1)");
+  expect(executedQueries[1]?.params).toEqual(["owner-fallback"]);
+});
+
+test("PUT /admin/support/tickets/:ticketId/close returns 401 when the admin token is missing", async () => {
+  const application = express();
+  application.use(express.json());
+
+  application.use(
+    "/admin/support",
+    createAdminSupportRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/support/tickets/3/close`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({})
+    });
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/support/tickets/:ticketId/close returns 403 for non-super-admins", async () => {
+  const application = express();
+  application.use(express.json());
+
+  application.use(
+    "/admin/support",
+    createAdminSupportRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "support"
+        })
+      ),
+      closeAdminSupportTicketHandler: async () => {
+        throw new Error("This handler should not be called when access is forbidden");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/support/tickets/3/close`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({})
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/support/tickets/:ticketId/close validates the path and request body, and maps missing tickets", async () => {
+  let server;
+  const validationApplication = express();
+  validationApplication.use(express.json());
+
+  validationApplication.use(
+    "/admin/support",
+    createAdminSupportRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      closeAdminSupportTicketHandler: async () => {
+        throw new Error("This handler should not be called when validation fails");
+      }
+    })
+  );
+
+  server = await startTestServer(validationApplication);
+
+  try {
+    let response = await fetch(`${server.baseUrl}/admin/support/tickets/abc/close`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({})
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "ticketId must be a positive integer"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/support/tickets/3/close`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        resolution: "   "
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "resolution must be a non-empty string when provided"
+    });
+  } finally {
+    await server.close();
+  }
+
+  const notFoundApplication = express();
+  notFoundApplication.use(express.json());
+
+  notFoundApplication.use(
+    "/admin/support",
+    createAdminSupportRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      closeAdminSupportTicketHandler: async () => {
+        throw new AdminSupportTicketNotFoundError("Support ticket not found");
+      }
+    })
+  );
+
+  server = await startTestServer(notFoundApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/support/tickets/3/close`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({})
+    });
+
+    expect(response.status).toBe(404);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Support ticket not found"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("PUT /admin/support/tickets/:ticketId/close returns the success payload and passes trimmed values", async () => {
+  const application = express();
+  application.use(express.json());
+
+  application.use(
+    "/admin/support",
+    createAdminSupportRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      closeAdminSupportTicketHandler: async (
+        payload
+      ): Promise<CloseAdminSupportTicketResponse> => {
+        expect(payload).toEqual({
+          ticketId: 3,
+          resolution: "Issue resolved and confirmed"
+        });
+
+        return {
+          message: "Ticket closed successfully"
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/support/tickets/%203%20/close`, {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        resolution: " Issue resolved and confirmed "
+      })
+    });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Ticket closed successfully"
     });
   } finally {
     await server.close();

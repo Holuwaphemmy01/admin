@@ -64,3 +64,12 @@ export interface ReplyToAdminSupportTicketRequest {
 export interface ReplyToAdminSupportTicketResponse {
   signedParams: AdminSupportTicketReplySignedParams | null;
 }
+
+export interface CloseAdminSupportTicketRequest {
+  ticketId: number;
+  resolution?: string;
+}
+
+export interface CloseAdminSupportTicketResponse {
+  message: string;
+}

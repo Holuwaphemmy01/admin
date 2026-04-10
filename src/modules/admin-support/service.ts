@@ -4,6 +4,8 @@ import { QueryResult, QueryResultRow } from "pg";
 
 import { query } from "../../config/db";
 import {
+  CloseAdminSupportTicketRequest,
+  CloseAdminSupportTicketResponse,
   AdminSupportTicketDetailsResponse,
   AdminSupportTicketReplySignedParams,
   AdminSupportTicketStatusFilter,
@@ -182,6 +184,28 @@ function normalizeOptionalAttachmentFileType(
   return normalizedValue;
 }
 
+function normalizeOptionalResolution(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== "string") {
+    throw new AdminSupportTicketsValidationError(
+      "resolution must be a non-empty string when provided"
+    );
+  }
+
+  const normalizedValue = value.trim();
+
+  if (normalizedValue === "") {
+    throw new AdminSupportTicketsValidationError(
+      "resolution must be a non-empty string when provided"
+    );
+  }
+
+  return normalizedValue;
+}
+
 function mapRequiredInteger(value: string | number | null, fieldName: string): number {
   const numericValue = typeof value === "number" ? value : Number(value);
 
@@ -282,6 +306,12 @@ function mapStoredTicketStatusValue(value: string | number | null | undefined): 
   }
 
   return numericValue;
+}
+
+function isClosedTicketStatus(value: string | number | null | undefined): boolean {
+  const numericValue = mapStoredTicketStatusValue(value);
+
+  return numericValue !== 1 && numericValue !== 2;
 }
 
 function buildSupportTicketFilters(filters: AdminSupportTicketsListFilters): {
@@ -676,5 +706,109 @@ export async function replyToAdminSupportTicket(
 
   return {
     signedParams
+  };
+}
+
+export async function closeAdminSupportTicket(
+  payload: CloseAdminSupportTicketRequest,
+  dependencies: AdminSupportServiceDependencies = {}
+): Promise<CloseAdminSupportTicketResponse> {
+  const queryFn = getQueryFn(dependencies);
+  const nowFactory = getNowFactory(dependencies);
+  const normalizedPayload: CloseAdminSupportTicketRequest = {
+    ticketId: normalizePositiveInteger(payload.ticketId, "ticketId"),
+    ...(payload.resolution !== undefined
+      ? {
+          resolution: normalizeOptionalResolution(payload.resolution)
+        }
+      : {})
+  };
+  const targetTicket = await getAdminSupportTicketRow(normalizedPayload.ticketId, queryFn);
+  const threadRows = await listAdminSupportTicketThreadRows(targetTicket, queryFn);
+  const matchingThread = resolveAdminSupportTicketThread(
+    normalizedPayload.ticketId,
+    targetTicket,
+    threadRows
+  );
+  const resolvedSubject = resolveAdminSupportTicketSubject(targetTicket, matchingThread);
+  const openThreadRowIds = matchingThread.rows
+    .filter((row) => !isClosedTicketStatus(row.status))
+    .map((row) => mapRequiredInteger(row.id, "id"));
+
+  if (openThreadRowIds.length > 0) {
+    const updatedAt = nowFactory();
+
+    await queryFn<AdminSupportTicketInsertRow>(
+      [
+        "UPDATE public.support_ticket",
+        'SET status = $1, "updatedAt" = $2',
+        "WHERE id = ANY($3::int[])",
+        "RETURNING id"
+      ].join("\n"),
+      [0, updatedAt, openThreadRowIds]
+    );
+
+    if (typeof normalizedPayload.resolution === "string") {
+      const targetUserId = mapOptionalInteger(targetTicket.userId, "userId");
+      const targetCategoryId = mapOptionalInteger(
+        targetTicket.ticketCategoryId,
+        "ticketCategoryId"
+      );
+      const targetOwner =
+        mapOptionalText(targetTicket.owner) ?? mapOptionalText(targetTicket.username);
+
+      const insertResult = await queryFn<AdminSupportTicketInsertRow>(
+        [
+          "INSERT INTO public.support_ticket (",
+          '  "userId",',
+          '  "ticketCategoryId",',
+          "  subject,",
+          "  message,",
+          "  attachment,",
+          '  "attachmentFileType",',
+          "  owner,",
+          "  reply,",
+          "  status,",
+          '  "createdAt",',
+          '  "updatedAt"',
+          ")",
+          "VALUES (",
+          "  $1,",
+          "  $2,",
+          "  $3,",
+          "  $4,",
+          "  $5,",
+          "  $6,",
+          "  $7,",
+          "  $8,",
+          "  $9,",
+          "  $10,",
+          "  $11",
+          ")",
+          "RETURNING id"
+        ].join("\n"),
+        [
+          targetUserId,
+          targetCategoryId,
+          resolvedSubject,
+          normalizedPayload.resolution,
+          null,
+          null,
+          targetOwner,
+          true,
+          0,
+          updatedAt,
+          updatedAt
+        ]
+      );
+
+      if (!insertResult.rows[0]) {
+        throw new Error("Support ticket resolution insert did not return a row");
+      }
+    }
+  }
+
+  return {
+    message: "Ticket closed successfully"
   };
 }

@@ -2,6 +2,7 @@ import { Request, RequestHandler, Response, Router } from "express";
 
 import { authenticateAdmin, requireAdminRole } from "../admin-auth/middleware";
 import {
+  CloseAdminSupportTicketRequest,
   DEFAULT_ADMIN_SUPPORT_TICKETS_LIMIT,
   DEFAULT_ADMIN_SUPPORT_TICKETS_PAGE,
   MAX_ADMIN_SUPPORT_TICKETS_LIMIT,
@@ -10,6 +11,7 @@ import {
   ReplyToAdminSupportTicketRequest
 } from "./types";
 import {
+  closeAdminSupportTicket,
   AdminSupportTicketNotFoundError,
   AdminSupportTicketsValidationError,
   getAdminSupportTicketDetails,
@@ -18,6 +20,7 @@ import {
 } from "./service";
 
 interface AdminSupportRouterDependencies {
+  closeAdminSupportTicketHandler?: typeof closeAdminSupportTicket;
   getAdminSupportTicketDetailsHandler?: typeof getAdminSupportTicketDetails;
   listAdminSupportTicketsHandler?: typeof listAdminSupportTickets;
   replyToAdminSupportTicketHandler?: typeof replyToAdminSupportTicket;
@@ -114,6 +117,8 @@ export function createAdminSupportRouter(
   dependencies: AdminSupportRouterDependencies = {}
 ): Router {
   const adminSupportRouter = Router();
+  const closeAdminSupportTicketHandler =
+    dependencies.closeAdminSupportTicketHandler ?? closeAdminSupportTicket;
   const getAdminSupportTicketDetailsHandler =
     dependencies.getAdminSupportTicketDetailsHandler ?? getAdminSupportTicketDetails;
   const listAdminSupportTicketsHandler =
@@ -182,6 +187,72 @@ export function createAdminSupportRouter(
         const replyResponse = await replyToAdminSupportTicketHandler(payload);
 
         response.json(replyResponse);
+      } catch (error) {
+        if (
+          error instanceof AdminSupportQueryValidationError ||
+          error instanceof AdminSupportTicketsValidationError
+        ) {
+          response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof AdminSupportTicketNotFoundError) {
+          response.status(404).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
+
+  adminSupportRouter.put(
+    "/tickets/:ticketId/close",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      const rawTicketId = request.params.ticketId;
+      const ticketId = (
+        Array.isArray(rawTicketId) ? rawTicketId[0] ?? "" : rawTicketId ?? ""
+      ).trim();
+
+      if (!/^\d+$/.test(ticketId) || Number(ticketId) <= 0) {
+        response.status(400).json({
+          message: "ticketId must be a positive integer"
+        });
+
+        return;
+      }
+
+      try {
+        const body =
+          typeof request.body === "object" && request.body !== null
+            ? (request.body as Record<string, unknown>)
+            : {};
+        const resolution = readSingleBodyValue(body.resolution);
+        const payload: CloseAdminSupportTicketRequest = {
+          ticketId: Number(ticketId)
+        };
+
+        if (body.resolution !== undefined) {
+          if (typeof resolution !== "string" || resolution === "") {
+            throw new AdminSupportQueryValidationError(
+              "resolution must be a non-empty string when provided"
+            );
+          }
+
+          payload.resolution = resolution;
+        }
+
+        const closeResponse = await closeAdminSupportTicketHandler(payload);
+
+        response.json(closeResponse);
       } catch (error) {
         if (
           error instanceof AdminSupportQueryValidationError ||

@@ -1165,6 +1165,24 @@ export const swaggerSpec = {
           }
         }
       },
+      CloseAdminSupportTicketRequest: {
+        type: "object",
+        properties: {
+          resolution: {
+            type: "string",
+            example: "Issue resolved and confirmed"
+          }
+        }
+      },
+      CloseAdminSupportTicketResponse: {
+        type: "object",
+        properties: {
+          message: {
+            type: "string",
+            example: "Ticket closed successfully"
+          }
+        }
+      },
       AdminCampaignDetailsResponse: {
         type: "object",
         properties: {
@@ -4098,6 +4116,92 @@ export const swaggerSpec = {
           },
           "403": {
             description: "Authenticated admin is not allowed to reply to support tickets",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "Support ticket not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/support/tickets/{ticketId}/close": {
+      put: {
+        tags: ["Support & Tickets"],
+        summary: "Close a resolved ticket",
+        description:
+          "Closes the reconstructed support-ticket thread for authenticated super admin access and can persist an optional resolution note as a final admin reply.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "path",
+            name: "ticketId",
+            required: true,
+            schema: {
+              type: "integer"
+            },
+            description: "Support ticket identifier"
+          }
+        ],
+        requestBody: {
+          required: false,
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/CloseAdminSupportTicketRequest"
+              }
+            }
+          }
+        },
+        responses: {
+          "200": {
+            description: "Support ticket closed successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/CloseAdminSupportTicketResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid support ticket close request",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/UnauthorizedErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to close support tickets",
             content: {
               "application/json": {
                 schema: {
