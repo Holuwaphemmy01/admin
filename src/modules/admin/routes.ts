@@ -1,6 +1,7 @@
 import { Router } from "express";
 
 import adminAccountsRouter from "../admin-accounts/routes";
+import adminAnalyticsRouter from "../admin-analytics/routes";
 import adminAuthRouter from "../admin-auth/routes";
 import adminCampaignsRouter from "../admin-campaigns/routes";
 import adminDeliveryRouter from "../admin-delivery/routes";
@@ -18,6 +19,7 @@ const adminRouter = Router();
 
 adminRouter.use("/auth", adminAuthRouter);
 adminRouter.use("/auth", adminAccountsRouter);
+adminRouter.use("/analytics", adminAnalyticsRouter);
 adminRouter.use("/campaigns", adminCampaignsRouter);
 adminRouter.use("/delivery", adminDeliveryRouter);
 adminRouter.use("/subscriptions", adminSubscriptionsRouter);

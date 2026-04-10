@@ -58,6 +58,10 @@ export const swaggerSpec = {
       description: "Administrative promoted-post campaign listing endpoints"
     },
     {
+      name: "Platform Analytics & Reports",
+      description: "Administrative platform-wide dashboard and reporting endpoints"
+    },
+    {
       name: "Support & Tickets",
       description: "Administrative support-ticket listing endpoints"
     }
@@ -995,6 +999,39 @@ export const swaggerSpec = {
           ctr: {
             type: "number",
             example: 4
+          }
+        }
+      },
+      AdminAnalyticsOverviewResponse: {
+        type: "object",
+        properties: {
+          totalUsers: {
+            type: "integer",
+            example: 125
+          },
+          totalOrders: {
+            type: "integer",
+            example: 42
+          },
+          totalRevenue: {
+            type: "number",
+            example: 377145.88
+          },
+          activeStores: {
+            type: "integer",
+            example: 39
+          },
+          activeLogistics: {
+            type: "integer",
+            example: 14
+          },
+          pendingKyc: {
+            type: "integer",
+            example: 7
+          },
+          openTickets: {
+            type: "integer",
+            example: 11
           }
         }
       },
@@ -3885,6 +3922,73 @@ export const swaggerSpec = {
           },
           "403": {
             description: "Authenticated admin is not allowed to view campaign analytics",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/analytics/overview": {
+      get: {
+        tags: ["Platform Analytics & Reports"],
+        summary: "Platform-wide dashboard",
+        description:
+          "Returns top-level platform dashboard metrics for authenticated super admin access, with an optional relative period filter.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "query",
+            name: "period",
+            required: false,
+            schema: {
+              type: "string",
+              enum: ["daily", "weekly", "monthly", "all_time"]
+            },
+            description: "Relative dashboard period filter"
+          }
+        ],
+        responses: {
+          "200": {
+            description: "Platform analytics overview returned successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/AdminAnalyticsOverviewResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid analytics overview query filters",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/UnauthorizedErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to view platform analytics overview",
             content: {
               "application/json": {
                 schema: {
