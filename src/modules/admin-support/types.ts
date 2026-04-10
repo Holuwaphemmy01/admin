@@ -28,6 +28,21 @@ export interface AdminSupportTicketsListResponse {
   total: number;
 }
 
+export interface AdminSupportCategoryItem {
+  id: number;
+  name: string;
+  description: string;
+}
+
+export interface CreateAdminSupportCategoryRequest {
+  name: string;
+  description: string;
+}
+
+export interface CreateAdminSupportCategoryResponse {
+  tickets: AdminSupportCategoryItem[];
+}
+
 export interface AdminSupportTicketMessageItem {
   id: number;
   message: string;

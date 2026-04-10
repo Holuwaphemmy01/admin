@@ -1040,6 +1040,36 @@ export const swaggerSpec = {
           }
         }
       },
+      AdminSupportCategoryItem: {
+        type: "object",
+        properties: {
+          id: {
+            type: "integer",
+            example: 5
+          },
+          name: {
+            type: "string",
+            example: "Payment Issues"
+          },
+          description: {
+            type: "string",
+            example: "Questions about payment failures and delays"
+          }
+        }
+      },
+      CreateAdminSupportCategoryResponse: {
+        type: "object",
+        properties: {
+          tickets: {
+            type: "array",
+            description:
+              "Updated support categories list. The response key follows the current API contract.",
+            items: {
+              $ref: "#/components/schemas/AdminSupportCategoryItem"
+            }
+          }
+        }
+      },
       AdminSupportTicketMessageItem: {
         type: "object",
         properties: {
@@ -3968,6 +3998,92 @@ export const swaggerSpec = {
               "application/json": {
                 schema: {
                   $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/support/categories": {
+      post: {
+        tags: ["Support & Tickets"],
+        summary: "Create a support category",
+        description:
+          "Creates a new active support category and returns the updated support categories list for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["name", "description"],
+                properties: {
+                  name: {
+                    type: "string",
+                    example: "Payment Issues"
+                  },
+                  description: {
+                    type: "string",
+                    example: "Questions about payment failures and delays"
+                  }
+                }
+              }
+            }
+          }
+        },
+        responses: {
+          "201": {
+            description: "Support category created successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/CreateAdminSupportCategoryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid support category payload",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/UnauthorizedErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to create support categories",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            description: "Support category already exists",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
                 }
               }
             }

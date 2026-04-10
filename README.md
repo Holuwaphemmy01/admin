@@ -69,6 +69,7 @@ This is a TypeScript Node.js and Express starter for the BrickPine admin API wit
 - `GET /admin/campaigns`: Lists promoted post campaigns with optional status, username, and pagination filters for a super admin.
 - `GET /admin/campaigns/analytics`: Returns aggregate promoted-post performance metrics with optional date filters for a super admin.
 - `GET /admin/support/tickets`: Lists support tickets across platform users with optional status, username, category, and pagination filters for a super admin.
+- `POST /admin/support/categories`: Creates a support category and returns the updated support-category list for a super admin.
 - `GET /admin/support/tickets/:ticketId`: Returns one support ticket with its reconstructed conversation thread for a super admin.
 - `POST /admin/support/tickets/:ticketId/reply`: Creates an admin reply for a support ticket and can return signed upload params for an attachment for a super admin.
 - `PUT /admin/support/tickets/:ticketId/close`: Closes a support ticket thread and can persist an optional resolution note for a super admin.

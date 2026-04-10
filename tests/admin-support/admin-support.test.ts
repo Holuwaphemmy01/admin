@@ -9,6 +9,8 @@ import { AuthenticatedAdmin } from "../../src/modules/admin-auth/types";
 import { createAdminSupportRouter } from "../../src/modules/admin-support/routes";
 import {
   closeAdminSupportTicket,
+  createAdminSupportCategory,
+  AdminSupportCategoryConflictError,
   AdminSupportTicketNotFoundError,
   AdminSupportTicketsValidationError,
   getAdminSupportTicketDetails,
@@ -17,6 +19,7 @@ import {
 } from "../../src/modules/admin-support/service";
 import {
   CloseAdminSupportTicketResponse,
+  CreateAdminSupportCategoryResponse,
   AdminSupportTicketDetailsResponse,
   AdminSupportTicketsListResponse,
   ReplyToAdminSupportTicketResponse
@@ -223,6 +226,119 @@ test("listAdminSupportTickets validates filters and returns an empty list when n
   });
 });
 
+test("createAdminSupportCategory inserts a trimmed support category and returns the updated active categories list", async () => {
+  const fixedNow = new Date("2026-04-10T14:00:00.000Z");
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await createAdminSupportCategory(
+    {
+      name: " Payment Issues ",
+      description: " Questions about payment failures and delays "
+    },
+    {
+      nowFactory: () => fixedNow,
+      queryFn: async <T extends QueryResultRow = QueryResultRow>(
+        text: string,
+        params?: unknown[]
+      ): Promise<QueryResult<T>> => {
+        executedQueries.push({ text, params });
+
+        if (executedQueries.length === 1) {
+          return createQueryResult([]) as unknown as QueryResult<T>;
+        }
+
+        if (executedQueries.length === 2) {
+          return createQueryResult([
+            {
+              id: 5
+            }
+          ]) as unknown as QueryResult<T>;
+        }
+
+        if (executedQueries.length === 3) {
+          return createQueryResult([
+            {
+              id: 2,
+              name: "Account Access",
+              description: "Help with login and account recovery"
+            },
+            {
+              id: 5,
+              name: "Payment Issues",
+              description: "Questions about payment failures and delays"
+            }
+          ]) as unknown as QueryResult<T>;
+        }
+
+        throw new Error(`Unexpected query: ${text}`);
+      }
+    }
+  );
+
+  expect(executedQueries).toHaveLength(3);
+  expect(executedQueries[0]?.text).toContain("FROM public.support_ticket_category stc");
+  expect(executedQueries[0]?.text).toContain("LOWER(BTRIM(stc.name)) = LOWER(BTRIM($1))");
+  expect(executedQueries[0]?.text).toContain("COALESCE(stc.status, 1) = 1");
+  expect(executedQueries[0]?.params).toEqual(["Payment Issues"]);
+  expect(executedQueries[1]?.text).toContain("INSERT INTO public.support_ticket_category");
+  expect(executedQueries[1]?.params).toEqual([
+    "Payment Issues",
+    "Questions about payment failures and delays",
+    1,
+    fixedNow,
+    fixedNow
+  ]);
+  expect(executedQueries[2]?.text).toContain("WHERE COALESCE(stc.status, 1) = 1");
+  expect(executedQueries[2]?.text).toContain('ORDER BY LOWER(BTRIM(stc.name)) ASC, stc.id ASC');
+  expect(response).toEqual({
+    tickets: [
+      {
+        id: 2,
+        name: "Account Access",
+        description: "Help with login and account recovery"
+      },
+      {
+        id: 5,
+        name: "Payment Issues",
+        description: "Questions about payment failures and delays"
+      }
+    ]
+  });
+});
+
+test("createAdminSupportCategory validates required fields and rejects duplicate category names", async () => {
+  await expect(
+    createAdminSupportCategory({
+      name: "   ",
+      description: "Questions about payment failures and delays"
+    })
+  ).rejects.toThrow(AdminSupportTicketsValidationError);
+
+  await expect(
+    createAdminSupportCategory({
+      name: "Payment Issues",
+      description: "   "
+    })
+  ).rejects.toThrow(AdminSupportTicketsValidationError);
+
+  await expect(
+    createAdminSupportCategory(
+      {
+        name: "Payment Issues",
+        description: "Questions about payment failures and delays"
+      },
+      {
+        queryFn: async <T extends QueryResultRow = QueryResultRow>() =>
+          createQueryResult([
+            {
+              id: 4
+            }
+          ]) as unknown as QueryResult<T>
+      }
+    )
+  ).rejects.toThrow(AdminSupportCategoryConflictError);
+});
+
 test("getAdminSupportTicketDetails returns a reconstructed ticket thread for the requested ticket id", async () => {
   const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
 
@@ -360,6 +476,241 @@ test("getAdminSupportTicketDetails validates the id and maps missing tickets", a
         createQueryResult([]) as unknown as QueryResult<T>
     })
   ).rejects.toThrow(AdminSupportTicketNotFoundError);
+});
+
+test("POST /admin/support/categories returns 401 when the admin token is missing", async () => {
+  const application = express();
+  application.use(express.json());
+
+  application.use(
+    "/admin/support",
+    createAdminSupportRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/support/categories`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        name: "Payment Issues",
+        description: "Questions about payment failures and delays"
+      })
+    });
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("POST /admin/support/categories returns 403 for non-super-admins", async () => {
+  const application = express();
+  application.use(express.json());
+
+  application.use(
+    "/admin/support",
+    createAdminSupportRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "support"
+        })
+      ),
+      createAdminSupportCategoryHandler: async () => {
+        throw new Error("This handler should not be called when access is forbidden");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/support/categories`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        name: "Payment Issues",
+        description: "Questions about payment failures and delays"
+      })
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("POST /admin/support/categories validates the request body", async () => {
+  const application = express();
+  application.use(express.json());
+
+  application.use(
+    "/admin/support",
+    createAdminSupportRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      createAdminSupportCategoryHandler: async () => {
+        throw new Error("This handler should not be called when validation fails");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    let response = await fetch(`${server.baseUrl}/admin/support/categories`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        name: "   ",
+        description: "Questions about payment failures and delays"
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "name is required and must be a non-empty string"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/support/categories`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        name: "Payment Issues",
+        description: "   "
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "description is required and must be a non-empty string"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("POST /admin/support/categories maps conflicts and returns the updated category list", async () => {
+  let server;
+  const conflictApplication = express();
+  conflictApplication.use(express.json());
+
+  conflictApplication.use(
+    "/admin/support",
+    createAdminSupportRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      createAdminSupportCategoryHandler: async () => {
+        throw new AdminSupportCategoryConflictError(
+          "A support category with this name already exists"
+        );
+      }
+    })
+  );
+
+  server = await startTestServer(conflictApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/support/categories`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        name: "Payment Issues",
+        description: "Questions about payment failures and delays"
+      })
+    });
+
+    expect(response.status).toBe(409);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "A support category with this name already exists"
+    });
+  } finally {
+    await server.close();
+  }
+
+  const successApplication = express();
+  successApplication.use(express.json());
+
+  successApplication.use(
+    "/admin/support",
+    createAdminSupportRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      createAdminSupportCategoryHandler: async (
+        payload
+      ): Promise<CreateAdminSupportCategoryResponse> => {
+        expect(payload).toEqual({
+          name: "Payment Issues",
+          description: "Questions about payment failures and delays"
+        });
+
+        return {
+          tickets: [
+            {
+              id: 2,
+              name: "Account Access",
+              description: "Help with login and account recovery"
+            },
+            {
+              id: 5,
+              name: "Payment Issues",
+              description: "Questions about payment failures and delays"
+            }
+          ]
+        };
+      }
+    })
+  );
+
+  server = await startTestServer(successApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/support/categories`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        name: " Payment Issues ",
+        description: " Questions about payment failures and delays "
+      })
+    });
+
+    expect(response.status).toBe(201);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      tickets: [
+        {
+          id: 2,
+          name: "Account Access",
+          description: "Help with login and account recovery"
+        },
+        {
+          id: 5,
+          name: "Payment Issues",
+          description: "Questions about payment failures and delays"
+        }
+      ]
+    });
+  } finally {
+    await server.close();
+  }
 });
 
 test("replyToAdminSupportTicket inserts an admin reply and returns null signed params when no attachment upload is requested", async () => {

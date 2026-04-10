@@ -6,6 +6,8 @@ import { query } from "../../config/db";
 import {
   CloseAdminSupportTicketRequest,
   CloseAdminSupportTicketResponse,
+  CreateAdminSupportCategoryRequest,
+  CreateAdminSupportCategoryResponse,
   AdminSupportTicketDetailsResponse,
   AdminSupportTicketReplySignedParams,
   AdminSupportTicketStatusFilter,
@@ -48,6 +50,12 @@ interface AdminSupportTicketRow extends QueryResultRow {
   createdAt: Date;
 }
 
+interface AdminSupportCategoryRow extends QueryResultRow {
+  id: string | number;
+  name: string | null;
+  description: string | null;
+}
+
 interface TotalCountRow extends QueryResultRow {
   total: number;
 }
@@ -87,6 +95,13 @@ export class AdminSupportTicketNotFoundError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "AdminSupportTicketNotFoundError";
+  }
+}
+
+export class AdminSupportCategoryConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AdminSupportCategoryConflictError";
   }
 }
 
@@ -155,6 +170,27 @@ function normalizeRequiredMessage(value: string): string {
 
   if (normalizedValue === "") {
     throw new AdminSupportTicketsValidationError("message is required and must be a non-empty string");
+  }
+
+  return normalizedValue;
+}
+
+function normalizeRequiredSupportCategoryText(
+  value: string,
+  fieldName: "name" | "description"
+): string {
+  if (typeof value !== "string") {
+    throw new AdminSupportTicketsValidationError(
+      `${fieldName} is required and must be a non-empty string`
+    );
+  }
+
+  const normalizedValue = value.trim();
+
+  if (normalizedValue === "") {
+    throw new AdminSupportTicketsValidationError(
+      `${fieldName} is required and must be a non-empty string`
+    );
   }
 
   return normalizedValue;
@@ -560,6 +596,87 @@ export async function listAdminSupportTickets(
       createdAt: mapRequiredDate(ticket.createdAt, "createdAt")
     })),
     total: Number(totalResult.rows[0]?.total ?? 0)
+  };
+}
+
+export async function createAdminSupportCategory(
+  payload: CreateAdminSupportCategoryRequest,
+  dependencies: AdminSupportServiceDependencies = {}
+): Promise<CreateAdminSupportCategoryResponse> {
+  const queryFn = getQueryFn(dependencies);
+  const nowFactory = getNowFactory(dependencies);
+  const normalizedName = normalizeRequiredSupportCategoryText(payload.name, "name");
+  const normalizedDescription = normalizeRequiredSupportCategoryText(
+    payload.description,
+    "description"
+  );
+
+  const existingCategoryResult = await queryFn<AdminSupportCategoryRow>(
+    [
+      "SELECT",
+      "  stc.id",
+      "FROM public.support_ticket_category stc",
+      "WHERE stc.name IS NOT NULL",
+      "  AND BTRIM(stc.name) <> ''",
+      "  AND LOWER(BTRIM(stc.name)) = LOWER(BTRIM($1))",
+      "  AND COALESCE(stc.status, 1) = 1",
+      "LIMIT 1"
+    ].join("\n"),
+    [normalizedName]
+  );
+
+  if ((existingCategoryResult.rowCount ?? 0) > 0) {
+    throw new AdminSupportCategoryConflictError(
+      "A support category with this name already exists"
+    );
+  }
+
+  const timestamp = nowFactory();
+
+  try {
+    const createdCategoryResult = await queryFn<AdminSupportCategoryRow>(
+      [
+        "INSERT INTO public.support_ticket_category (",
+        '  name, description, status, "createdAt", "updatedAt"',
+        ") VALUES (",
+        "  $1, $2, $3, $4, $5",
+        ")",
+        "RETURNING id"
+      ].join("\n"),
+      [normalizedName, normalizedDescription, 1, timestamp, timestamp]
+    );
+
+    if (!createdCategoryResult.rows[0]) {
+      throw new Error("Support category insert did not return a row");
+    }
+  } catch (error) {
+    if ((error as { code?: string }).code === "23505") {
+      throw new AdminSupportCategoryConflictError(
+        "A support category with this name already exists"
+      );
+    }
+
+    throw error;
+  }
+
+  const categoriesResult = await queryFn<AdminSupportCategoryRow>(
+    [
+      "SELECT",
+      "  stc.id,",
+      "  stc.name,",
+      "  stc.description",
+      "FROM public.support_ticket_category stc",
+      "WHERE COALESCE(stc.status, 1) = 1",
+      "ORDER BY LOWER(BTRIM(stc.name)) ASC, stc.id ASC"
+    ].join("\n")
+  );
+
+  return {
+    tickets: categoriesResult.rows.map((category) => ({
+      id: mapRequiredInteger(category.id, "id"),
+      name: mapRequiredText(category.name, "name"),
+      description: mapRequiredText(category.description, "description")
+    }))
   };
 }
 

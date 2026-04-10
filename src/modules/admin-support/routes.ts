@@ -3,6 +3,7 @@ import { Request, RequestHandler, Response, Router } from "express";
 import { authenticateAdmin, requireAdminRole } from "../admin-auth/middleware";
 import {
   CloseAdminSupportTicketRequest,
+  CreateAdminSupportCategoryRequest,
   DEFAULT_ADMIN_SUPPORT_TICKETS_LIMIT,
   DEFAULT_ADMIN_SUPPORT_TICKETS_PAGE,
   MAX_ADMIN_SUPPORT_TICKETS_LIMIT,
@@ -12,6 +13,8 @@ import {
 } from "./types";
 import {
   closeAdminSupportTicket,
+  createAdminSupportCategory,
+  AdminSupportCategoryConflictError,
   AdminSupportTicketNotFoundError,
   AdminSupportTicketsValidationError,
   getAdminSupportTicketDetails,
@@ -21,6 +24,7 @@ import {
 
 interface AdminSupportRouterDependencies {
   closeAdminSupportTicketHandler?: typeof closeAdminSupportTicket;
+  createAdminSupportCategoryHandler?: typeof createAdminSupportCategory;
   getAdminSupportTicketDetailsHandler?: typeof getAdminSupportTicketDetails;
   listAdminSupportTicketsHandler?: typeof listAdminSupportTickets;
   replyToAdminSupportTicketHandler?: typeof replyToAdminSupportTicket;
@@ -119,6 +123,8 @@ export function createAdminSupportRouter(
   const adminSupportRouter = Router();
   const closeAdminSupportTicketHandler =
     dependencies.closeAdminSupportTicketHandler ?? closeAdminSupportTicket;
+  const createAdminSupportCategoryHandler =
+    dependencies.createAdminSupportCategoryHandler ?? createAdminSupportCategory;
   const getAdminSupportTicketDetailsHandler =
     dependencies.getAdminSupportTicketDetailsHandler ?? getAdminSupportTicketDetails;
   const listAdminSupportTicketsHandler =
@@ -129,6 +135,64 @@ export function createAdminSupportRouter(
     dependencies.authenticateAdminMiddleware ?? authenticateAdmin;
   const requireSuperAdminMiddleware =
     dependencies.requireSuperAdminMiddleware ?? requireAdminRole("super_admin");
+
+  adminSupportRouter.post(
+    "/categories",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      const body =
+        typeof request.body === "object" && request.body !== null
+          ? (request.body as Record<string, unknown>)
+          : {};
+      const name = readSingleBodyValue(body.name);
+      const description = readSingleBodyValue(body.description);
+
+      if (typeof name !== "string" || name === "") {
+        response.status(400).json({
+          message: "name is required and must be a non-empty string"
+        });
+
+        return;
+      }
+
+      if (typeof description !== "string" || description === "") {
+        response.status(400).json({
+          message: "description is required and must be a non-empty string"
+        });
+
+        return;
+      }
+
+      try {
+        const payload: CreateAdminSupportCategoryRequest = {
+          name,
+          description
+        };
+        const createResponse = await createAdminSupportCategoryHandler(payload);
+
+        response.status(201).json(createResponse);
+      } catch (error) {
+        if (error instanceof AdminSupportTicketsValidationError) {
+          response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof AdminSupportCategoryConflictError) {
+          response.status(409).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
 
   adminSupportRouter.post(
     "/tickets/:ticketId/reply",
