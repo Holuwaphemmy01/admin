@@ -2,6 +2,8 @@ import { Request, RequestHandler, Response, Router } from "express";
 
 import { authenticateAdmin, requireAdminRole } from "../admin-auth/middleware";
 import {
+  getAdminAnalyticsTopSellers,
+  AdminAnalyticsTopSellersValidationError,
   getAdminAnalyticsRevenue,
   AdminAnalyticsRevenueValidationError,
   getAdminAnalyticsOverview,
@@ -11,10 +13,14 @@ import {
   AdminAnalyticsOverviewPeriod,
   AdminAnalyticsRevenueFilters,
   AdminAnalyticsRevenueGroupBy,
-  AdminAnalyticsRevenueResponse
+  AdminAnalyticsRevenueResponse,
+  AdminAnalyticsTopSellersFilters,
+  AdminAnalyticsTopSellersPeriod,
+  AdminAnalyticsTopSellersResponse
 } from "./types";
 
 interface AdminAnalyticsRouterDependencies {
+  getAdminAnalyticsTopSellersHandler?: typeof getAdminAnalyticsTopSellers;
   getAdminAnalyticsRevenueHandler?: typeof getAdminAnalyticsRevenue;
   getAdminAnalyticsOverviewHandler?: typeof getAdminAnalyticsOverview;
   authenticateAdminMiddleware?: RequestHandler;
@@ -73,6 +79,36 @@ function parseRevenueGroupBy(value: string): AdminAnalyticsRevenueGroupBy {
   return normalizedValue;
 }
 
+function parseTopSellersPeriod(value: string): AdminAnalyticsTopSellersPeriod {
+  const normalizedValue = value.trim().toLowerCase();
+
+  if (
+    normalizedValue !== "daily" &&
+    normalizedValue !== "weekly" &&
+    normalizedValue !== "monthly"
+  ) {
+    throw new AdminAnalyticsQueryValidationError(
+      "period must be one of daily, weekly, monthly"
+    );
+  }
+
+  return normalizedValue;
+}
+
+function parsePositiveInteger(value: string, fieldName: string): number {
+  if (!/^\d+$/.test(value)) {
+    throw new AdminAnalyticsQueryValidationError(`${fieldName} must be a positive integer`);
+  }
+
+  const parsedValue = Number(value);
+
+  if (!Number.isInteger(parsedValue) || parsedValue <= 0) {
+    throw new AdminAnalyticsQueryValidationError(`${fieldName} must be a positive integer`);
+  }
+
+  return parsedValue;
+}
+
 function parseIsoDate(value: string, fieldName: "from" | "to"): Date {
   const parsedDate = new Date(value);
 
@@ -89,6 +125,8 @@ export function createAdminAnalyticsRouter(
   dependencies: AdminAnalyticsRouterDependencies = {}
 ): Router {
   const adminAnalyticsRouter = Router();
+  const getAdminAnalyticsTopSellersHandler =
+    dependencies.getAdminAnalyticsTopSellersHandler ?? getAdminAnalyticsTopSellers;
   const getAdminAnalyticsRevenueHandler =
     dependencies.getAdminAnalyticsRevenueHandler ?? getAdminAnalyticsRevenue;
   const getAdminAnalyticsOverviewHandler =
@@ -122,6 +160,51 @@ export function createAdminAnalyticsRouter(
         if (
           error instanceof AdminAnalyticsQueryValidationError ||
           error instanceof AdminAnalyticsOverviewValidationError
+        ) {
+          response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
+
+  adminAnalyticsRouter.get(
+    "/top_sellers",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      try {
+        const limitQuery = readSingleQueryValue(request.query.limit);
+        const periodQuery = readSingleQueryValue(request.query.period);
+        const filters: AdminAnalyticsTopSellersFilters = {};
+
+        if (typeof limitQuery === "string" && limitQuery !== "") {
+          filters.limit = parsePositiveInteger(limitQuery, "limit");
+        } else if (limitQuery === "") {
+          throw new AdminAnalyticsQueryValidationError("limit must be a positive integer");
+        }
+
+        if (typeof periodQuery === "string" && periodQuery !== "") {
+          filters.period = parseTopSellersPeriod(periodQuery);
+        } else if (periodQuery === "") {
+          throw new AdminAnalyticsQueryValidationError(
+            "period must be one of daily, weekly, monthly"
+          );
+        }
+
+        const topSellersResponse: AdminAnalyticsTopSellersResponse =
+          await getAdminAnalyticsTopSellersHandler(filters);
+
+        response.json(topSellersResponse);
+      } catch (error) {
+        if (
+          error instanceof AdminAnalyticsQueryValidationError ||
+          error instanceof AdminAnalyticsTopSellersValidationError
         ) {
           response.status(400).json({
             message: error.message

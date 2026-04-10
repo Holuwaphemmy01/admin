@@ -1112,6 +1112,38 @@ export const swaggerSpec = {
           }
         }
       },
+      AdminAnalyticsTopSellerItem: {
+        type: "object",
+        properties: {
+          username: {
+            type: "string",
+            example: "seller-one"
+          },
+          totalOrders: {
+            type: "integer",
+            example: 9
+          },
+          totalRevenue: {
+            type: "number",
+            example: 127500.5
+          },
+          rating: {
+            type: "number",
+            example: 4.75
+          }
+        }
+      },
+      AdminAnalyticsTopSellersResponse: {
+        type: "object",
+        properties: {
+          sellers: {
+            type: "array",
+            items: {
+              $ref: "#/components/schemas/AdminAnalyticsTopSellerItem"
+            }
+          }
+        }
+      },
       AdminSupportTicketItem: {
         type: "object",
         properties: {
@@ -4153,6 +4185,83 @@ export const swaggerSpec = {
           },
           "403": {
             description: "Authenticated admin is not allowed to view platform revenue analytics",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/analytics/top_sellers": {
+      get: {
+        tags: ["Platform Analytics & Reports"],
+        summary: "Best-performing sellers",
+        description:
+          "Returns the top-performing sellers ranked by seller revenue for the selected daily, weekly, or monthly window for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "query",
+            name: "limit",
+            required: false,
+            schema: {
+              type: "integer",
+              minimum: 1
+            },
+            description: "Optional number of top sellers to return"
+          },
+          {
+            in: "query",
+            name: "period",
+            required: false,
+            schema: {
+              type: "string",
+              enum: ["daily", "weekly", "monthly"]
+            },
+            description: "Optional relative ranking window. Defaults to monthly"
+          }
+        ],
+        responses: {
+          "200": {
+            description: "Top sellers returned successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/AdminAnalyticsTopSellersResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid top-sellers query filters",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/UnauthorizedErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to view top sellers analytics",
             content: {
               "application/json": {
                 schema: {

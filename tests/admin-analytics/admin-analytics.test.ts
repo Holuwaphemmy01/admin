@@ -9,13 +9,16 @@ import { AuthenticatedAdmin } from "../../src/modules/admin-auth/types";
 import { createAdminAnalyticsRouter } from "../../src/modules/admin-analytics/routes";
 import {
   AdminAnalyticsRevenueValidationError,
+  AdminAnalyticsTopSellersValidationError,
   AdminAnalyticsOverviewValidationError,
   getAdminAnalyticsRevenue,
+  getAdminAnalyticsTopSellers,
   getAdminAnalyticsOverview
 } from "../../src/modules/admin-analytics/service";
 import {
   AdminAnalyticsOverviewResponse,
-  AdminAnalyticsRevenueResponse
+  AdminAnalyticsRevenueResponse,
+  AdminAnalyticsTopSellersResponse
 } from "../../src/modules/admin-analytics/types";
 
 async function startTestServer(application: ReturnType<typeof express>) {
@@ -324,6 +327,101 @@ test("getAdminAnalyticsRevenue defaults to period grouping and validates unsuppo
       to: new Date("2026-02-01T00:00:00.000Z")
     })
   ).rejects.toThrow("from must be less than or equal to to");
+});
+
+test("getAdminAnalyticsTopSellers returns ranked sellers for the requested period and limit", async () => {
+  const fixedNow = new Date("2026-04-10T18:00:00.000Z");
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await getAdminAnalyticsTopSellers(
+    {
+      period: "weekly",
+      limit: 5
+    },
+    {
+      nowFactory: () => fixedNow,
+      queryFn: async <T extends QueryResultRow = QueryResultRow>(
+        text: string,
+        params?: unknown[]
+      ): Promise<QueryResult<T>> => {
+        executedQueries.push({ text, params });
+
+        return createQueryResult([
+          {
+            username: "seller-one",
+            totalOrders: "9",
+            totalRevenue: "127500.5",
+            rating: "4.75"
+          },
+          {
+            username: "seller-two",
+            totalOrders: 4,
+            totalRevenue: "46500",
+            rating: 4
+          }
+        ]) as unknown as QueryResult<T>;
+      }
+    }
+  );
+
+  expect(response).toEqual({
+    sellers: [
+      {
+        username: "seller-one",
+        totalOrders: 9,
+        totalRevenue: 127500.5,
+        rating: 4.75
+      },
+      {
+        username: "seller-two",
+        totalOrders: 4,
+        totalRevenue: 46500,
+        rating: 4
+      }
+    ]
+  });
+  expect(executedQueries).toHaveLength(1);
+  expect(executedQueries[0]?.text).toContain("FROM public.earnings e");
+  expect(executedQueries[0]?.text).toContain("FROM public.rating_review_seller r");
+  expect(executedQueries[0]?.text).toContain("date_trunc('week', $1::timestamptz)");
+  expect(executedQueries[0]?.params).toEqual([fixedNow, "weekly", 5]);
+});
+
+test("getAdminAnalyticsTopSellers defaults to monthly and validates unsupported filters", async () => {
+  const fixedNow = new Date("2026-04-10T18:30:00.000Z");
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await getAdminAnalyticsTopSellers(
+    {},
+    {
+      nowFactory: () => fixedNow,
+      queryFn: async <T extends QueryResultRow = QueryResultRow>(
+        text: string,
+        params?: unknown[]
+      ): Promise<QueryResult<T>> => {
+        executedQueries.push({ text, params });
+
+        return createQueryResult([]) as unknown as QueryResult<T>;
+      }
+    }
+  );
+
+  expect(response).toEqual({
+    sellers: []
+  });
+  expect(executedQueries[0]?.params).toEqual([fixedNow, "monthly", 10]);
+
+  await expect(
+    getAdminAnalyticsTopSellers({
+      period: "yearly" as never
+    })
+  ).rejects.toThrow(AdminAnalyticsTopSellersValidationError);
+
+  await expect(
+    getAdminAnalyticsTopSellers({
+      limit: 0
+    })
+  ).rejects.toThrow("limit must be a positive integer");
 });
 
 test("GET /admin/analytics/overview returns 401 when the admin token is missing", async () => {
@@ -691,6 +789,203 @@ test("GET /admin/analytics/revenue parses the filters and returns the revenue pa
         {
           tier: "Premium",
           revenue: 42645.88
+        }
+      ]
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/analytics/top_sellers returns 401 when the admin token is missing", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/analytics",
+    createAdminAnalyticsRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/analytics/top_sellers`);
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/analytics/top_sellers returns 403 for non-super-admins", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/analytics",
+    createAdminAnalyticsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "support"
+        })
+      ),
+      getAdminAnalyticsTopSellersHandler: async () => {
+        throw new Error("This handler should not be called when access is forbidden");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/analytics/top_sellers`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/analytics/top_sellers validates query filters and maps service validation errors", async () => {
+  let server;
+  const validationApplication = express();
+
+  validationApplication.use(
+    "/admin/analytics",
+    createAdminAnalyticsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getAdminAnalyticsTopSellersHandler: async () => {
+        throw new Error("This handler should not be called when query validation fails");
+      }
+    })
+  );
+
+  server = await startTestServer(validationApplication);
+
+  try {
+    let response = await fetch(`${server.baseUrl}/admin/analytics/top_sellers?limit=abc`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "limit must be a positive integer"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/analytics/top_sellers?period=yearly`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "period must be one of daily, weekly, monthly"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/analytics/top_sellers?period=%20%20`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "period must be one of daily, weekly, monthly"
+    });
+  } finally {
+    await server.close();
+  }
+
+  const serviceValidationApplication = express();
+
+  serviceValidationApplication.use(
+    "/admin/analytics",
+    createAdminAnalyticsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getAdminAnalyticsTopSellersHandler: async () => {
+        throw new AdminAnalyticsTopSellersValidationError(
+          "limit must be a positive integer"
+        );
+      }
+    })
+  );
+
+  server = await startTestServer(serviceValidationApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/analytics/top_sellers?limit=1`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "limit must be a positive integer"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/analytics/top_sellers parses filters and returns the seller ranking payload", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/analytics",
+    createAdminAnalyticsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getAdminAnalyticsTopSellersHandler: async (
+        filters
+      ): Promise<AdminAnalyticsTopSellersResponse> => {
+        expect(filters).toEqual({
+          limit: 25,
+          period: "daily"
+        });
+
+        return {
+          sellers: [
+            {
+              username: "seller-one",
+              totalOrders: 9,
+              totalRevenue: 127500.5,
+              rating: 4.75
+            }
+          ]
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(
+      `${server.baseUrl}/admin/analytics/top_sellers?limit=25&period=daily`,
+      {
+        headers: {
+          Authorization: "Bearer any-token"
+        }
+      }
+    );
+
+    expect(response.status).toBe(200);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      sellers: [
+        {
+          username: "seller-one",
+          totalOrders: 9,
+          totalRevenue: 127500.5,
+          rating: 4.75
         }
       ]
     });

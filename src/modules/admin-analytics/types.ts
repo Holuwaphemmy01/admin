@@ -12,11 +12,21 @@ export const ADMIN_ANALYTICS_REVENUE_GROUP_BY_VALUES = [
   "period"
 ] as const;
 export const DEFAULT_ADMIN_ANALYTICS_REVENUE_GROUP_BY = "period";
+export const ADMIN_ANALYTICS_TOP_SELLERS_PERIODS = [
+  "daily",
+  "weekly",
+  "monthly"
+] as const;
+export const DEFAULT_ADMIN_ANALYTICS_TOP_SELLERS_PERIOD = "monthly";
+export const DEFAULT_ADMIN_ANALYTICS_TOP_SELLERS_LIMIT = 10;
+export const MAX_ADMIN_ANALYTICS_TOP_SELLERS_LIMIT = 100;
 
 export type AdminAnalyticsOverviewPeriod =
   (typeof ADMIN_ANALYTICS_OVERVIEW_PERIODS)[number];
 export type AdminAnalyticsRevenueGroupBy =
   (typeof ADMIN_ANALYTICS_REVENUE_GROUP_BY_VALUES)[number];
+export type AdminAnalyticsTopSellersPeriod =
+  (typeof ADMIN_ANALYTICS_TOP_SELLERS_PERIODS)[number];
 
 export interface AdminAnalyticsOverviewResponse {
   totalUsers: number;
@@ -60,4 +70,20 @@ export interface AdminAnalyticsRevenueResponse {
   commissionRevenue: number;
   adRevenue: number;
   breakdown: AdminAnalyticsRevenueBreakdownItem[];
+}
+
+export interface AdminAnalyticsTopSellersFilters {
+  limit?: number;
+  period?: AdminAnalyticsTopSellersPeriod;
+}
+
+export interface AdminAnalyticsTopSellerItem {
+  username: string;
+  totalOrders: number;
+  totalRevenue: number;
+  rating: number;
+}
+
+export interface AdminAnalyticsTopSellersResponse {
+  sellers: AdminAnalyticsTopSellerItem[];
 }

@@ -10,7 +10,13 @@ import {
   AdminAnalyticsRevenueResponse,
   AdminAnalyticsOverviewPeriod,
   AdminAnalyticsOverviewResponse,
+  AdminAnalyticsTopSellersFilters,
+  AdminAnalyticsTopSellersPeriod,
+  AdminAnalyticsTopSellersResponse,
   DEFAULT_ADMIN_ANALYTICS_OVERVIEW_PERIOD,
+  DEFAULT_ADMIN_ANALYTICS_TOP_SELLERS_LIMIT,
+  DEFAULT_ADMIN_ANALYTICS_TOP_SELLERS_PERIOD,
+  MAX_ADMIN_ANALYTICS_TOP_SELLERS_LIMIT,
   DEFAULT_ADMIN_ANALYTICS_REVENUE_GROUP_BY
 } from "./types";
 
@@ -56,6 +62,13 @@ interface AdminAnalyticsRevenuePeriodBreakdownRow extends QueryResultRow {
   revenue: string | number | null;
 }
 
+interface AdminAnalyticsTopSellerRow extends QueryResultRow {
+  username: string | null;
+  totalOrders: string | number | null;
+  totalRevenue: string | number | null;
+  rating: string | number | null;
+}
+
 export class AdminAnalyticsOverviewValidationError extends Error {
   constructor(message: string) {
     super(message);
@@ -67,6 +80,13 @@ export class AdminAnalyticsRevenueValidationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "AdminAnalyticsRevenueValidationError";
+  }
+}
+
+export class AdminAnalyticsTopSellersValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AdminAnalyticsTopSellersValidationError";
   }
 }
 
@@ -164,6 +184,52 @@ function normalizeRevenueFilters(
   }
 
   return normalizedFilters;
+}
+
+function normalizeTopSellersPeriod(
+  period: string | undefined
+): AdminAnalyticsTopSellersPeriod {
+  if (period === undefined) {
+    return DEFAULT_ADMIN_ANALYTICS_TOP_SELLERS_PERIOD;
+  }
+
+  const normalizedPeriod = period.trim().toLowerCase();
+
+  if (
+    normalizedPeriod !== "daily" &&
+    normalizedPeriod !== "weekly" &&
+    normalizedPeriod !== "monthly"
+  ) {
+    throw new AdminAnalyticsTopSellersValidationError(
+      "period must be one of daily, weekly, monthly"
+    );
+  }
+
+  return normalizedPeriod;
+}
+
+function normalizeTopSellersLimit(limit: number | undefined): number {
+  if (limit === undefined) {
+    return DEFAULT_ADMIN_ANALYTICS_TOP_SELLERS_LIMIT;
+  }
+
+  if (!Number.isInteger(limit) || limit <= 0) {
+    throw new AdminAnalyticsTopSellersValidationError("limit must be a positive integer");
+  }
+
+  return Math.min(limit, MAX_ADMIN_ANALYTICS_TOP_SELLERS_LIMIT);
+}
+
+function normalizeTopSellersFilters(
+  filters: AdminAnalyticsTopSellersFilters = {}
+): {
+  limit: number;
+  period: AdminAnalyticsTopSellersPeriod;
+} {
+  return {
+    limit: normalizeTopSellersLimit(filters.limit),
+    period: normalizeTopSellersPeriod(filters.period)
+  };
 }
 
 function mapRequiredNonNegativeInteger(
@@ -512,5 +578,79 @@ export async function getAdminAnalyticsRevenue(
     ),
     adRevenue: mapRevenueNumber(totals.adRevenue, "adRevenue"),
     breakdown
+  };
+}
+
+export async function getAdminAnalyticsTopSellers(
+  filters: AdminAnalyticsTopSellersFilters = {},
+  dependencies: AdminAnalyticsServiceDependencies = {}
+): Promise<AdminAnalyticsTopSellersResponse> {
+  const queryFn = getQueryFn(dependencies);
+  const now = getNowFactory(dependencies)();
+  const normalizedFilters = normalizeTopSellersFilters(filters);
+  const result = await queryFn<AdminAnalyticsTopSellerRow>(
+    [
+      "WITH bounds AS (",
+      "  SELECT",
+      "    CASE",
+      "      WHEN $2::text = 'daily' THEN date_trunc('day', $1::timestamptz)",
+      "      WHEN $2::text = 'weekly' THEN date_trunc('week', $1::timestamptz)",
+      "      WHEN $2::text = 'monthly' THEN date_trunc('month', $1::timestamptz)",
+      '      ELSE NULL::timestamptz',
+      '    END AS "fromDate",',
+      "    CASE",
+      "      WHEN $2::text = 'daily' THEN date_trunc('day', $1::timestamptz) + INTERVAL '1 day'",
+      "      WHEN $2::text = 'weekly' THEN date_trunc('week', $1::timestamptz) + INTERVAL '1 week'",
+      "      WHEN $2::text = 'monthly' THEN date_trunc('month', $1::timestamptz) + INTERVAL '1 month'",
+      '      ELSE NULL::timestamptz',
+      '    END AS "toDate"',
+      "), seller_performance AS (",
+      "  SELECT",
+      '    u.id AS "userId",',
+      "    BTRIM(u.username) AS username,",
+      '    COUNT(*)::int AS "totalOrders",',
+      '    COALESCE(SUM(e."grossAmount"), 0)::numeric AS "totalRevenue"',
+      "  FROM public.earnings e",
+      '  INNER JOIN public."user" u ON u.id = e."userId"',
+      "  CROSS JOIN bounds",
+      "  WHERE e.type = 'seller'",
+      '    AND COALESCE(e."grossAmount", 0) > 0',
+      '    AND u."userTypeId" = 2',
+      "    AND u.username IS NOT NULL",
+      "    AND BTRIM(u.username) <> ''",
+      '    AND e."createdAt" >= bounds."fromDate"',
+      '    AND e."createdAt" < bounds."toDate"',
+      '  GROUP BY u.id, BTRIM(u.username)',
+      "), seller_ratings AS (",
+      "  SELECT",
+      '    r."userId",',
+      "    COALESCE(AVG(r.rating), 0)::numeric AS rating",
+      "  FROM public.rating_review_seller r",
+      "  WHERE r.rating IS NOT NULL",
+      '  GROUP BY r."userId"',
+      ")",
+      "SELECT",
+      "  seller_performance.username,",
+      '  seller_performance."totalOrders",',
+      '  seller_performance."totalRevenue",',
+      "  COALESCE(seller_ratings.rating, 0)::numeric AS rating",
+      "FROM seller_performance",
+      'LEFT JOIN seller_ratings ON seller_ratings."userId" = seller_performance."userId"',
+      'ORDER BY seller_performance."totalRevenue" DESC,',
+      '  seller_performance."totalOrders" DESC,',
+      "  COALESCE(seller_ratings.rating, 0) DESC,",
+      "  seller_performance.username ASC",
+      "LIMIT $3"
+    ].join("\n"),
+    [now, normalizedFilters.period, normalizedFilters.limit]
+  );
+
+  return {
+    sellers: result.rows.map((seller) => ({
+      username: mapRequiredText(seller.username, "username"),
+      totalOrders: mapRequiredNonNegativeInteger(seller.totalOrders, "totalOrders"),
+      totalRevenue: mapRequiredNumber(seller.totalRevenue, "totalRevenue"),
+      rating: mapRequiredNumber(seller.rating, "rating")
+    }))
   };
 }
