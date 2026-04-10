@@ -1144,6 +1144,42 @@ export const swaggerSpec = {
           }
         }
       },
+      AdminAnalyticsTopProductItem: {
+        type: "object",
+        properties: {
+          productId: {
+            type: "integer",
+            example: 61
+          },
+          name: {
+            type: "string",
+            example: "Two phase cooker"
+          },
+          totalSold: {
+            type: "integer",
+            example: 17
+          },
+          revenue: {
+            type: "number",
+            example: 76500
+          },
+          seller: {
+            type: "string",
+            example: "hinocag"
+          }
+        }
+      },
+      AdminAnalyticsTopProductsResponse: {
+        type: "object",
+        properties: {
+          products: {
+            type: "array",
+            items: {
+              $ref: "#/components/schemas/AdminAnalyticsTopProductItem"
+            }
+          }
+        }
+      },
       AdminSupportTicketItem: {
         type: "object",
         properties: {
@@ -4262,6 +4298,93 @@ export const swaggerSpec = {
           },
           "403": {
             description: "Authenticated admin is not allowed to view top sellers analytics",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/analytics/top_products": {
+      get: {
+        tags: ["Platform Analytics & Reports"],
+        summary: "Best-selling products platform-wide",
+        description:
+          "Returns the best-selling products platform-wide with optional limit, product-category, and daily, weekly, or monthly ranking filters for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "query",
+            name: "limit",
+            required: false,
+            schema: {
+              type: "integer",
+              minimum: 1
+            },
+            description: "Optional number of products to return"
+          },
+          {
+            in: "query",
+            name: "categoryId",
+            required: false,
+            schema: {
+              type: "integer",
+              minimum: 1
+            },
+            description: "Optional product category filter"
+          },
+          {
+            in: "query",
+            name: "period",
+            required: false,
+            schema: {
+              type: "string",
+              enum: ["daily", "weekly", "monthly"]
+            },
+            description: "Optional relative ranking window. Defaults to monthly"
+          }
+        ],
+        responses: {
+          "200": {
+            description: "Top products returned successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/AdminAnalyticsTopProductsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid top-products query filters",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/UnauthorizedErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to view top products analytics",
             content: {
               "application/json": {
                 schema: {

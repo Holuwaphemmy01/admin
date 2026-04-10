@@ -8,15 +8,18 @@ import { createAuthenticateAdminMiddleware } from "../../src/modules/admin-auth/
 import { AuthenticatedAdmin } from "../../src/modules/admin-auth/types";
 import { createAdminAnalyticsRouter } from "../../src/modules/admin-analytics/routes";
 import {
+  AdminAnalyticsTopProductsValidationError,
   AdminAnalyticsRevenueValidationError,
   AdminAnalyticsTopSellersValidationError,
   AdminAnalyticsOverviewValidationError,
+  getAdminAnalyticsTopProducts,
   getAdminAnalyticsRevenue,
   getAdminAnalyticsTopSellers,
   getAdminAnalyticsOverview
 } from "../../src/modules/admin-analytics/service";
 import {
   AdminAnalyticsOverviewResponse,
+  AdminAnalyticsTopProductsResponse,
   AdminAnalyticsRevenueResponse,
   AdminAnalyticsTopSellersResponse
 } from "../../src/modules/admin-analytics/types";
@@ -422,6 +425,113 @@ test("getAdminAnalyticsTopSellers defaults to monthly and validates unsupported 
       limit: 0
     })
   ).rejects.toThrow("limit must be a positive integer");
+});
+
+test("getAdminAnalyticsTopProducts returns ranked products for the requested filters", async () => {
+  const fixedNow = new Date("2026-04-10T19:00:00.000Z");
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await getAdminAnalyticsTopProducts(
+    {
+      limit: 7,
+      categoryId: 9,
+      period: "weekly"
+    },
+    {
+      nowFactory: () => fixedNow,
+      queryFn: async <T extends QueryResultRow = QueryResultRow>(
+        text: string,
+        params?: unknown[]
+      ): Promise<QueryResult<T>> => {
+        executedQueries.push({ text, params });
+
+        return createQueryResult([
+          {
+            productId: "61",
+            name: "Two phase cooker",
+            totalSold: "17",
+            revenue: "76500",
+            seller: "hinocag"
+          },
+          {
+            productId: 62,
+            name: "Washing machine",
+            totalSold: 13,
+            revenue: "117000",
+            seller: "hinocag"
+          }
+        ]) as unknown as QueryResult<T>;
+      }
+    }
+  );
+
+  expect(response).toEqual({
+    products: [
+      {
+        productId: 61,
+        name: "Two phase cooker",
+        totalSold: 17,
+        revenue: 76500,
+        seller: "hinocag"
+      },
+      {
+        productId: 62,
+        name: "Washing machine",
+        totalSold: 13,
+        revenue: 117000,
+        seller: "hinocag"
+      }
+    ]
+  });
+  expect(executedQueries).toHaveLength(1);
+  expect(executedQueries[0]?.text).toContain("FROM public.earnings e");
+  expect(executedQueries[0]?.text).toContain('INNER JOIN public.cart c ON c.id::bigint = o."cartId"');
+  expect(executedQueries[0]?.text).toContain('LEFT JOIN public.product p ON p.id::bigint = c."productId"');
+  expect(executedQueries[0]?.text).toContain('AND ($3::bigint IS NULL OR p."productCategoryId" = $3::bigint)');
+  expect(executedQueries[0]?.params).toEqual([fixedNow, "weekly", 9, 7]);
+});
+
+test("getAdminAnalyticsTopProducts defaults to monthly and validates unsupported filters", async () => {
+  const fixedNow = new Date("2026-04-10T19:30:00.000Z");
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await getAdminAnalyticsTopProducts(
+    {},
+    {
+      nowFactory: () => fixedNow,
+      queryFn: async <T extends QueryResultRow = QueryResultRow>(
+        text: string,
+        params?: unknown[]
+      ): Promise<QueryResult<T>> => {
+        executedQueries.push({ text, params });
+
+        return createQueryResult([]) as unknown as QueryResult<T>;
+      }
+    }
+  );
+
+  expect(response).toEqual({
+    products: []
+  });
+  expect(executedQueries[0]?.params).toEqual([fixedNow, "monthly", null, 10]);
+
+  await expect(
+    getAdminAnalyticsTopProducts({
+      period: "yearly" as never
+    })
+  ).rejects.toThrow(AdminAnalyticsTopProductsValidationError);
+
+  await expect(
+    getAdminAnalyticsTopProducts({
+      limit: 0
+    })
+  ).rejects.toThrow("limit must be a positive integer");
+
+  await expect(
+    getAdminAnalyticsTopProducts({
+      categoryId: 0
+    })
+  ).rejects.toThrow("categoryId must be a positive integer");
 });
 
 test("GET /admin/analytics/overview returns 401 when the admin token is missing", async () => {
@@ -986,6 +1096,206 @@ test("GET /admin/analytics/top_sellers parses filters and returns the seller ran
           totalOrders: 9,
           totalRevenue: 127500.5,
           rating: 4.75
+        }
+      ]
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/analytics/top_products returns 401 when the admin token is missing", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/analytics",
+    createAdminAnalyticsRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/analytics/top_products`);
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/analytics/top_products returns 403 for non-super-admins", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/analytics",
+    createAdminAnalyticsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "support"
+        })
+      ),
+      getAdminAnalyticsTopProductsHandler: async () => {
+        throw new Error("This handler should not be called when access is forbidden");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/analytics/top_products`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/analytics/top_products validates query filters and maps service validation errors", async () => {
+  let server;
+  const validationApplication = express();
+
+  validationApplication.use(
+    "/admin/analytics",
+    createAdminAnalyticsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getAdminAnalyticsTopProductsHandler: async () => {
+        throw new Error("This handler should not be called when query validation fails");
+      }
+    })
+  );
+
+  server = await startTestServer(validationApplication);
+
+  try {
+    let response = await fetch(`${server.baseUrl}/admin/analytics/top_products?limit=abc`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "limit must be a positive integer"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/analytics/top_products?categoryId=abc`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "categoryId must be a positive integer"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/analytics/top_products?period=yearly`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "period must be one of daily, weekly, monthly"
+    });
+  } finally {
+    await server.close();
+  }
+
+  const serviceValidationApplication = express();
+
+  serviceValidationApplication.use(
+    "/admin/analytics",
+    createAdminAnalyticsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getAdminAnalyticsTopProductsHandler: async () => {
+        throw new AdminAnalyticsTopProductsValidationError(
+          "categoryId must be a positive integer"
+        );
+      }
+    })
+  );
+
+  server = await startTestServer(serviceValidationApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/analytics/top_products?categoryId=7`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "categoryId must be a positive integer"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/analytics/top_products parses filters and returns the product ranking payload", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/analytics",
+    createAdminAnalyticsRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getAdminAnalyticsTopProductsHandler: async (
+        filters
+      ): Promise<AdminAnalyticsTopProductsResponse> => {
+        expect(filters).toEqual({
+          limit: 25,
+          categoryId: 9,
+          period: "daily"
+        });
+
+        return {
+          products: [
+            {
+              productId: 61,
+              name: "Two phase cooker",
+              totalSold: 17,
+              revenue: 76500,
+              seller: "hinocag"
+            }
+          ]
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(
+      `${server.baseUrl}/admin/analytics/top_products?limit=25&categoryId=9&period=daily`,
+      {
+        headers: {
+          Authorization: "Bearer any-token"
+        }
+      }
+    );
+
+    expect(response.status).toBe(200);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      products: [
+        {
+          productId: 61,
+          name: "Two phase cooker",
+          totalSold: 17,
+          revenue: 76500,
+          seller: "hinocag"
         }
       ]
     });

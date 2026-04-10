@@ -10,12 +10,18 @@ import {
   AdminAnalyticsRevenueResponse,
   AdminAnalyticsOverviewPeriod,
   AdminAnalyticsOverviewResponse,
+  AdminAnalyticsTopProductsFilters,
+  AdminAnalyticsTopProductsPeriod,
+  AdminAnalyticsTopProductsResponse,
   AdminAnalyticsTopSellersFilters,
   AdminAnalyticsTopSellersPeriod,
   AdminAnalyticsTopSellersResponse,
   DEFAULT_ADMIN_ANALYTICS_OVERVIEW_PERIOD,
+  DEFAULT_ADMIN_ANALYTICS_TOP_PRODUCTS_LIMIT,
+  DEFAULT_ADMIN_ANALYTICS_TOP_PRODUCTS_PERIOD,
   DEFAULT_ADMIN_ANALYTICS_TOP_SELLERS_LIMIT,
   DEFAULT_ADMIN_ANALYTICS_TOP_SELLERS_PERIOD,
+  MAX_ADMIN_ANALYTICS_TOP_PRODUCTS_LIMIT,
   MAX_ADMIN_ANALYTICS_TOP_SELLERS_LIMIT,
   DEFAULT_ADMIN_ANALYTICS_REVENUE_GROUP_BY
 } from "./types";
@@ -69,6 +75,14 @@ interface AdminAnalyticsTopSellerRow extends QueryResultRow {
   rating: string | number | null;
 }
 
+interface AdminAnalyticsTopProductRow extends QueryResultRow {
+  productId: string | number | null;
+  name: string | null;
+  totalSold: string | number | null;
+  revenue: string | number | null;
+  seller: string | null;
+}
+
 export class AdminAnalyticsOverviewValidationError extends Error {
   constructor(message: string) {
     super(message);
@@ -87,6 +101,13 @@ export class AdminAnalyticsTopSellersValidationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "AdminAnalyticsTopSellersValidationError";
+  }
+}
+
+export class AdminAnalyticsTopProductsValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AdminAnalyticsTopProductsValidationError";
   }
 }
 
@@ -229,6 +250,68 @@ function normalizeTopSellersFilters(
   return {
     limit: normalizeTopSellersLimit(filters.limit),
     period: normalizeTopSellersPeriod(filters.period)
+  };
+}
+
+function normalizeTopProductsPeriod(
+  period: string | undefined
+): AdminAnalyticsTopProductsPeriod {
+  if (period === undefined) {
+    return DEFAULT_ADMIN_ANALYTICS_TOP_PRODUCTS_PERIOD;
+  }
+
+  const normalizedPeriod = period.trim().toLowerCase();
+
+  if (
+    normalizedPeriod !== "daily" &&
+    normalizedPeriod !== "weekly" &&
+    normalizedPeriod !== "monthly"
+  ) {
+    throw new AdminAnalyticsTopProductsValidationError(
+      "period must be one of daily, weekly, monthly"
+    );
+  }
+
+  return normalizedPeriod;
+}
+
+function normalizeTopProductsLimit(limit: number | undefined): number {
+  if (limit === undefined) {
+    return DEFAULT_ADMIN_ANALYTICS_TOP_PRODUCTS_LIMIT;
+  }
+
+  if (!Number.isInteger(limit) || limit <= 0) {
+    throw new AdminAnalyticsTopProductsValidationError("limit must be a positive integer");
+  }
+
+  return Math.min(limit, MAX_ADMIN_ANALYTICS_TOP_PRODUCTS_LIMIT);
+}
+
+function normalizeTopProductsCategoryId(categoryId: number | undefined): number | undefined {
+  if (categoryId === undefined) {
+    return undefined;
+  }
+
+  if (!Number.isInteger(categoryId) || categoryId <= 0) {
+    throw new AdminAnalyticsTopProductsValidationError(
+      "categoryId must be a positive integer"
+    );
+  }
+
+  return categoryId;
+}
+
+function normalizeTopProductsFilters(
+  filters: AdminAnalyticsTopProductsFilters = {}
+): {
+  limit: number;
+  categoryId?: number;
+  period: AdminAnalyticsTopProductsPeriod;
+} {
+  return {
+    limit: normalizeTopProductsLimit(filters.limit),
+    categoryId: normalizeTopProductsCategoryId(filters.categoryId),
+    period: normalizeTopProductsPeriod(filters.period)
   };
 }
 
@@ -651,6 +734,65 @@ export async function getAdminAnalyticsTopSellers(
       totalOrders: mapRequiredNonNegativeInteger(seller.totalOrders, "totalOrders"),
       totalRevenue: mapRequiredNumber(seller.totalRevenue, "totalRevenue"),
       rating: mapRequiredNumber(seller.rating, "rating")
+    }))
+  };
+}
+
+export async function getAdminAnalyticsTopProducts(
+  filters: AdminAnalyticsTopProductsFilters = {},
+  dependencies: AdminAnalyticsServiceDependencies = {}
+): Promise<AdminAnalyticsTopProductsResponse> {
+  const queryFn = getQueryFn(dependencies);
+  const now = getNowFactory(dependencies)();
+  const normalizedFilters = normalizeTopProductsFilters(filters);
+  const result = await queryFn<AdminAnalyticsTopProductRow>(
+    [
+      "WITH bounds AS (",
+      "  SELECT",
+      "    CASE",
+      "      WHEN $2::text = 'daily' THEN date_trunc('day', $1::timestamptz)",
+      "      WHEN $2::text = 'weekly' THEN date_trunc('week', $1::timestamptz)",
+      "      WHEN $2::text = 'monthly' THEN date_trunc('month', $1::timestamptz)",
+      '      ELSE NULL::timestamptz',
+      '    END AS "fromDate",',
+      "    CASE",
+      "      WHEN $2::text = 'daily' THEN date_trunc('day', $1::timestamptz) + INTERVAL '1 day'",
+      "      WHEN $2::text = 'weekly' THEN date_trunc('week', $1::timestamptz) + INTERVAL '1 week'",
+      "      WHEN $2::text = 'monthly' THEN date_trunc('month', $1::timestamptz) + INTERVAL '1 month'",
+      '      ELSE NULL::timestamptz',
+      '    END AS "toDate"',
+      ")",
+      "SELECT",
+      '  c."productId" AS "productId",',
+      "  COALESCE(NULLIF(BTRIM(p.name), ''), CONCAT('Product #', c.\"productId\"::text)) AS name,",
+      '  COALESCE(SUM(c.quantity), 0)::int AS "totalSold",',
+      '  COALESCE(SUM(COALESCE(c.amount, COALESCE(c."unitPrice", 0) * COALESCE(c.quantity, 0))), 0)::numeric AS revenue,',
+      '  COALESCE(NULLIF(BTRIM(seller.username), \'\'), NULLIF(BTRIM(o."sellerUsername"), \'\'), \'Unknown seller\') AS seller',
+      "FROM public.earnings e",
+      "INNER JOIN public.order_tb o ON o.id = e.\"orderTbId\"",
+      "INNER JOIN public.cart c ON c.id::bigint = o.\"cartId\"",
+      'LEFT JOIN public.product p ON p.id::bigint = c."productId"',
+      'LEFT JOIN public."user" seller ON seller.id = e."userId"',
+      "CROSS JOIN bounds",
+      "WHERE e.type = 'seller'",
+      '  AND c."productId" IS NOT NULL',
+      '  AND e."createdAt" >= bounds."fromDate"',
+      '  AND e."createdAt" < bounds."toDate"',
+      '  AND ($3::bigint IS NULL OR p."productCategoryId" = $3::bigint)',
+      'GROUP BY c."productId", name, seller',
+      'ORDER BY "totalSold" DESC, revenue DESC, name ASC, c."productId" ASC',
+      "LIMIT $4"
+    ].join("\n"),
+    [now, normalizedFilters.period, normalizedFilters.categoryId ?? null, normalizedFilters.limit]
+  );
+
+  return {
+    products: result.rows.map((product) => ({
+      productId: mapRequiredNonNegativeInteger(product.productId, "productId"),
+      name: mapRequiredText(product.name, "name"),
+      totalSold: mapRequiredNonNegativeInteger(product.totalSold, "totalSold"),
+      revenue: mapRequiredNumber(product.revenue, "revenue"),
+      seller: mapRequiredText(product.seller, "seller")
     }))
   };
 }

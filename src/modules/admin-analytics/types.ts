@@ -20,6 +20,14 @@ export const ADMIN_ANALYTICS_TOP_SELLERS_PERIODS = [
 export const DEFAULT_ADMIN_ANALYTICS_TOP_SELLERS_PERIOD = "monthly";
 export const DEFAULT_ADMIN_ANALYTICS_TOP_SELLERS_LIMIT = 10;
 export const MAX_ADMIN_ANALYTICS_TOP_SELLERS_LIMIT = 100;
+export const ADMIN_ANALYTICS_TOP_PRODUCTS_PERIODS = [
+  "daily",
+  "weekly",
+  "monthly"
+] as const;
+export const DEFAULT_ADMIN_ANALYTICS_TOP_PRODUCTS_PERIOD = "monthly";
+export const DEFAULT_ADMIN_ANALYTICS_TOP_PRODUCTS_LIMIT = 10;
+export const MAX_ADMIN_ANALYTICS_TOP_PRODUCTS_LIMIT = 100;
 
 export type AdminAnalyticsOverviewPeriod =
   (typeof ADMIN_ANALYTICS_OVERVIEW_PERIODS)[number];
@@ -27,6 +35,8 @@ export type AdminAnalyticsRevenueGroupBy =
   (typeof ADMIN_ANALYTICS_REVENUE_GROUP_BY_VALUES)[number];
 export type AdminAnalyticsTopSellersPeriod =
   (typeof ADMIN_ANALYTICS_TOP_SELLERS_PERIODS)[number];
+export type AdminAnalyticsTopProductsPeriod =
+  (typeof ADMIN_ANALYTICS_TOP_PRODUCTS_PERIODS)[number];
 
 export interface AdminAnalyticsOverviewResponse {
   totalUsers: number;
@@ -86,4 +96,22 @@ export interface AdminAnalyticsTopSellerItem {
 
 export interface AdminAnalyticsTopSellersResponse {
   sellers: AdminAnalyticsTopSellerItem[];
+}
+
+export interface AdminAnalyticsTopProductsFilters {
+  limit?: number;
+  categoryId?: number;
+  period?: AdminAnalyticsTopProductsPeriod;
+}
+
+export interface AdminAnalyticsTopProductItem {
+  productId: number;
+  name: string;
+  totalSold: number;
+  revenue: number;
+  seller: string;
+}
+
+export interface AdminAnalyticsTopProductsResponse {
+  products: AdminAnalyticsTopProductItem[];
 }

@@ -2,6 +2,8 @@ import { Request, RequestHandler, Response, Router } from "express";
 
 import { authenticateAdmin, requireAdminRole } from "../admin-auth/middleware";
 import {
+  getAdminAnalyticsTopProducts,
+  AdminAnalyticsTopProductsValidationError,
   getAdminAnalyticsTopSellers,
   AdminAnalyticsTopSellersValidationError,
   getAdminAnalyticsRevenue,
@@ -14,12 +16,16 @@ import {
   AdminAnalyticsRevenueFilters,
   AdminAnalyticsRevenueGroupBy,
   AdminAnalyticsRevenueResponse,
+  AdminAnalyticsTopProductsFilters,
+  AdminAnalyticsTopProductsPeriod,
+  AdminAnalyticsTopProductsResponse,
   AdminAnalyticsTopSellersFilters,
   AdminAnalyticsTopSellersPeriod,
   AdminAnalyticsTopSellersResponse
 } from "./types";
 
 interface AdminAnalyticsRouterDependencies {
+  getAdminAnalyticsTopProductsHandler?: typeof getAdminAnalyticsTopProducts;
   getAdminAnalyticsTopSellersHandler?: typeof getAdminAnalyticsTopSellers;
   getAdminAnalyticsRevenueHandler?: typeof getAdminAnalyticsRevenue;
   getAdminAnalyticsOverviewHandler?: typeof getAdminAnalyticsOverview;
@@ -95,6 +101,22 @@ function parseTopSellersPeriod(value: string): AdminAnalyticsTopSellersPeriod {
   return normalizedValue;
 }
 
+function parseTopProductsPeriod(value: string): AdminAnalyticsTopProductsPeriod {
+  const normalizedValue = value.trim().toLowerCase();
+
+  if (
+    normalizedValue !== "daily" &&
+    normalizedValue !== "weekly" &&
+    normalizedValue !== "monthly"
+  ) {
+    throw new AdminAnalyticsQueryValidationError(
+      "period must be one of daily, weekly, monthly"
+    );
+  }
+
+  return normalizedValue;
+}
+
 function parsePositiveInteger(value: string, fieldName: string): number {
   if (!/^\d+$/.test(value)) {
     throw new AdminAnalyticsQueryValidationError(`${fieldName} must be a positive integer`);
@@ -125,6 +147,8 @@ export function createAdminAnalyticsRouter(
   dependencies: AdminAnalyticsRouterDependencies = {}
 ): Router {
   const adminAnalyticsRouter = Router();
+  const getAdminAnalyticsTopProductsHandler =
+    dependencies.getAdminAnalyticsTopProductsHandler ?? getAdminAnalyticsTopProducts;
   const getAdminAnalyticsTopSellersHandler =
     dependencies.getAdminAnalyticsTopSellersHandler ?? getAdminAnalyticsTopSellers;
   const getAdminAnalyticsRevenueHandler =
@@ -205,6 +229,58 @@ export function createAdminAnalyticsRouter(
         if (
           error instanceof AdminAnalyticsQueryValidationError ||
           error instanceof AdminAnalyticsTopSellersValidationError
+        ) {
+          response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
+
+  adminAnalyticsRouter.get(
+    "/top_products",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      try {
+        const limitQuery = readSingleQueryValue(request.query.limit);
+        const categoryIdQuery = readSingleQueryValue(request.query.categoryId);
+        const periodQuery = readSingleQueryValue(request.query.period);
+        const filters: AdminAnalyticsTopProductsFilters = {};
+
+        if (typeof limitQuery === "string" && limitQuery !== "") {
+          filters.limit = parsePositiveInteger(limitQuery, "limit");
+        } else if (limitQuery === "") {
+          throw new AdminAnalyticsQueryValidationError("limit must be a positive integer");
+        }
+
+        if (typeof categoryIdQuery === "string" && categoryIdQuery !== "") {
+          filters.categoryId = parsePositiveInteger(categoryIdQuery, "categoryId");
+        } else if (categoryIdQuery === "") {
+          throw new AdminAnalyticsQueryValidationError("categoryId must be a positive integer");
+        }
+
+        if (typeof periodQuery === "string" && periodQuery !== "") {
+          filters.period = parseTopProductsPeriod(periodQuery);
+        } else if (periodQuery === "") {
+          throw new AdminAnalyticsQueryValidationError(
+            "period must be one of daily, weekly, monthly"
+          );
+        }
+
+        const topProductsResponse: AdminAnalyticsTopProductsResponse =
+          await getAdminAnalyticsTopProductsHandler(filters);
+
+        response.json(topProductsResponse);
+      } catch (error) {
+        if (
+          error instanceof AdminAnalyticsQueryValidationError ||
+          error instanceof AdminAnalyticsTopProductsValidationError
         ) {
           response.status(400).json({
             message: error.message
