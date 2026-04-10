@@ -49,3 +49,18 @@ export interface AdminSupportTicketDetails {
 export interface AdminSupportTicketDetailsResponse {
   ticket: AdminSupportTicketDetails;
 }
+
+export interface AdminSupportTicketReplySignedParams {
+  url: string;
+  fields: Record<string, string>;
+}
+
+export interface ReplyToAdminSupportTicketRequest {
+  ticketId: number;
+  message: string;
+  attachmentFileType?: string;
+}
+
+export interface ReplyToAdminSupportTicketResponse {
+  signedParams: AdminSupportTicketReplySignedParams | null;
+}

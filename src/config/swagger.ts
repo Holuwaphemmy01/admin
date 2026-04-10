@@ -1113,6 +1113,58 @@ export const swaggerSpec = {
           }
         }
       },
+      AdminSupportTicketReplySignedParams: {
+        type: "object",
+        properties: {
+          url: {
+            type: "string",
+            example: "https://uploads.example.com/support"
+          },
+          fields: {
+            type: "object",
+            additionalProperties: {
+              type: "string"
+            },
+            example: {
+              key: "support/tickets/3/replies/reply-file-id",
+              "Content-Type": "image/png"
+            }
+          }
+        }
+      },
+      ReplyToAdminSupportTicketRequest: {
+        type: "object",
+        required: ["ticketId", "message"],
+        properties: {
+          ticketId: {
+            type: "integer",
+            example: 3
+          },
+          message: {
+            type: "string",
+            example: "Please see the attached screenshot"
+          },
+          attachmentFileType: {
+            type: "string",
+            example: "image/png"
+          }
+        }
+      },
+      ReplyToAdminSupportTicketResponse: {
+        type: "object",
+        properties: {
+          signedParams: {
+            allOf: [
+              {
+                $ref: "#/components/schemas/AdminSupportTicketReplySignedParams"
+              }
+            ],
+            nullable: true,
+            description:
+              "Signed upload params returned when an attachment upload is requested and signing is available."
+          }
+        }
+      },
       AdminCampaignDetailsResponse: {
         type: "object",
         properties: {
@@ -3960,6 +4012,92 @@ export const swaggerSpec = {
           },
           "403": {
             description: "Authenticated admin is not allowed to view support tickets",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "Support ticket not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/support/tickets/{ticketId}/reply": {
+      post: {
+        tags: ["Support & Tickets"],
+        summary: "Admin reply to a ticket",
+        description:
+          "Creates an admin reply for a support ticket and optionally returns signed upload params for an attachment when available.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "path",
+            name: "ticketId",
+            required: true,
+            schema: {
+              type: "integer"
+            },
+            description: "Support ticket identifier"
+          }
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/ReplyToAdminSupportTicketRequest"
+              }
+            }
+          }
+        },
+        responses: {
+          "200": {
+            description: "Support ticket reply created successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ReplyToAdminSupportTicketResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid support ticket reply request",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/UnauthorizedErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to reply to support tickets",
             content: {
               "application/json": {
                 schema: {

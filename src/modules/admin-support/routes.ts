@@ -6,18 +6,21 @@ import {
   DEFAULT_ADMIN_SUPPORT_TICKETS_PAGE,
   MAX_ADMIN_SUPPORT_TICKETS_LIMIT,
   AdminSupportTicketStatusFilter,
-  AdminSupportTicketsListFilters
+  AdminSupportTicketsListFilters,
+  ReplyToAdminSupportTicketRequest
 } from "./types";
 import {
   AdminSupportTicketNotFoundError,
   AdminSupportTicketsValidationError,
   getAdminSupportTicketDetails,
-  listAdminSupportTickets
+  listAdminSupportTickets,
+  replyToAdminSupportTicket
 } from "./service";
 
 interface AdminSupportRouterDependencies {
   getAdminSupportTicketDetailsHandler?: typeof getAdminSupportTicketDetails;
   listAdminSupportTicketsHandler?: typeof listAdminSupportTickets;
+  replyToAdminSupportTicketHandler?: typeof replyToAdminSupportTicket;
   authenticateAdminMiddleware?: RequestHandler;
   requireSuperAdminMiddleware?: RequestHandler;
 }
@@ -39,6 +42,14 @@ function readSingleQueryValue(value: unknown): string | undefined {
   }
 
   return undefined;
+}
+
+function readSingleBodyValue(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  return value.trim();
 }
 
 function parsePositiveInteger(value: string, fieldName: string): number {
@@ -71,6 +82,34 @@ function parseTicketStatus(value: string): AdminSupportTicketStatusFilter {
   return normalizedValue;
 }
 
+function parseBodyTicketId(value: unknown): number {
+  if (typeof value === "number") {
+    if (!Number.isInteger(value) || value <= 0) {
+      throw new AdminSupportQueryValidationError(
+        "ticketId is required and must be a positive integer"
+      );
+    }
+
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const normalizedValue = value.trim();
+
+    if (normalizedValue === "") {
+      throw new AdminSupportQueryValidationError(
+        "ticketId is required and must be a positive integer"
+      );
+    }
+
+    return parsePositiveInteger(normalizedValue, "ticketId");
+  }
+
+  throw new AdminSupportQueryValidationError(
+    "ticketId is required and must be a positive integer"
+  );
+}
+
 export function createAdminSupportRouter(
   dependencies: AdminSupportRouterDependencies = {}
 ): Router {
@@ -79,10 +118,94 @@ export function createAdminSupportRouter(
     dependencies.getAdminSupportTicketDetailsHandler ?? getAdminSupportTicketDetails;
   const listAdminSupportTicketsHandler =
     dependencies.listAdminSupportTicketsHandler ?? listAdminSupportTickets;
+  const replyToAdminSupportTicketHandler =
+    dependencies.replyToAdminSupportTicketHandler ?? replyToAdminSupportTicket;
   const authenticateAdminMiddleware =
     dependencies.authenticateAdminMiddleware ?? authenticateAdmin;
   const requireSuperAdminMiddleware =
     dependencies.requireSuperAdminMiddleware ?? requireAdminRole("super_admin");
+
+  adminSupportRouter.post(
+    "/tickets/:ticketId/reply",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      const rawTicketId = request.params.ticketId;
+      const ticketId = (
+        Array.isArray(rawTicketId) ? rawTicketId[0] ?? "" : rawTicketId ?? ""
+      ).trim();
+
+      if (!/^\d+$/.test(ticketId) || Number(ticketId) <= 0) {
+        response.status(400).json({
+          message: "ticketId must be a positive integer"
+        });
+
+        return;
+      }
+
+      try {
+        const body =
+          typeof request.body === "object" && request.body !== null
+            ? (request.body as Record<string, unknown>)
+            : {};
+        const bodyTicketId = parseBodyTicketId(body.ticketId);
+        const message = readSingleBodyValue(body.message);
+        const attachmentFileType = readSingleBodyValue(body.attachmentFileType);
+
+        if (bodyTicketId !== Number(ticketId)) {
+          throw new AdminSupportQueryValidationError(
+            "ticketId in request body must match the path ticketId"
+          );
+        }
+
+        if (typeof message !== "string" || message === "") {
+          throw new AdminSupportQueryValidationError(
+            "message is required and must be a non-empty string"
+          );
+        }
+
+        const payload: ReplyToAdminSupportTicketRequest = {
+          ticketId: bodyTicketId,
+          message
+        };
+
+        if (body.attachmentFileType !== undefined) {
+          if (typeof attachmentFileType !== "string" || attachmentFileType === "") {
+            throw new AdminSupportQueryValidationError(
+              "attachmentFileType must be a non-empty string when provided"
+            );
+          }
+
+          payload.attachmentFileType = attachmentFileType;
+        }
+
+        const replyResponse = await replyToAdminSupportTicketHandler(payload);
+
+        response.json(replyResponse);
+      } catch (error) {
+        if (
+          error instanceof AdminSupportQueryValidationError ||
+          error instanceof AdminSupportTicketsValidationError
+        ) {
+          response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof AdminSupportTicketNotFoundError) {
+          response.status(404).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
 
   adminSupportRouter.get(
     "/tickets/:ticketId",

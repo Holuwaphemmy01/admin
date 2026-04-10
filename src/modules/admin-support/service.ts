@@ -1,11 +1,16 @@
+import { randomUUID } from "node:crypto";
+
 import { QueryResult, QueryResultRow } from "pg";
 
 import { query } from "../../config/db";
 import {
-  AdminSupportTicketStatusFilter,
   AdminSupportTicketDetailsResponse,
+  AdminSupportTicketReplySignedParams,
+  AdminSupportTicketStatusFilter,
   AdminSupportTicketsListFilters,
-  AdminSupportTicketsListResponse
+  AdminSupportTicketsListResponse,
+  ReplyToAdminSupportTicketRequest,
+  ReplyToAdminSupportTicketResponse
 } from "./types";
 
 type QueryFunction = <T extends QueryResultRow = QueryResultRow>(
@@ -13,8 +18,24 @@ type QueryFunction = <T extends QueryResultRow = QueryResultRow>(
   params?: unknown[]
 ) => Promise<QueryResult<T>>;
 
+interface CreateAdminSupportReplySignedParamsInput {
+  attachmentFileType: string;
+  attachmentKey: string;
+  ticketId: number;
+}
+
+type CreateAdminSupportReplySignedParams = (
+  input: CreateAdminSupportReplySignedParamsInput
+) =>
+  | Promise<AdminSupportTicketReplySignedParams | null>
+  | AdminSupportTicketReplySignedParams
+  | null;
+
 interface AdminSupportServiceDependencies {
   queryFn?: QueryFunction;
+  nowFactory?: () => Date;
+  uuidFactory?: () => string;
+  createReplySignedParams?: CreateAdminSupportReplySignedParams;
 }
 
 interface AdminSupportTicketRow extends QueryResultRow {
@@ -32,7 +53,9 @@ interface TotalCountRow extends QueryResultRow {
 interface AdminSupportTicketDetailsRow extends QueryResultRow {
   id: string | number;
   userId: string | number | null;
+  ticketCategoryId: string | number | null;
   username: string | null;
+  owner: string | null;
   subject: string | null;
   message: string | null;
   attachment: string | null;
@@ -40,6 +63,15 @@ interface AdminSupportTicketDetailsRow extends QueryResultRow {
   reply: boolean | null;
   status: string | number | null;
   createdAt: Date;
+}
+
+interface AdminSupportTicketInsertRow extends QueryResultRow {
+  id: string | number;
+}
+
+interface AdminSupportTicketThread {
+  subject: string | null;
+  rows: AdminSupportTicketDetailsRow[];
 }
 
 export class AdminSupportTicketsValidationError extends Error {
@@ -58,6 +90,18 @@ export class AdminSupportTicketNotFoundError extends Error {
 
 function getQueryFn(dependencies: AdminSupportServiceDependencies = {}): QueryFunction {
   return dependencies.queryFn ?? query;
+}
+
+function getNowFactory(
+  dependencies: AdminSupportServiceDependencies = {}
+): () => Date {
+  return dependencies.nowFactory ?? (() => new Date());
+}
+
+function getUuidFactory(
+  dependencies: AdminSupportServiceDependencies = {}
+): () => string {
+  return dependencies.uuidFactory ?? randomUUID;
 }
 
 function normalizePositiveInteger(value: number, fieldName: string): number {
@@ -100,7 +144,62 @@ function normalizeOptionalUsername(value: string | undefined): string | undefine
   return normalizedValue;
 }
 
+function normalizeRequiredMessage(value: string): string {
+  if (typeof value !== "string") {
+    throw new AdminSupportTicketsValidationError("message is required and must be a non-empty string");
+  }
+
+  const normalizedValue = value.trim();
+
+  if (normalizedValue === "") {
+    throw new AdminSupportTicketsValidationError("message is required and must be a non-empty string");
+  }
+
+  return normalizedValue;
+}
+
+function normalizeOptionalAttachmentFileType(
+  value: string | undefined
+): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== "string") {
+    throw new AdminSupportTicketsValidationError(
+      "attachmentFileType must be a non-empty string when provided"
+    );
+  }
+
+  const normalizedValue = value.trim();
+
+  if (normalizedValue === "") {
+    throw new AdminSupportTicketsValidationError(
+      "attachmentFileType must be a non-empty string when provided"
+    );
+  }
+
+  return normalizedValue;
+}
+
 function mapRequiredInteger(value: string | number | null, fieldName: string): number {
+  const numericValue = typeof value === "number" ? value : Number(value);
+
+  if (!Number.isInteger(numericValue) || numericValue < 0) {
+    throw new Error(`Admin support tickets query returned an invalid ${fieldName} value`);
+  }
+
+  return numericValue;
+}
+
+function mapOptionalInteger(
+  value: string | number | null | undefined,
+  fieldName: string
+): number | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
   const numericValue = typeof value === "number" ? value : Number(value);
 
   if (!Number.isInteger(numericValue) || numericValue < 0) {
@@ -171,6 +270,20 @@ function mapTicketStatus(
   return "closed";
 }
 
+function mapStoredTicketStatusValue(value: string | number | null | undefined): number {
+  if (value === null || value === undefined) {
+    return 1;
+  }
+
+  const numericValue = typeof value === "number" ? value : Number(value);
+
+  if (!Number.isInteger(numericValue) || numericValue < 0) {
+    throw new Error("Admin support tickets query returned an invalid status value");
+  }
+
+  return numericValue;
+}
+
 function buildSupportTicketFilters(filters: AdminSupportTicketsListFilters): {
   whereSql: string;
   params: unknown[];
@@ -207,6 +320,151 @@ function buildSupportTicketFilters(filters: AdminSupportTicketsListFilters): {
     whereSql: `WHERE ${clauses.join(" AND ")}`,
     params
   };
+}
+
+function getAdminSupportTicketSelectLines(): string[] {
+  return [
+    "SELECT",
+    "  st.id,",
+    '  st."userId" AS "userId",',
+    '  st."ticketCategoryId" AS "ticketCategoryId",',
+    `  COALESCE(NULLIF(BTRIM(u.username), ''), NULLIF(BTRIM(st.owner), '')) AS username,`,
+    "  st.owner,",
+    "  st.subject,",
+    "  st.message,",
+    "  st.attachment,",
+    '  st."attachmentFileType" AS "attachmentFileType",',
+    "  st.reply,",
+    "  st.status,",
+    '  st."createdAt" AS "createdAt"',
+    "FROM public.support_ticket st",
+    'LEFT JOIN public."user" u ON u.id = st."userId"'
+  ];
+}
+
+async function getAdminSupportTicketRow(
+  ticketId: number,
+  queryFn: QueryFunction
+): Promise<AdminSupportTicketDetailsRow> {
+  const targetResult = await queryFn<AdminSupportTicketDetailsRow>(
+    [...getAdminSupportTicketSelectLines(), "WHERE st.id = $1", "LIMIT 1"].join("\n"),
+    [ticketId]
+  );
+  const targetTicket = targetResult.rows[0];
+
+  if (!targetTicket) {
+    throw new AdminSupportTicketNotFoundError("Support ticket not found");
+  }
+
+  return targetTicket;
+}
+
+async function listAdminSupportTicketThreadRows(
+  targetTicket: AdminSupportTicketDetailsRow,
+  queryFn: QueryFunction
+): Promise<AdminSupportTicketDetailsRow[]> {
+  const targetUserId = mapOptionalInteger(targetTicket.userId, "userId");
+
+  if (targetUserId !== null) {
+    const threadRowsResult = await queryFn<AdminSupportTicketDetailsRow>(
+      [
+        ...getAdminSupportTicketSelectLines(),
+        'WHERE st."userId" = $1',
+        'ORDER BY st."createdAt" ASC, st.id ASC'
+      ].join("\n"),
+      [targetUserId]
+    );
+
+    return threadRowsResult.rows;
+  }
+
+  const targetOwner = mapOptionalText(targetTicket.owner);
+
+  if (targetOwner !== null) {
+    const threadRowsResult = await queryFn<AdminSupportTicketDetailsRow>(
+      [
+        ...getAdminSupportTicketSelectLines(),
+        "WHERE LOWER(BTRIM(st.owner)) = LOWER($1)",
+        'ORDER BY st."createdAt" ASC, st.id ASC'
+      ].join("\n"),
+      [targetOwner]
+    );
+
+    return threadRowsResult.rows;
+  }
+
+  return [targetTicket];
+}
+
+function groupAdminSupportTicketThreads(
+  rows: AdminSupportTicketDetailsRow[]
+): AdminSupportTicketThread[] {
+  const groupedThreads: AdminSupportTicketThread[] = [];
+
+  for (const row of rows) {
+    const normalizedSubject = mapOptionalText(row.subject);
+    const currentThread = groupedThreads[groupedThreads.length - 1];
+
+    if (!currentThread) {
+      groupedThreads.push({
+        subject: normalizedSubject,
+        rows: [row]
+      });
+      continue;
+    }
+
+    if (normalizedSubject === null) {
+      currentThread.rows.push(row);
+      continue;
+    }
+
+    if (
+      currentThread.subject === null ||
+      normalizedSubject.toLowerCase() === currentThread.subject.toLowerCase()
+    ) {
+      if (currentThread.subject === null) {
+        currentThread.subject = normalizedSubject;
+      }
+
+      currentThread.rows.push(row);
+      continue;
+    }
+
+    groupedThreads.push({
+      subject: normalizedSubject,
+      rows: [row]
+    });
+  }
+
+  return groupedThreads;
+}
+
+function resolveAdminSupportTicketThread(
+  targetTicketId: number,
+  targetTicket: AdminSupportTicketDetailsRow,
+  threadRows: AdminSupportTicketDetailsRow[]
+): AdminSupportTicketThread {
+  const groupedThreads = groupAdminSupportTicketThreads(threadRows);
+
+  return (
+    groupedThreads.find((thread) =>
+      thread.rows.some((row) => mapRequiredInteger(row.id, "id") === targetTicketId)
+    ) ?? {
+      subject: mapOptionalText(targetTicket.subject),
+      rows: [targetTicket]
+    }
+  );
+}
+
+function resolveAdminSupportTicketSubject(
+  targetTicket: AdminSupportTicketDetailsRow,
+  thread: AdminSupportTicketThread
+): string {
+  return (
+    thread.subject ??
+    mapOptionalText(targetTicket.subject) ??
+    mapRequiredText(targetTicket.message, "message")
+  );
 }
 
 export async function listAdminSupportTickets(
@@ -281,107 +539,14 @@ export async function getAdminSupportTicketDetails(
 ): Promise<AdminSupportTicketDetailsResponse> {
   const queryFn = getQueryFn(dependencies);
   const normalizedTicketId = normalizePositiveInteger(ticketId, "ticketId");
-
-  const targetResult = await queryFn<AdminSupportTicketDetailsRow>(
-    [
-      "SELECT",
-      "  st.id,",
-      '  st."userId" AS "userId",',
-      `  COALESCE(NULLIF(BTRIM(u.username), ''), NULLIF(BTRIM(st.owner), '')) AS username,`,
-      "  st.subject,",
-      "  st.message,",
-      "  st.attachment,",
-      '  st."attachmentFileType" AS "attachmentFileType",',
-      "  st.reply,",
-      "  st.status,",
-      '  st."createdAt" AS "createdAt"',
-      "FROM public.support_ticket st",
-      'LEFT JOIN public."user" u ON u.id = st."userId"',
-      "WHERE st.id = $1",
-      "LIMIT 1"
-    ].join("\n"),
-    [normalizedTicketId]
+  const targetTicket = await getAdminSupportTicketRow(normalizedTicketId, queryFn);
+  const threadRows = await listAdminSupportTicketThreadRows(targetTicket, queryFn);
+  const matchingThread = resolveAdminSupportTicketThread(
+    normalizedTicketId,
+    targetTicket,
+    threadRows
   );
-  const targetTicket = targetResult.rows[0];
-
-  if (!targetTicket) {
-    throw new AdminSupportTicketNotFoundError("Support ticket not found");
-  }
-
-  const targetUserId = mapRequiredInteger(targetTicket.userId, "userId");
-
-  const threadRowsResult = await queryFn<AdminSupportTicketDetailsRow>(
-    [
-      "SELECT",
-      "  st.id,",
-      '  st."userId" AS "userId",',
-      `  COALESCE(NULLIF(BTRIM(u.username), ''), NULLIF(BTRIM(st.owner), '')) AS username,`,
-      "  st.subject,",
-      "  st.message,",
-      "  st.attachment,",
-      '  st."attachmentFileType" AS "attachmentFileType",',
-      "  st.reply,",
-      "  st.status,",
-      '  st."createdAt" AS "createdAt"',
-      "FROM public.support_ticket st",
-      'LEFT JOIN public."user" u ON u.id = st."userId"',
-      'WHERE st."userId" = $1',
-      'ORDER BY st."createdAt" ASC, st.id ASC'
-    ].join("\n"),
-    [targetUserId]
-  );
-
-  const groupedThreads: Array<{
-    subject: string | null;
-    rows: AdminSupportTicketDetailsRow[];
-  }> = [];
-
-  for (const row of threadRowsResult.rows) {
-    const normalizedSubject = mapOptionalText(row.subject);
-    const currentThread = groupedThreads[groupedThreads.length - 1];
-
-    if (!currentThread) {
-      groupedThreads.push({
-        subject: normalizedSubject,
-        rows: [row]
-      });
-      continue;
-    }
-
-    if (normalizedSubject === null) {
-      currentThread.rows.push(row);
-      continue;
-    }
-
-    if (currentThread.subject === null || normalizedSubject.toLowerCase() === currentThread.subject.toLowerCase()) {
-      if (currentThread.subject === null) {
-        currentThread.subject = normalizedSubject;
-      }
-
-      currentThread.rows.push(row);
-      continue;
-    }
-
-    groupedThreads.push({
-      subject: normalizedSubject,
-      rows: [row]
-    });
-  }
-
-  const matchingThread =
-    groupedThreads.find((thread) =>
-      thread.rows.some((row) => mapRequiredInteger(row.id, "id") === normalizedTicketId)
-    ) ??
-    {
-      subject: mapOptionalText(targetTicket.subject),
-      rows: [targetTicket]
-    };
-
-  const resolvedSubject =
-    matchingThread.subject ??
-    mapOptionalText(targetTicket.subject) ??
-    mapRequiredText(targetTicket.message, "message");
-
+  const resolvedSubject = resolveAdminSupportTicketSubject(targetTicket, matchingThread);
   const resolvedUsername = mapRequiredText(targetTicket.username, "username");
 
   return {
@@ -400,5 +565,116 @@ export async function getAdminSupportTicketDetails(
       status: mapTicketStatus(targetTicket.status),
       createdAt: mapRequiredDate(targetTicket.createdAt, "createdAt")
     }
+  };
+}
+
+export async function replyToAdminSupportTicket(
+  payload: ReplyToAdminSupportTicketRequest,
+  dependencies: AdminSupportServiceDependencies = {}
+): Promise<ReplyToAdminSupportTicketResponse> {
+  const queryFn = getQueryFn(dependencies);
+  const nowFactory = getNowFactory(dependencies);
+  const uuidFactory = getUuidFactory(dependencies);
+  const normalizedPayload: ReplyToAdminSupportTicketRequest = {
+    ticketId: normalizePositiveInteger(payload.ticketId, "ticketId"),
+    message: normalizeRequiredMessage(payload.message),
+    ...(payload.attachmentFileType !== undefined
+      ? {
+          attachmentFileType: normalizeOptionalAttachmentFileType(
+            payload.attachmentFileType
+          )
+        }
+      : {})
+  };
+  const targetTicket = await getAdminSupportTicketRow(normalizedPayload.ticketId, queryFn);
+  const threadRows = await listAdminSupportTicketThreadRows(targetTicket, queryFn);
+  const matchingThread = resolveAdminSupportTicketThread(
+    normalizedPayload.ticketId,
+    targetTicket,
+    threadRows
+  );
+  const resolvedSubject = resolveAdminSupportTicketSubject(targetTicket, matchingThread);
+  const targetUserId = mapOptionalInteger(targetTicket.userId, "userId");
+  const targetCategoryId = mapOptionalInteger(
+    targetTicket.ticketCategoryId,
+    "ticketCategoryId"
+  );
+  const targetOwner =
+    mapOptionalText(targetTicket.owner) ?? mapOptionalText(targetTicket.username);
+  const targetStatus = mapStoredTicketStatusValue(targetTicket.status);
+  const createdAt = nowFactory();
+  let attachment: string | null = null;
+  let attachmentFileType: string | null = null;
+  let signedParams: AdminSupportTicketReplySignedParams | null = null;
+
+  if (typeof normalizedPayload.attachmentFileType === "string") {
+    const attachmentKey = `support/tickets/${normalizedPayload.ticketId}/replies/${uuidFactory()}`;
+    const createReplySignedParams = dependencies.createReplySignedParams;
+
+    if (createReplySignedParams) {
+      signedParams = await createReplySignedParams({
+        attachmentFileType: normalizedPayload.attachmentFileType,
+        attachmentKey,
+        ticketId: normalizedPayload.ticketId
+      });
+    }
+
+    if (signedParams) {
+      attachment = attachmentKey;
+      attachmentFileType = normalizedPayload.attachmentFileType;
+    }
+  }
+
+  const insertResult = await queryFn<AdminSupportTicketInsertRow>(
+    [
+      "INSERT INTO public.support_ticket (",
+      '  "userId",',
+      '  "ticketCategoryId",',
+      "  subject,",
+      "  message,",
+      "  attachment,",
+      '  "attachmentFileType",',
+      "  owner,",
+      "  reply,",
+      "  status,",
+      '  "createdAt",',
+      '  "updatedAt"',
+      ")",
+      "VALUES (",
+      "  $1,",
+      "  $2,",
+      "  $3,",
+      "  $4,",
+      "  $5,",
+      "  $6,",
+      "  $7,",
+      "  $8,",
+      "  $9,",
+      "  $10,",
+      "  $11",
+      ")",
+      "RETURNING id"
+    ].join("\n"),
+    [
+      targetUserId,
+      targetCategoryId,
+      resolvedSubject,
+      normalizedPayload.message,
+      attachment,
+      attachmentFileType,
+      targetOwner,
+      true,
+      targetStatus,
+      createdAt,
+      createdAt
+    ]
+  );
+
+  if (!insertResult.rows[0]) {
+    throw new Error("Support ticket reply insert did not return a row");
+  }
+
+  return {
+    signedParams
   };
 }

@@ -11,11 +11,13 @@ import {
   AdminSupportTicketNotFoundError,
   AdminSupportTicketsValidationError,
   getAdminSupportTicketDetails,
-  listAdminSupportTickets
+  listAdminSupportTickets,
+  replyToAdminSupportTicket
 } from "../../src/modules/admin-support/service";
 import {
   AdminSupportTicketDetailsResponse,
-  AdminSupportTicketsListResponse
+  AdminSupportTicketsListResponse,
+  ReplyToAdminSupportTicketResponse
 } from "../../src/modules/admin-support/types";
 
 async function startTestServer(application: ReturnType<typeof express>) {
@@ -355,6 +357,275 @@ test("getAdminSupportTicketDetails validates the id and maps missing tickets", a
       queryFn: async <T extends QueryResultRow = QueryResultRow>() =>
         createQueryResult([]) as unknown as QueryResult<T>
     })
+  ).rejects.toThrow(AdminSupportTicketNotFoundError);
+});
+
+test("replyToAdminSupportTicket inserts an admin reply and returns null signed params when no attachment upload is requested", async () => {
+  const fixedNow = new Date("2026-04-10T09:30:00.000Z");
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await replyToAdminSupportTicket(
+    {
+      ticketId: 3,
+      message: " We are checking this for you "
+    },
+    {
+      nowFactory: () => fixedNow,
+      queryFn: async <T extends QueryResultRow = QueryResultRow>(
+        text: string,
+        params?: unknown[]
+      ): Promise<QueryResult<T>> => {
+        executedQueries.push({ text, params });
+
+        if (executedQueries.length === 1) {
+          return createQueryResult([
+            {
+              id: 3,
+              userId: 7,
+              ticketCategoryId: 4,
+              username: "mendes",
+              owner: "mendes",
+              subject: "Payment not processed",
+              message: "Still waiting for my payment",
+              attachment: null,
+              attachmentFileType: null,
+              reply: false,
+              status: 1,
+              createdAt: new Date("2026-04-10T08:45:00.000Z")
+            }
+          ]) as unknown as QueryResult<T>;
+        }
+
+        if (executedQueries.length === 2) {
+          return createQueryResult([
+            {
+              id: 3,
+              userId: 7,
+              ticketCategoryId: 4,
+              username: "mendes",
+              owner: "mendes",
+              subject: "Payment not processed",
+              message: "Still waiting for my payment",
+              attachment: null,
+              attachmentFileType: null,
+              reply: false,
+              status: 1,
+              createdAt: new Date("2026-04-10T08:45:00.000Z")
+            },
+            {
+              id: 4,
+              userId: 7,
+              ticketCategoryId: 4,
+              username: "mendes",
+              owner: "mendes",
+              subject: null,
+              message: "Can someone help?",
+              attachment: null,
+              attachmentFileType: null,
+              reply: true,
+              status: 1,
+              createdAt: new Date("2026-04-10T09:00:00.000Z")
+            }
+          ]) as unknown as QueryResult<T>;
+        }
+
+        if (executedQueries.length === 3) {
+          return createQueryResult([
+            {
+              id: 12
+            }
+          ]) as unknown as QueryResult<T>;
+        }
+
+        throw new Error(`Unexpected query: ${text}`);
+      }
+    }
+  );
+
+  expect(response).toEqual({
+    signedParams: null
+  });
+  expect(executedQueries).toHaveLength(3);
+  expect(executedQueries[0]?.text).toContain("WHERE st.id = $1");
+  expect(executedQueries[0]?.params).toEqual([3]);
+  expect(executedQueries[1]?.text).toContain('WHERE st."userId" = $1');
+  expect(executedQueries[1]?.params).toEqual([7]);
+  expect(executedQueries[2]?.text).toContain("INSERT INTO public.support_ticket");
+  expect(executedQueries[2]?.params).toEqual([
+    7,
+    4,
+    "Payment not processed",
+    "We are checking this for you",
+    null,
+    null,
+    "mendes",
+    true,
+    1,
+    fixedNow,
+    fixedNow
+  ]);
+});
+
+test("replyToAdminSupportTicket returns signed params and falls back to owner-based thread lookup when userId is unavailable", async () => {
+  const fixedNow = new Date("2026-04-10T10:15:00.000Z");
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await replyToAdminSupportTicket(
+    {
+      ticketId: 5,
+      message: " Please see the attached screenshot ",
+      attachmentFileType: " image/png "
+    },
+    {
+      nowFactory: () => fixedNow,
+      uuidFactory: () => "reply-file-id",
+      createReplySignedParams: ({ attachmentFileType, attachmentKey, ticketId }) => {
+        expect({ attachmentFileType, attachmentKey, ticketId }).toEqual({
+          attachmentFileType: "image/png",
+          attachmentKey: "support/tickets/5/replies/reply-file-id",
+          ticketId: 5
+        });
+
+        return {
+          url: "https://uploads.example.com/support",
+          fields: {
+            key: attachmentKey,
+            "Content-Type": attachmentFileType
+          }
+        };
+      },
+      queryFn: async <T extends QueryResultRow = QueryResultRow>(
+        text: string,
+        params?: unknown[]
+      ): Promise<QueryResult<T>> => {
+        executedQueries.push({ text, params });
+
+        if (executedQueries.length === 1) {
+          return createQueryResult([
+            {
+              id: 5,
+              userId: null,
+              ticketCategoryId: 2,
+              username: "owner-fallback",
+              owner: "owner-fallback",
+              subject: null,
+              message: "I need help with my refund",
+              attachment: null,
+              attachmentFileType: null,
+              reply: true,
+              status: 2,
+              createdAt: new Date("2026-04-10T09:30:00.000Z")
+            }
+          ]) as unknown as QueryResult<T>;
+        }
+
+        if (executedQueries.length === 2) {
+          return createQueryResult([
+            {
+              id: 1,
+              userId: null,
+              ticketCategoryId: 2,
+              username: "owner-fallback",
+              owner: "owner-fallback",
+              subject: "Need help with refund",
+              message: "I need help with my refund",
+              attachment: null,
+              attachmentFileType: null,
+              reply: false,
+              status: 2,
+              createdAt: new Date("2026-04-10T08:00:00.000Z")
+            },
+            {
+              id: 5,
+              userId: null,
+              ticketCategoryId: 2,
+              username: "owner-fallback",
+              owner: "owner-fallback",
+              subject: null,
+              message: "I need help with my refund",
+              attachment: null,
+              attachmentFileType: null,
+              reply: true,
+              status: 2,
+              createdAt: new Date("2026-04-10T09:30:00.000Z")
+            }
+          ]) as unknown as QueryResult<T>;
+        }
+
+        if (executedQueries.length === 3) {
+          return createQueryResult([
+            {
+              id: 13
+            }
+          ]) as unknown as QueryResult<T>;
+        }
+
+        throw new Error(`Unexpected query: ${text}`);
+      }
+    }
+  );
+
+  expect(response).toEqual({
+    signedParams: {
+      url: "https://uploads.example.com/support",
+      fields: {
+        key: "support/tickets/5/replies/reply-file-id",
+        "Content-Type": "image/png"
+      }
+    }
+  });
+  expect(executedQueries).toHaveLength(3);
+  expect(executedQueries[1]?.text).toContain("WHERE LOWER(BTRIM(st.owner)) = LOWER($1)");
+  expect(executedQueries[1]?.params).toEqual(["owner-fallback"]);
+  expect(executedQueries[2]?.params).toEqual([
+    null,
+    2,
+    "Need help with refund",
+    "Please see the attached screenshot",
+    "support/tickets/5/replies/reply-file-id",
+    "image/png",
+    "owner-fallback",
+    true,
+    2,
+    fixedNow,
+    fixedNow
+  ]);
+});
+
+test("replyToAdminSupportTicket validates the payload and maps missing tickets", async () => {
+  await expect(
+    replyToAdminSupportTicket({
+      ticketId: 0,
+      message: "We are checking this"
+    })
+  ).rejects.toThrow(AdminSupportTicketsValidationError);
+
+  await expect(
+    replyToAdminSupportTicket({
+      ticketId: 3,
+      message: "   "
+    })
+  ).rejects.toThrow(AdminSupportTicketsValidationError);
+
+  await expect(
+    replyToAdminSupportTicket({
+      ticketId: 3,
+      message: "We are checking this",
+      attachmentFileType: "   "
+    })
+  ).rejects.toThrow(AdminSupportTicketsValidationError);
+
+  await expect(
+    replyToAdminSupportTicket(
+      {
+        ticketId: 404,
+        message: "We are checking this"
+      },
+      {
+        queryFn: async <T extends QueryResultRow = QueryResultRow>() =>
+          createQueryResult([]) as unknown as QueryResult<T>
+      }
+    )
   ).rejects.toThrow(AdminSupportTicketNotFoundError);
 });
 
@@ -735,6 +1006,282 @@ test("GET /admin/support/tickets/:ticketId returns the ticket details payload", 
         ],
         status: "open",
         createdAt: "2025-10-30T15:00:23.000Z"
+      }
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("POST /admin/support/tickets/:ticketId/reply returns 401 when the admin token is missing", async () => {
+  const application = express();
+  application.use(express.json());
+
+  application.use(
+    "/admin/support",
+    createAdminSupportRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/support/tickets/3/reply`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        ticketId: 3,
+        message: "We are checking this"
+      })
+    });
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("POST /admin/support/tickets/:ticketId/reply returns 403 for non-super-admins", async () => {
+  const application = express();
+  application.use(express.json());
+
+  application.use(
+    "/admin/support",
+    createAdminSupportRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "support"
+        })
+      ),
+      replyToAdminSupportTicketHandler: async () => {
+        throw new Error("This handler should not be called when access is forbidden");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/support/tickets/3/reply`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        ticketId: 3,
+        message: "We are checking this"
+      })
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("POST /admin/support/tickets/:ticketId/reply validates the path and request body, and maps missing tickets", async () => {
+  let server;
+  const validationApplication = express();
+  validationApplication.use(express.json());
+
+  validationApplication.use(
+    "/admin/support",
+    createAdminSupportRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      replyToAdminSupportTicketHandler: async () => {
+        throw new Error("This handler should not be called when validation fails");
+      }
+    })
+  );
+
+  server = await startTestServer(validationApplication);
+
+  try {
+    let response = await fetch(`${server.baseUrl}/admin/support/tickets/abc/reply`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        ticketId: 3,
+        message: "We are checking this"
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "ticketId must be a positive integer"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/support/tickets/3/reply`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        message: "We are checking this"
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "ticketId is required and must be a positive integer"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/support/tickets/3/reply`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        ticketId: 4,
+        message: "We are checking this"
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "ticketId in request body must match the path ticketId"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/support/tickets/3/reply`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        ticketId: 3,
+        message: "   "
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "message is required and must be a non-empty string"
+    });
+
+    response = await fetch(`${server.baseUrl}/admin/support/tickets/3/reply`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        ticketId: 3,
+        message: "We are checking this",
+        attachmentFileType: "   "
+      })
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "attachmentFileType must be a non-empty string when provided"
+    });
+  } finally {
+    await server.close();
+  }
+
+  const notFoundApplication = express();
+  notFoundApplication.use(express.json());
+
+  notFoundApplication.use(
+    "/admin/support",
+    createAdminSupportRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      replyToAdminSupportTicketHandler: async () => {
+        throw new AdminSupportTicketNotFoundError("Support ticket not found");
+      }
+    })
+  );
+
+  server = await startTestServer(notFoundApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/support/tickets/3/reply`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        ticketId: 3,
+        message: "We are checking this"
+      })
+    });
+
+    expect(response.status).toBe(404);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Support ticket not found"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("POST /admin/support/tickets/:ticketId/reply returns signed params and passes trimmed values", async () => {
+  const application = express();
+  application.use(express.json());
+
+  application.use(
+    "/admin/support",
+    createAdminSupportRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      replyToAdminSupportTicketHandler: async (
+        payload
+      ): Promise<ReplyToAdminSupportTicketResponse> => {
+        expect(payload).toEqual({
+          ticketId: 3,
+          message: "Please see the attached screenshot",
+          attachmentFileType: "image/png"
+        });
+
+        return {
+          signedParams: {
+            url: "https://uploads.example.com/support",
+            fields: {
+              key: "support/tickets/3/replies/reply-file-id",
+              "Content-Type": "image/png"
+            }
+          }
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/support/tickets/%203%20/reply`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer any-token",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        ticketId: " 3 ",
+        message: " Please see the attached screenshot ",
+        attachmentFileType: " image/png "
+      })
+    });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      signedParams: {
+        url: "https://uploads.example.com/support",
+        fields: {
+          key: "support/tickets/3/replies/reply-file-id",
+          "Content-Type": "image/png"
+        }
       }
     });
   } finally {
