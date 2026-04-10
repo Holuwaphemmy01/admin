@@ -1035,6 +1035,83 @@ export const swaggerSpec = {
           }
         }
       },
+      AdminAnalyticsRevenueBreakdownByCategoryItem: {
+        type: "object",
+        properties: {
+          category: {
+            type: "string",
+            example: "commission"
+          },
+          revenue: {
+            type: "number",
+            example: 377145.88
+          }
+        }
+      },
+      AdminAnalyticsRevenueBreakdownByTierItem: {
+        type: "object",
+        properties: {
+          tier: {
+            type: "string",
+            example: "Standard"
+          },
+          revenue: {
+            type: "number",
+            example: 21000
+          }
+        }
+      },
+      AdminAnalyticsRevenueBreakdownByPeriodItem: {
+        type: "object",
+        properties: {
+          period: {
+            type: "string",
+            format: "date-time",
+            example: "2026-04-01T00:00:00.000Z"
+          },
+          revenue: {
+            type: "number",
+            example: 14500
+          }
+        }
+      },
+      AdminAnalyticsRevenueResponse: {
+        type: "object",
+        properties: {
+          totalRevenue: {
+            type: "number",
+            example: 412645.88
+          },
+          subscriptionRevenue: {
+            type: "number",
+            example: 21000
+          },
+          commissionRevenue: {
+            type: "number",
+            example: 377145.88
+          },
+          adRevenue: {
+            type: "number",
+            example: 14500
+          },
+          breakdown: {
+            type: "array",
+            items: {
+              oneOf: [
+                {
+                  $ref: "#/components/schemas/AdminAnalyticsRevenueBreakdownByCategoryItem"
+                },
+                {
+                  $ref: "#/components/schemas/AdminAnalyticsRevenueBreakdownByTierItem"
+                },
+                {
+                  $ref: "#/components/schemas/AdminAnalyticsRevenueBreakdownByPeriodItem"
+                }
+              ]
+            }
+          }
+        }
+      },
       AdminSupportTicketItem: {
         type: "object",
         properties: {
@@ -3989,6 +4066,93 @@ export const swaggerSpec = {
           },
           "403": {
             description: "Authenticated admin is not allowed to view platform analytics overview",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/analytics/revenue": {
+      get: {
+        tags: ["Platform Analytics & Reports"],
+        summary: "Revenue breakdown by period, category, tier",
+        description:
+          "Returns platform revenue totals and a grouped breakdown by revenue category, subscription tier, or calendar month for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "query",
+            name: "groupBy",
+            required: false,
+            schema: {
+              type: "string",
+              enum: ["category", "tier", "period"]
+            },
+            description: "Optional revenue breakdown dimension. Defaults to period"
+          },
+          {
+            in: "query",
+            name: "from",
+            required: false,
+            schema: {
+              type: "string",
+              format: "date-time"
+            },
+            description: "Optional inclusive revenue window start"
+          },
+          {
+            in: "query",
+            name: "to",
+            required: false,
+            schema: {
+              type: "string",
+              format: "date-time"
+            },
+            description: "Optional inclusive revenue window end"
+          }
+        ],
+        responses: {
+          "200": {
+            description: "Revenue analytics returned successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/AdminAnalyticsRevenueResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid revenue analytics query filters",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/UnauthorizedErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to view platform revenue analytics",
             content: {
               "application/json": {
                 schema: {

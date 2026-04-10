@@ -2,12 +2,20 @@ import { Request, RequestHandler, Response, Router } from "express";
 
 import { authenticateAdmin, requireAdminRole } from "../admin-auth/middleware";
 import {
+  getAdminAnalyticsRevenue,
+  AdminAnalyticsRevenueValidationError,
   getAdminAnalyticsOverview,
   AdminAnalyticsOverviewValidationError
 } from "./service";
-import { AdminAnalyticsOverviewPeriod } from "./types";
+import {
+  AdminAnalyticsOverviewPeriod,
+  AdminAnalyticsRevenueFilters,
+  AdminAnalyticsRevenueGroupBy,
+  AdminAnalyticsRevenueResponse
+} from "./types";
 
 interface AdminAnalyticsRouterDependencies {
+  getAdminAnalyticsRevenueHandler?: typeof getAdminAnalyticsRevenue;
   getAdminAnalyticsOverviewHandler?: typeof getAdminAnalyticsOverview;
   authenticateAdminMiddleware?: RequestHandler;
   requireSuperAdminMiddleware?: RequestHandler;
@@ -49,10 +57,40 @@ function parseOverviewPeriod(value: string): AdminAnalyticsOverviewPeriod {
   return normalizedValue;
 }
 
+function parseRevenueGroupBy(value: string): AdminAnalyticsRevenueGroupBy {
+  const normalizedValue = value.trim().toLowerCase();
+
+  if (
+    normalizedValue !== "category" &&
+    normalizedValue !== "tier" &&
+    normalizedValue !== "period"
+  ) {
+    throw new AdminAnalyticsQueryValidationError(
+      "groupBy must be one of category, tier, period"
+    );
+  }
+
+  return normalizedValue;
+}
+
+function parseIsoDate(value: string, fieldName: "from" | "to"): Date {
+  const parsedDate = new Date(value);
+
+  if (Number.isNaN(parsedDate.getTime())) {
+    throw new AdminAnalyticsQueryValidationError(
+      `${fieldName} must be a valid ISO 8601 datetime`
+    );
+  }
+
+  return parsedDate;
+}
+
 export function createAdminAnalyticsRouter(
   dependencies: AdminAnalyticsRouterDependencies = {}
 ): Router {
   const adminAnalyticsRouter = Router();
+  const getAdminAnalyticsRevenueHandler =
+    dependencies.getAdminAnalyticsRevenueHandler ?? getAdminAnalyticsRevenue;
   const getAdminAnalyticsOverviewHandler =
     dependencies.getAdminAnalyticsOverviewHandler ?? getAdminAnalyticsOverview;
   const authenticateAdminMiddleware =
@@ -84,6 +122,62 @@ export function createAdminAnalyticsRouter(
         if (
           error instanceof AdminAnalyticsQueryValidationError ||
           error instanceof AdminAnalyticsOverviewValidationError
+        ) {
+          response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
+
+  adminAnalyticsRouter.get(
+    "/revenue",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      try {
+        const groupByQuery = readSingleQueryValue(request.query.groupBy);
+        const fromQuery = readSingleQueryValue(request.query.from);
+        const toQuery = readSingleQueryValue(request.query.to);
+        const filters: AdminAnalyticsRevenueFilters = {};
+
+        if (typeof groupByQuery === "string" && groupByQuery !== "") {
+          filters.groupBy = parseRevenueGroupBy(groupByQuery);
+        } else if (groupByQuery === "") {
+          throw new AdminAnalyticsQueryValidationError(
+            "groupBy must be one of category, tier, period"
+          );
+        }
+
+        if (typeof fromQuery === "string" && fromQuery !== "") {
+          filters.from = parseIsoDate(fromQuery, "from");
+        } else if (fromQuery === "") {
+          throw new AdminAnalyticsQueryValidationError(
+            "from must be a valid ISO 8601 datetime"
+          );
+        }
+
+        if (typeof toQuery === "string" && toQuery !== "") {
+          filters.to = parseIsoDate(toQuery, "to");
+        } else if (toQuery === "") {
+          throw new AdminAnalyticsQueryValidationError(
+            "to must be a valid ISO 8601 datetime"
+          );
+        }
+
+        const revenueResponse: AdminAnalyticsRevenueResponse =
+          await getAdminAnalyticsRevenueHandler(filters);
+
+        response.json(revenueResponse);
+      } catch (error) {
+        if (
+          error instanceof AdminAnalyticsQueryValidationError ||
+          error instanceof AdminAnalyticsRevenueValidationError
         ) {
           response.status(400).json({
             message: error.message

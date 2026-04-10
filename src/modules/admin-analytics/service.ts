@@ -2,9 +2,16 @@ import { QueryResult, QueryResultRow } from "pg";
 
 import { query } from "../../config/db";
 import {
+  AdminAnalyticsRevenueBreakdownByCategoryItem,
+  AdminAnalyticsRevenueBreakdownByPeriodItem,
+  AdminAnalyticsRevenueBreakdownByTierItem,
+  AdminAnalyticsRevenueFilters,
+  AdminAnalyticsRevenueGroupBy,
+  AdminAnalyticsRevenueResponse,
   AdminAnalyticsOverviewPeriod,
   AdminAnalyticsOverviewResponse,
-  DEFAULT_ADMIN_ANALYTICS_OVERVIEW_PERIOD
+  DEFAULT_ADMIN_ANALYTICS_OVERVIEW_PERIOD,
+  DEFAULT_ADMIN_ANALYTICS_REVENUE_GROUP_BY
 } from "./types";
 
 type QueryFunction = <T extends QueryResultRow = QueryResultRow>(
@@ -27,10 +34,39 @@ interface AdminAnalyticsOverviewRow extends QueryResultRow {
   openTickets: string | number | null;
 }
 
+interface AdminAnalyticsRevenueTotalsRow extends QueryResultRow {
+  totalRevenue: string | number | null;
+  subscriptionRevenue: string | number | null;
+  commissionRevenue: string | number | null;
+  adRevenue: string | number | null;
+}
+
+interface AdminAnalyticsRevenueCategoryBreakdownRow extends QueryResultRow {
+  category: string | null;
+  revenue: string | number | null;
+}
+
+interface AdminAnalyticsRevenueTierBreakdownRow extends QueryResultRow {
+  tier: string | null;
+  revenue: string | number | null;
+}
+
+interface AdminAnalyticsRevenuePeriodBreakdownRow extends QueryResultRow {
+  period: Date | string | null;
+  revenue: string | number | null;
+}
+
 export class AdminAnalyticsOverviewValidationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "AdminAnalyticsOverviewValidationError";
+  }
+}
+
+export class AdminAnalyticsRevenueValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AdminAnalyticsRevenueValidationError";
   }
 }
 
@@ -42,6 +78,23 @@ function getNowFactory(
   dependencies: AdminAnalyticsServiceDependencies = {}
 ): () => Date {
   return dependencies.nowFactory ?? (() => new Date());
+}
+
+function normalizeOptionalDate(
+  value: Date | undefined,
+  fieldName: "from" | "to"
+): Date | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
+    throw new AdminAnalyticsRevenueValidationError(
+      `${fieldName} must be a valid ISO 8601 datetime`
+    );
+  }
+
+  return value;
 }
 
 function normalizeOverviewPeriod(
@@ -65,6 +118,52 @@ function normalizeOverviewPeriod(
   }
 
   return normalizedPeriod;
+}
+
+function normalizeRevenueGroupBy(
+  groupBy: string | undefined
+): AdminAnalyticsRevenueGroupBy {
+  if (groupBy === undefined) {
+    return DEFAULT_ADMIN_ANALYTICS_REVENUE_GROUP_BY;
+  }
+
+  const normalizedGroupBy = groupBy.trim().toLowerCase();
+
+  if (
+    normalizedGroupBy !== "category" &&
+    normalizedGroupBy !== "tier" &&
+    normalizedGroupBy !== "period"
+  ) {
+    throw new AdminAnalyticsRevenueValidationError(
+      "groupBy must be one of category, tier, period"
+    );
+  }
+
+  return normalizedGroupBy;
+}
+
+function normalizeRevenueFilters(
+  filters: AdminAnalyticsRevenueFilters = {}
+): {
+  groupBy: AdminAnalyticsRevenueGroupBy;
+  from?: Date;
+  to?: Date;
+} {
+  const normalizedFilters = {
+    groupBy: normalizeRevenueGroupBy(filters.groupBy),
+    from: normalizeOptionalDate(filters.from, "from"),
+    to: normalizeOptionalDate(filters.to, "to")
+  };
+
+  if (
+    normalizedFilters.from instanceof Date &&
+    normalizedFilters.to instanceof Date &&
+    normalizedFilters.from > normalizedFilters.to
+  ) {
+    throw new AdminAnalyticsRevenueValidationError("from must be less than or equal to to");
+  }
+
+  return normalizedFilters;
 }
 
 function mapRequiredNonNegativeInteger(
@@ -93,6 +192,106 @@ function mapRequiredNumber(
   }
 
   return Number(numericValue.toFixed(2));
+}
+
+function mapRevenueNumber(
+  value: string | number | null | undefined,
+  fieldName: string
+): number {
+  const numericValue =
+    typeof value === "number" ? value : value === null || value === undefined ? Number.NaN : Number(value);
+
+  if (!Number.isFinite(numericValue) || numericValue < 0) {
+    throw new Error(`Admin analytics revenue query returned an invalid ${fieldName} value`);
+  }
+
+  return Number(numericValue.toFixed(2));
+}
+
+function mapRequiredText(
+  value: string | null | undefined,
+  fieldName: string
+): string {
+  if (typeof value !== "string") {
+    throw new Error(`Admin analytics revenue query returned an invalid ${fieldName} value`);
+  }
+
+  const normalizedValue = value.trim();
+
+  if (normalizedValue === "") {
+    throw new Error(`Admin analytics revenue query returned an invalid ${fieldName} value`);
+  }
+
+  return normalizedValue;
+}
+
+function mapRequiredIsoString(
+  value: Date | string | null | undefined,
+  fieldName: string
+): string {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.toISOString();
+  }
+
+  if (typeof value === "string") {
+    const parsedValue = new Date(value);
+
+    if (!Number.isNaN(parsedValue.getTime())) {
+      return parsedValue.toISOString();
+    }
+  }
+
+  throw new Error(`Admin analytics revenue query returned an invalid ${fieldName} value`);
+}
+
+function buildRevenueEventsCte(
+  fromParameterIndex: number,
+  toParameterIndex: number
+): string[] {
+  return [
+    "WITH bounds AS (",
+    "  SELECT",
+    `    $${fromParameterIndex}::timestamp with time zone AS "fromDate",`,
+    `    $${toParameterIndex}::timestamp with time zone AS "toDate"`,
+    "), revenue_events AS (",
+    "  SELECT",
+    "    'subscription'::text AS source,",
+    "    'subscription'::text AS category,",
+    "    COALESCE(NULLIF(BTRIM(s.name), ''), 'Unknown') AS tier,",
+    '    us."createdAt" AS "eventAt",',
+    '    us."initiatedAmountToPayNext"::numeric AS amount',
+    "  FROM public.user_subscription us",
+    '  INNER JOIN public.subscription s ON s.id = us."subscriptionId"',
+    "  CROSS JOIN bounds",
+    '  WHERE COALESCE(us."initiatedAmountToPayNext", 0) > 0',
+    '    AND (bounds."fromDate" IS NULL OR us."createdAt" >= bounds."fromDate")',
+    '    AND (bounds."toDate" IS NULL OR us."createdAt" <= bounds."toDate")',
+    "  UNION ALL",
+    "  SELECT",
+    "    'commission'::text AS source,",
+    "    'commission'::text AS category,",
+    '    COALESCE(NULLIF(BTRIM(e."subscriptionTier"), \'\'), \'Unknown\') AS tier,',
+    '    e."createdAt" AS "eventAt",',
+    '    e."commissionAmount"::numeric AS amount',
+    "  FROM public.earnings e",
+    "  CROSS JOIN bounds",
+    '  WHERE COALESCE(e."commissionAmount", 0) > 0',
+    '    AND (bounds."fromDate" IS NULL OR e."createdAt" >= bounds."fromDate")',
+    '    AND (bounds."toDate" IS NULL OR e."createdAt" <= bounds."toDate")',
+    "  UNION ALL",
+    "  SELECT",
+    "    'ads'::text AS source,",
+    "    'ads'::text AS category,",
+    "    NULL::text AS tier,",
+    '    ppt."createdAt" AS "eventAt",',
+    "    ppt.amount::numeric AS amount",
+    "  FROM public.promote_post_transaction ppt",
+    "  CROSS JOIN bounds",
+    "  WHERE COALESCE(ppt.amount, 0) > 0",
+    '    AND (bounds."fromDate" IS NULL OR ppt."createdAt" >= bounds."fromDate")',
+    '    AND (bounds."toDate" IS NULL OR ppt."createdAt" <= bounds."toDate")',
+    ")"
+  ];
 }
 
 export async function getAdminAnalyticsOverview(
@@ -206,5 +405,112 @@ export async function getAdminAnalyticsOverview(
     activeLogistics: mapRequiredNonNegativeInteger(overview.activeLogistics, "activeLogistics"),
     pendingKyc: mapRequiredNonNegativeInteger(overview.pendingKyc, "pendingKyc"),
     openTickets: mapRequiredNonNegativeInteger(overview.openTickets, "openTickets")
+  };
+}
+
+export async function getAdminAnalyticsRevenue(
+  filters: AdminAnalyticsRevenueFilters = {},
+  dependencies: AdminAnalyticsServiceDependencies = {}
+): Promise<AdminAnalyticsRevenueResponse> {
+  const queryFn = getQueryFn(dependencies);
+  const normalizedFilters = normalizeRevenueFilters(filters);
+  const params = [normalizedFilters.from ?? null, normalizedFilters.to ?? null];
+  const totalsResult = await queryFn<AdminAnalyticsRevenueTotalsRow>(
+    [
+      ...buildRevenueEventsCte(1, 2),
+      "SELECT",
+      '  COALESCE(SUM(re.amount), 0)::numeric AS "totalRevenue",',
+      '  COALESCE(SUM(re.amount) FILTER (WHERE re.source = \'subscription\'), 0)::numeric AS "subscriptionRevenue",',
+      '  COALESCE(SUM(re.amount) FILTER (WHERE re.source = \'commission\'), 0)::numeric AS "commissionRevenue",',
+      '  COALESCE(SUM(re.amount) FILTER (WHERE re.source = \'ads\'), 0)::numeric AS "adRevenue"',
+      "FROM revenue_events re"
+    ].join("\n"),
+    params
+  );
+  const totals = totalsResult.rows[0];
+
+  if (!totals) {
+    throw new Error("Admin analytics revenue query did not return a totals row");
+  }
+
+  let breakdown:
+    | AdminAnalyticsRevenueBreakdownByCategoryItem[]
+    | AdminAnalyticsRevenueBreakdownByTierItem[]
+    | AdminAnalyticsRevenueBreakdownByPeriodItem[];
+
+  if (normalizedFilters.groupBy === "category") {
+    const breakdownResult = await queryFn<AdminAnalyticsRevenueCategoryBreakdownRow>(
+      [
+        ...buildRevenueEventsCte(1, 2),
+        "SELECT",
+        "  re.category,",
+        "  COALESCE(SUM(re.amount), 0)::numeric AS revenue",
+        "FROM revenue_events re",
+        "GROUP BY re.category",
+        "ORDER BY CASE re.category",
+        "  WHEN 'subscription' THEN 1",
+        "  WHEN 'commission' THEN 2",
+        "  WHEN 'ads' THEN 3",
+        "  ELSE 4",
+        "END ASC"
+      ].join("\n"),
+      params
+    );
+
+    breakdown = breakdownResult.rows.map((row) => ({
+      category: mapRequiredText(row.category, "category"),
+      revenue: mapRevenueNumber(row.revenue, "revenue")
+    }));
+  } else if (normalizedFilters.groupBy === "tier") {
+    const breakdownResult = await queryFn<AdminAnalyticsRevenueTierBreakdownRow>(
+      [
+        ...buildRevenueEventsCte(1, 2),
+        "SELECT",
+        "  re.tier,",
+        "  COALESCE(SUM(re.amount), 0)::numeric AS revenue",
+        "FROM revenue_events re",
+        "WHERE re.tier IS NOT NULL",
+        "GROUP BY re.tier",
+        "ORDER BY SUM(re.amount) DESC, re.tier ASC"
+      ].join("\n"),
+      params
+    );
+
+    breakdown = breakdownResult.rows.map((row) => ({
+      tier: mapRequiredText(row.tier, "tier"),
+      revenue: mapRevenueNumber(row.revenue, "revenue")
+    }));
+  } else {
+    const breakdownResult = await queryFn<AdminAnalyticsRevenuePeriodBreakdownRow>(
+      [
+        ...buildRevenueEventsCte(1, 2),
+        "SELECT",
+        '  (date_trunc(\'month\', re."eventAt" AT TIME ZONE \'UTC\') AT TIME ZONE \'UTC\') AS period,',
+        "  COALESCE(SUM(re.amount), 0)::numeric AS revenue",
+        "FROM revenue_events re",
+        "GROUP BY 1",
+        "ORDER BY 1 ASC"
+      ].join("\n"),
+      params
+    );
+
+    breakdown = breakdownResult.rows.map((row) => ({
+      period: mapRequiredIsoString(row.period, "period"),
+      revenue: mapRevenueNumber(row.revenue, "revenue")
+    }));
+  }
+
+  return {
+    totalRevenue: mapRevenueNumber(totals.totalRevenue, "totalRevenue"),
+    subscriptionRevenue: mapRevenueNumber(
+      totals.subscriptionRevenue,
+      "subscriptionRevenue"
+    ),
+    commissionRevenue: mapRevenueNumber(
+      totals.commissionRevenue,
+      "commissionRevenue"
+    ),
+    adRevenue: mapRevenueNumber(totals.adRevenue, "adRevenue"),
+    breakdown
   };
 }
