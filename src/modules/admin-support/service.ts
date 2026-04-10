@@ -3,6 +3,7 @@ import { QueryResult, QueryResultRow } from "pg";
 import { query } from "../../config/db";
 import {
   AdminSupportTicketStatusFilter,
+  AdminSupportTicketDetailsResponse,
   AdminSupportTicketsListFilters,
   AdminSupportTicketsListResponse
 } from "./types";
@@ -28,10 +29,30 @@ interface TotalCountRow extends QueryResultRow {
   total: number;
 }
 
+interface AdminSupportTicketDetailsRow extends QueryResultRow {
+  id: string | number;
+  userId: string | number | null;
+  username: string | null;
+  subject: string | null;
+  message: string | null;
+  attachment: string | null;
+  attachmentFileType: string | null;
+  reply: boolean | null;
+  status: string | number | null;
+  createdAt: Date;
+}
+
 export class AdminSupportTicketsValidationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "AdminSupportTicketsValidationError";
+  }
+}
+
+export class AdminSupportTicketNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AdminSupportTicketNotFoundError";
   }
 }
 
@@ -109,6 +130,24 @@ function mapRequiredDate(value: Date, fieldName: string): string {
   }
 
   return value.toISOString();
+}
+
+function mapOptionalText(value: string | null | undefined): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalizedValue = value.trim();
+
+  return normalizedValue === "" ? null : normalizedValue;
+}
+
+function mapRequiredBoolean(value: boolean | null | undefined, fieldName: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new Error(`Admin support tickets query returned an invalid ${fieldName} value`);
+  }
+
+  return value;
 }
 
 function mapTicketStatus(
@@ -233,5 +272,133 @@ export async function listAdminSupportTickets(
       createdAt: mapRequiredDate(ticket.createdAt, "createdAt")
     })),
     total: Number(totalResult.rows[0]?.total ?? 0)
+  };
+}
+
+export async function getAdminSupportTicketDetails(
+  ticketId: number,
+  dependencies: AdminSupportServiceDependencies = {}
+): Promise<AdminSupportTicketDetailsResponse> {
+  const queryFn = getQueryFn(dependencies);
+  const normalizedTicketId = normalizePositiveInteger(ticketId, "ticketId");
+
+  const targetResult = await queryFn<AdminSupportTicketDetailsRow>(
+    [
+      "SELECT",
+      "  st.id,",
+      '  st."userId" AS "userId",',
+      `  COALESCE(NULLIF(BTRIM(u.username), ''), NULLIF(BTRIM(st.owner), '')) AS username,`,
+      "  st.subject,",
+      "  st.message,",
+      "  st.attachment,",
+      '  st."attachmentFileType" AS "attachmentFileType",',
+      "  st.reply,",
+      "  st.status,",
+      '  st."createdAt" AS "createdAt"',
+      "FROM public.support_ticket st",
+      'LEFT JOIN public."user" u ON u.id = st."userId"',
+      "WHERE st.id = $1",
+      "LIMIT 1"
+    ].join("\n"),
+    [normalizedTicketId]
+  );
+  const targetTicket = targetResult.rows[0];
+
+  if (!targetTicket) {
+    throw new AdminSupportTicketNotFoundError("Support ticket not found");
+  }
+
+  const targetUserId = mapRequiredInteger(targetTicket.userId, "userId");
+
+  const threadRowsResult = await queryFn<AdminSupportTicketDetailsRow>(
+    [
+      "SELECT",
+      "  st.id,",
+      '  st."userId" AS "userId",',
+      `  COALESCE(NULLIF(BTRIM(u.username), ''), NULLIF(BTRIM(st.owner), '')) AS username,`,
+      "  st.subject,",
+      "  st.message,",
+      "  st.attachment,",
+      '  st."attachmentFileType" AS "attachmentFileType",',
+      "  st.reply,",
+      "  st.status,",
+      '  st."createdAt" AS "createdAt"',
+      "FROM public.support_ticket st",
+      'LEFT JOIN public."user" u ON u.id = st."userId"',
+      'WHERE st."userId" = $1',
+      'ORDER BY st."createdAt" ASC, st.id ASC'
+    ].join("\n"),
+    [targetUserId]
+  );
+
+  const groupedThreads: Array<{
+    subject: string | null;
+    rows: AdminSupportTicketDetailsRow[];
+  }> = [];
+
+  for (const row of threadRowsResult.rows) {
+    const normalizedSubject = mapOptionalText(row.subject);
+    const currentThread = groupedThreads[groupedThreads.length - 1];
+
+    if (!currentThread) {
+      groupedThreads.push({
+        subject: normalizedSubject,
+        rows: [row]
+      });
+      continue;
+    }
+
+    if (normalizedSubject === null) {
+      currentThread.rows.push(row);
+      continue;
+    }
+
+    if (currentThread.subject === null || normalizedSubject.toLowerCase() === currentThread.subject.toLowerCase()) {
+      if (currentThread.subject === null) {
+        currentThread.subject = normalizedSubject;
+      }
+
+      currentThread.rows.push(row);
+      continue;
+    }
+
+    groupedThreads.push({
+      subject: normalizedSubject,
+      rows: [row]
+    });
+  }
+
+  const matchingThread =
+    groupedThreads.find((thread) =>
+      thread.rows.some((row) => mapRequiredInteger(row.id, "id") === normalizedTicketId)
+    ) ??
+    {
+      subject: mapOptionalText(targetTicket.subject),
+      rows: [targetTicket]
+    };
+
+  const resolvedSubject =
+    matchingThread.subject ??
+    mapOptionalText(targetTicket.subject) ??
+    mapRequiredText(targetTicket.message, "message");
+
+  const resolvedUsername = mapRequiredText(targetTicket.username, "username");
+
+  return {
+    ticket: {
+      id: mapRequiredInteger(targetTicket.id, "id"),
+      username: resolvedUsername,
+      subject: resolvedSubject,
+      messages: matchingThread.rows.map((row) => ({
+        id: mapRequiredInteger(row.id, "id"),
+        message: mapRequiredText(row.message, "message"),
+        attachment: mapOptionalText(row.attachment),
+        attachmentFileType: mapOptionalText(row.attachmentFileType),
+        reply: mapRequiredBoolean(row.reply, "reply"),
+        createdAt: mapRequiredDate(row.createdAt, "createdAt")
+      })),
+      status: mapTicketStatus(targetTicket.status),
+      createdAt: mapRequiredDate(targetTicket.createdAt, "createdAt")
+    }
   };
 }

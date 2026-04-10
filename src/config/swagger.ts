@@ -1040,6 +1040,79 @@ export const swaggerSpec = {
           }
         }
       },
+      AdminSupportTicketMessageItem: {
+        type: "object",
+        properties: {
+          id: {
+            type: "integer",
+            example: 1
+          },
+          message: {
+            type: "string",
+            example: "Still waiting for my payment"
+          },
+          attachment: {
+            type: "string",
+            nullable: true,
+            example: "https://brickpine.nyc3.cdn.digitaloceanspaces.com/supportAttachment/example.png"
+          },
+          attachmentFileType: {
+            type: "string",
+            nullable: true,
+            example: "image/png"
+          },
+          reply: {
+            type: "boolean",
+            example: false
+          },
+          createdAt: {
+            type: "string",
+            format: "date-time",
+            example: "2025-10-30T14:58:53.000Z"
+          }
+        }
+      },
+      AdminSupportTicketDetails: {
+        type: "object",
+        properties: {
+          id: {
+            type: "integer",
+            example: 3
+          },
+          username: {
+            type: "string",
+            example: "mendes"
+          },
+          subject: {
+            type: "string",
+            example: "Payment not processed"
+          },
+          messages: {
+            type: "array",
+            items: {
+              $ref: "#/components/schemas/AdminSupportTicketMessageItem"
+            }
+          },
+          status: {
+            type: "string",
+            enum: ["open", "closed", "pending"],
+            example: "open"
+          },
+          createdAt: {
+            type: "string",
+            format: "date-time",
+            example: "2025-10-30T15:00:23.000Z"
+          }
+        }
+      },
+      AdminSupportTicketDetailsResponse: {
+        type: "object",
+        properties: {
+          ticket: {
+            $ref: "#/components/schemas/AdminSupportTicketDetails"
+          }
+        }
+      },
       AdminCampaignDetailsResponse: {
         type: "object",
         properties: {
@@ -3825,6 +3898,82 @@ export const swaggerSpec = {
               "application/json": {
                 schema: {
                   $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/support/tickets/{ticketId}": {
+      get: {
+        tags: ["Support & Tickets"],
+        summary: "View a specific ticket",
+        description:
+          "Returns one support ticket with its reconstructed conversation thread for authenticated super admin access.",
+        security: [
+          {
+            AdminBearerAuth: []
+          }
+        ],
+        parameters: [
+          {
+            in: "path",
+            name: "ticketId",
+            required: true,
+            schema: {
+              type: "integer"
+            },
+            description: "Support ticket identifier"
+          }
+        ],
+        responses: {
+          "200": {
+            description: "Support ticket returned successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/AdminSupportTicketDetailsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid support ticket identifier",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            description: "Missing or invalid admin token",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/UnauthorizedErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            description: "Authenticated admin is not allowed to view support tickets",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ForbiddenErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "Support ticket not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
                 }
               }
             }

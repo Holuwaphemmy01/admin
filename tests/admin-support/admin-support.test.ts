@@ -8,10 +8,15 @@ import { createAuthenticateAdminMiddleware } from "../../src/modules/admin-auth/
 import { AuthenticatedAdmin } from "../../src/modules/admin-auth/types";
 import { createAdminSupportRouter } from "../../src/modules/admin-support/routes";
 import {
+  AdminSupportTicketNotFoundError,
   AdminSupportTicketsValidationError,
+  getAdminSupportTicketDetails,
   listAdminSupportTickets
 } from "../../src/modules/admin-support/service";
-import { AdminSupportTicketsListResponse } from "../../src/modules/admin-support/types";
+import {
+  AdminSupportTicketDetailsResponse,
+  AdminSupportTicketsListResponse
+} from "../../src/modules/admin-support/types";
 
 async function startTestServer(application: ReturnType<typeof express>) {
   const server = application.listen(0);
@@ -214,6 +219,145 @@ test("listAdminSupportTickets validates filters and returns an empty list when n
   });
 });
 
+test("getAdminSupportTicketDetails returns a reconstructed ticket thread for the requested ticket id", async () => {
+  const executedQueries: Array<{ text: string; params?: unknown[] }> = [];
+
+  const response = await getAdminSupportTicketDetails(2, {
+    queryFn: async <T extends QueryResultRow = QueryResultRow>(
+      text: string,
+      params?: unknown[]
+    ): Promise<QueryResult<T>> => {
+      executedQueries.push({ text, params });
+
+      if (executedQueries.length === 1) {
+        return createQueryResult([
+          {
+            id: 2,
+            userId: 3,
+            username: "mendes",
+            subject: null,
+            message: "Still waiting for my payment",
+            attachment: "https://cdn.example.com/ticket-2.png",
+            attachmentFileType: "image/png",
+            reply: true,
+            status: 1,
+            createdAt: new Date("2025-10-30T15:00:04.000Z")
+          }
+        ]) as unknown as QueryResult<T>;
+      }
+
+      if (executedQueries.length === 2) {
+        return createQueryResult([
+          {
+            id: 1,
+            userId: 3,
+            username: "mendes",
+            subject: "Payment not processed",
+            message: "Still waiting for my payment",
+            attachment: "https://cdn.example.com/ticket-1.png",
+            attachmentFileType: "image/png",
+            reply: false,
+            status: 1,
+            createdAt: new Date("2025-10-30T14:58:53.000Z")
+          },
+          {
+            id: 2,
+            userId: 3,
+            username: "mendes",
+            subject: null,
+            message: "Still waiting for my payment",
+            attachment: "https://cdn.example.com/ticket-2.png",
+            attachmentFileType: "image/png",
+            reply: true,
+            status: 1,
+            createdAt: new Date("2025-10-30T15:00:04.000Z")
+          },
+          {
+            id: 3,
+            userId: 3,
+            username: "mendes",
+            subject: "Payment not processed",
+            message: "Any update on this issue?",
+            attachment: null,
+            attachmentFileType: null,
+            reply: false,
+            status: 1,
+            createdAt: new Date("2025-10-30T15:00:23.000Z")
+          },
+          {
+            id: 4,
+            userId: 3,
+            username: "mendes",
+            subject: "Different issue",
+            message: "This should not be part of the same thread",
+            attachment: null,
+            attachmentFileType: null,
+            reply: false,
+            status: 2,
+            createdAt: new Date("2025-10-31T09:00:00.000Z")
+          }
+        ]) as unknown as QueryResult<T>;
+      }
+
+      throw new Error(`Unexpected query: ${text}`);
+    }
+  });
+
+  expect(executedQueries).toHaveLength(2);
+  expect(executedQueries[0]?.text).toContain("WHERE st.id = $1");
+  expect(executedQueries[0]?.params).toEqual([2]);
+  expect(executedQueries[1]?.text).toContain('WHERE st."userId" = $1');
+  expect(executedQueries[1]?.params).toEqual([3]);
+  expect(response).toEqual({
+    ticket: {
+      id: 2,
+      username: "mendes",
+      subject: "Payment not processed",
+      messages: [
+        {
+          id: 1,
+          message: "Still waiting for my payment",
+          attachment: "https://cdn.example.com/ticket-1.png",
+          attachmentFileType: "image/png",
+          reply: false,
+          createdAt: "2025-10-30T14:58:53.000Z"
+        },
+        {
+          id: 2,
+          message: "Still waiting for my payment",
+          attachment: "https://cdn.example.com/ticket-2.png",
+          attachmentFileType: "image/png",
+          reply: true,
+          createdAt: "2025-10-30T15:00:04.000Z"
+        },
+        {
+          id: 3,
+          message: "Any update on this issue?",
+          attachment: null,
+          attachmentFileType: null,
+          reply: false,
+          createdAt: "2025-10-30T15:00:23.000Z"
+        }
+      ],
+      status: "open",
+      createdAt: "2025-10-30T15:00:04.000Z"
+    }
+  });
+});
+
+test("getAdminSupportTicketDetails validates the id and maps missing tickets", async () => {
+  await expect(getAdminSupportTicketDetails(0)).rejects.toThrow(
+    AdminSupportTicketsValidationError
+  );
+
+  await expect(
+    getAdminSupportTicketDetails(404, {
+      queryFn: async <T extends QueryResultRow = QueryResultRow>() =>
+        createQueryResult([]) as unknown as QueryResult<T>
+    })
+  ).rejects.toThrow(AdminSupportTicketNotFoundError);
+});
+
 test("GET /admin/support/tickets returns 401 when the admin token is missing", async () => {
   const application = express();
 
@@ -391,6 +535,207 @@ test("GET /admin/support/tickets returns the tickets payload and passes trimmed 
         }
       ],
       total: 1
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/support/tickets/:ticketId returns 401 when the admin token is missing", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/support",
+    createAdminSupportRouter({
+      authenticateAdminMiddleware: createAuthenticateAdminMiddleware({
+        authenticateAdminTokenHandler: async () => createAuthenticatedAdmin()
+      })
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/support/tickets/3`);
+
+    expect(response.status).toBe(401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/support/tickets/:ticketId returns 403 for non-super-admins", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/support",
+    createAdminSupportRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(
+        createAuthenticatedAdmin({
+          role: "support"
+        })
+      ),
+      getAdminSupportTicketDetailsHandler: async () => {
+        throw new Error("This handler should not be called when access is forbidden");
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/support/tickets/3`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(403);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/support/tickets/:ticketId validates the ticket identifier and maps missing tickets", async () => {
+  let server;
+  const validationApplication = express();
+
+  validationApplication.use(
+    "/admin/support",
+    createAdminSupportRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getAdminSupportTicketDetailsHandler: async () => {
+        throw new Error("This handler should not be called when validation fails");
+      }
+    })
+  );
+
+  server = await startTestServer(validationApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/support/tickets/abc`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "ticketId must be a positive integer"
+    });
+  } finally {
+    await server.close();
+  }
+
+  const notFoundApplication = express();
+
+  notFoundApplication.use(
+    "/admin/support",
+    createAdminSupportRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getAdminSupportTicketDetailsHandler: async () => {
+        throw new AdminSupportTicketNotFoundError("Support ticket not found");
+      }
+    })
+  );
+
+  server = await startTestServer(notFoundApplication);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/support/tickets/999`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(404);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      message: "Support ticket not found"
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /admin/support/tickets/:ticketId returns the ticket details payload", async () => {
+  const application = express();
+
+  application.use(
+    "/admin/support",
+    createAdminSupportRouter({
+      authenticateAdminMiddleware: allowAuthenticatedAdmin(),
+      getAdminSupportTicketDetailsHandler: async (
+        ticketId
+      ): Promise<AdminSupportTicketDetailsResponse> => {
+        expect(ticketId).toBe(3);
+
+        return {
+          ticket: {
+            id: 3,
+            username: "mendes",
+            subject: "Payment not processed",
+            messages: [
+              {
+                id: 1,
+                message: "Still waiting for my payment",
+                attachment: "https://cdn.example.com/ticket-1.png",
+                attachmentFileType: "image/png",
+                reply: false,
+                createdAt: "2025-10-30T14:58:53.000Z"
+              },
+              {
+                id: 2,
+                message: "We are checking this for you",
+                attachment: null,
+                attachmentFileType: null,
+                reply: true,
+                createdAt: "2025-10-30T15:00:04.000Z"
+              }
+            ],
+            status: "open",
+            createdAt: "2025-10-30T15:00:23.000Z"
+          }
+        };
+      }
+    })
+  );
+
+  const server = await startTestServer(application);
+
+  try {
+    const response = await fetch(`${server.baseUrl}/admin/support/tickets/%203%20`, {
+      headers: {
+        Authorization: "Bearer any-token"
+      }
+    });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()) as Record<string, unknown>).toEqual({
+      ticket: {
+        id: 3,
+        username: "mendes",
+        subject: "Payment not processed",
+        messages: [
+          {
+            id: 1,
+            message: "Still waiting for my payment",
+            attachment: "https://cdn.example.com/ticket-1.png",
+            attachmentFileType: "image/png",
+            reply: false,
+            createdAt: "2025-10-30T14:58:53.000Z"
+          },
+          {
+            id: 2,
+            message: "We are checking this for you",
+            attachment: null,
+            attachmentFileType: null,
+            reply: true,
+            createdAt: "2025-10-30T15:00:04.000Z"
+          }
+        ],
+        status: "open",
+        createdAt: "2025-10-30T15:00:23.000Z"
+      }
     });
   } finally {
     await server.close();

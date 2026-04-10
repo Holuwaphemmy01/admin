@@ -9,11 +9,14 @@ import {
   AdminSupportTicketsListFilters
 } from "./types";
 import {
+  AdminSupportTicketNotFoundError,
   AdminSupportTicketsValidationError,
+  getAdminSupportTicketDetails,
   listAdminSupportTickets
 } from "./service";
 
 interface AdminSupportRouterDependencies {
+  getAdminSupportTicketDetailsHandler?: typeof getAdminSupportTicketDetails;
   listAdminSupportTicketsHandler?: typeof listAdminSupportTickets;
   authenticateAdminMiddleware?: RequestHandler;
   requireSuperAdminMiddleware?: RequestHandler;
@@ -72,12 +75,58 @@ export function createAdminSupportRouter(
   dependencies: AdminSupportRouterDependencies = {}
 ): Router {
   const adminSupportRouter = Router();
+  const getAdminSupportTicketDetailsHandler =
+    dependencies.getAdminSupportTicketDetailsHandler ?? getAdminSupportTicketDetails;
   const listAdminSupportTicketsHandler =
     dependencies.listAdminSupportTicketsHandler ?? listAdminSupportTickets;
   const authenticateAdminMiddleware =
     dependencies.authenticateAdminMiddleware ?? authenticateAdmin;
   const requireSuperAdminMiddleware =
     dependencies.requireSuperAdminMiddleware ?? requireAdminRole("super_admin");
+
+  adminSupportRouter.get(
+    "/tickets/:ticketId",
+    authenticateAdminMiddleware,
+    requireSuperAdminMiddleware,
+    async (request: Request, response: Response, next) => {
+      const rawTicketId = request.params.ticketId;
+      const ticketId = (
+        Array.isArray(rawTicketId) ? rawTicketId[0] ?? "" : rawTicketId ?? ""
+      ).trim();
+
+      if (!/^\d+$/.test(ticketId) || Number(ticketId) <= 0) {
+        response.status(400).json({
+          message: "ticketId must be a positive integer"
+        });
+
+        return;
+      }
+
+      try {
+        const ticketResponse = await getAdminSupportTicketDetailsHandler(Number(ticketId));
+
+        response.json(ticketResponse);
+      } catch (error) {
+        if (error instanceof AdminSupportTicketsValidationError) {
+          response.status(400).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        if (error instanceof AdminSupportTicketNotFoundError) {
+          response.status(404).json({
+            message: error.message
+          });
+
+          return;
+        }
+
+        next(error);
+      }
+    }
+  );
 
   adminSupportRouter.get(
     "/tickets",

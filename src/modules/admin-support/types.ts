@@ -27,3 +27,25 @@ export interface AdminSupportTicketsListResponse {
   tickets: AdminSupportTicketItem[];
   total: number;
 }
+
+export interface AdminSupportTicketMessageItem {
+  id: number;
+  message: string;
+  attachment: string | null;
+  attachmentFileType: string | null;
+  reply: boolean;
+  createdAt: string;
+}
+
+export interface AdminSupportTicketDetails {
+  id: number;
+  username: string;
+  subject: string;
+  messages: AdminSupportTicketMessageItem[];
+  status: AdminSupportTicketStatusFilter;
+  createdAt: string;
+}
+
+export interface AdminSupportTicketDetailsResponse {
+  ticket: AdminSupportTicketDetails;
+}
